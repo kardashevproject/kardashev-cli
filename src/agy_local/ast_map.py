@@ -229,8 +229,17 @@ def parse_generic_symbols(source: str, rel_path: str) -> FileSymbolSummary:
     return summary
 
 
+# Per-file in-memory AST symbol cache keyed by (abs_path -> (mtime_ns, size_bytes, FileSymbolSummary))
+_FILE_SYMBOL_CACHE: dict[str, tuple[int, int, FileSymbolSummary]] = {}
+
+
+def clear_ast_cache() -> None:
+    """Clears the in-memory per-file AST symbol cache."""
+    _FILE_SYMBOL_CACHE.clear()
+
+
 def build_workspace_index(workspace: str | Path, max_files: int = 400) -> list[FileSymbolSummary]:
-    """Scans `workspace` and builds a sorted list of `FileSymbolSummary` objects."""
+    """Scans `workspace` and builds a sorted list of `FileSymbolSummary` objects with mtime caching."""
     root = Path(workspace).resolve()
     results: list[FileSymbolSummary] = []
     if not root.is_dir():
@@ -247,7 +256,16 @@ def build_workspace_index(workspace: str | Path, max_files: int = 400) -> list[F
                 continue
             fpath = Path(dirpath) / fname
             try:
-                if fpath.stat().st_size > 512_000:
+                st = fpath.stat()
+                if st.st_size > 512_000:
+                    continue
+                cache_key = str(fpath)
+                cached = _FILE_SYMBOL_CACHE.get(cache_key)
+                if cached is not None and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
+                    results.append(cached[2])
+                    scanned += 1
+                    if scanned >= max_files:
+                        return results
                     continue
                 source = fpath.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
@@ -258,6 +276,7 @@ def build_workspace_index(workspace: str | Path, max_files: int = 400) -> list[F
                 summary = parse_python_symbols(source, rel_path)
             else:
                 summary = parse_generic_symbols(source, rel_path)
+            _FILE_SYMBOL_CACHE[cache_key] = (st.st_mtime_ns, st.st_size, summary)
             results.append(summary)
             scanned += 1
             if scanned >= max_files:
@@ -305,9 +324,12 @@ def render_compact_repo_map(
     index: list[FileSymbolSummary] | str | Path,
     query: str = "",
     max_chars: int = 4200,
+    workspace: str | Path | None = None,
 ) -> str:
     """Renders an Aider-style compact AST repository map ranked by query relevance."""
+    ws_root = str(Path(workspace).resolve()) if workspace else None
     if isinstance(index, (str, Path)):
+        ws_root = str(Path(index).resolve())
         index = build_workspace_index(index)
     terms = _tokenize_query(query)
     scored: list[tuple[float, FileSymbolSummary]] = []
@@ -334,7 +356,8 @@ def render_compact_repo_map(
 
     scored.sort(key=lambda item: (-item[0], item[1].rel_path))
 
-    out_lines: list[str] = ["<ast_repo_map>"]
+    root_attr = f' workspace="{ws_root}"' if ws_root else ""
+    out_lines: list[str] = [f"<ast_repo_map{root_attr}>"]
     used_chars = len(out_lines[0])
 
     for _score, fsum in scored:
@@ -458,7 +481,7 @@ def scout_workspace(
         except (OSError, UnicodeDecodeError):
             continue
 
-    repo_map = render_compact_repo_map(index, query=query, max_chars=3600)
+    repo_map = render_compact_repo_map(index, query=query, max_chars=3600, workspace=root)
     pack_chars = len(repo_map) + sum(len(s["code"]) for s in surgical_slices)
     est_raw_tokens = max(1, total_raw_chars // 4)
     est_pack_tokens = max(1, pack_chars // 4)
@@ -475,4 +498,47 @@ def scout_workspace(
         estimated_raw_tokens=est_raw_tokens,
         estimated_pack_tokens=est_pack_tokens,
         estimated_tokens_saved=est_saved,
+    )
+
+
+def build_turn_zero_context(
+    workspace: str | Path,
+    query: str,
+    *,
+    max_map_chars: int = 2800,
+    max_slices: int = 2,
+    max_slice_lines: int = 32,
+) -> tuple[str, int, int, int]:
+    """Builds the Turn-0 AST Repo-Map + high-confidence surgical code slices for a user prompt.
+
+    Returns `(context_block, files_count, symbols_count, slices_count)`.
+    """
+    root = Path(workspace).resolve()
+    res = scout_workspace(root, query, max_slices=max_slices, max_slice_lines=max_slice_lines)
+    if res.total_files_scanned == 0:
+        return ("", 0, 0, 0)
+
+    rmap = render_compact_repo_map(
+        build_workspace_index(root),
+        query=query,
+        max_chars=max_map_chars,
+        workspace=root,
+    )
+    high_conf_slices = [s for s in res.surgical_slices if s.get("score", 0.0) >= 8.0]
+    if not high_conf_slices:
+        return (rmap, res.total_files_scanned, res.total_symbols_indexed, 0)
+
+    slice_blocks = ["<surgical_code_slices>"]
+    for sl in high_conf_slices:
+        abs_file = root / sl["path"]
+        slice_blocks.append(
+            f"### {abs_file} :: {sl['symbol']} (L{sl['start_line']}-{sl['end_line']})\n{sl['code']}"
+        )
+    slice_blocks.append("</surgical_code_slices>")
+    combined = f"{rmap}\n\n" + "\n\n".join(slice_blocks)
+    return (
+        combined,
+        res.total_files_scanned,
+        res.total_symbols_indexed,
+        len(high_conf_slices),
     )

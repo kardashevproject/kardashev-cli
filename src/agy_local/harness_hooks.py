@@ -33,6 +33,8 @@ import ast
 import difflib
 import hashlib
 import json
+import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -48,9 +50,10 @@ You are operating inside the Kardashev Project's engineered Antigravity harness 
 awareness and Self-Healing Edit verification. For every coding or debugging task, follow this strict
 4-phase cognitive protocol inside your reasoning trace before invoking tools:
 
-1. [LOCATE & GROUND]: Consult the <ast_repo_map> or use `grep` / `view_file` with narrow line slices
-   to identify the exact file path, symbol signature, and [StartLine, EndLine] span. Never guess
-   line numbers or read entire multi-thousand-line files when a 40-line slice suffices.
+1. [LOCATE & GROUND]: Consult the `<ast_repo_map workspace="...">` first to identify exact file paths,
+   symbol signatures, and `[Lstart-end]` line spans without wasting turns on `find`, `ls`, or `grep`
+   when the symbol is already in the map. Always pass FULL ABSOLUTE PATHS (`<workspace>/<rel_path>`)
+   to `view_file`, `replace_file_content`, and `write_to_file`, and use 1-indexed line numbers.
 2. [HYPOTHESIZE & INVARIANTS]: State the root cause or design invariant in 1-2 sentences. Check edge
    cases, type contracts, and imports that could break.
 3. [SURGICAL EDIT]: Apply minimal, atomic changes via `replace_file_content`. Preserve surrounding
@@ -93,19 +96,35 @@ def reset_turn_tool_signatures() -> None:
     _GLOBAL_TELEMETRY.tool_call_counts.clear()
 
 
-def heal_replace_file_args(args: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+def _strip_outer_markdown_fences(text: str) -> tuple[str, bool]:
+    """Strips accidental outer ```lang ... ``` markdown fences emitted by local models."""
+    lines = text.splitlines()
+    if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+        return ("\n".join(lines[1:-1]), True)
+    return (text, False)
+
+
+def heal_replace_file_args(
+    args: dict[str, Any],
+    workspace: str | Path | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
     """Attempts to auto-heal `replace_file_content` arguments against the actual file on disk.
 
-    Returns `(healed_args, heal_reason)` if an off-by-N line range, indentation drift, or fuzzy
-    match was repaired, or `(None, None)` if no change was needed or possible.
+    Returns `(healed_args, heal_reason)` if an off-by-N line range, indentation drift, markdown
+    code fence, relative path, or fuzzy match was repaired, or `(None, None)` if no change was
+    needed or possible.
     """
     target_file = str(args.get("TargetFile", "")).strip()
-    target_content = str(args.get("TargetContent", ""))
-    replacement_content = str(args.get("ReplacementContent", ""))
-    if not target_file or not target_content:
+    raw_target_content = str(args.get("TargetContent", ""))
+    raw_replacement_content = str(args.get("ReplacementContent", ""))
+    if not target_file or not raw_target_content:
         return (None, None)
 
-    fpath = Path(target_file)
+    fpath = Path(os.path.expanduser(target_file))
+    if not fpath.is_absolute() and workspace is not None:
+        cand = Path(workspace) / fpath
+        if cand.is_file():
+            fpath = cand.resolve()
     if not fpath.is_file():
         return (None, None)
 
@@ -119,6 +138,11 @@ def heal_replace_file_args(args: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if total_lines == 0:
         return (None, None)
 
+    # Strip accidental outer ```python ... ``` markdown fences
+    target_content, stripped_target_fence = _strip_outer_markdown_fences(raw_target_content)
+    replacement_content, stripped_rep_fence = _strip_outer_markdown_fences(raw_replacement_content)
+    fence_note = " + stripped markdown fences" if (stripped_target_fence or stripped_rep_fence) else ""
+
     raw_start = int(args.get("StartLine", 1) or 1)
     raw_end = int(args.get("EndLine", total_lines) or total_lines)
     s_idx = max(0, raw_start - 1)
@@ -126,7 +150,13 @@ def heal_replace_file_args(args: dict[str, Any]) -> tuple[dict[str, Any] | None,
 
     # Check if TargetContent already matches inside the requested [StartLine, EndLine] window
     window_text = "\n".join(file_lines[s_idx:e_idx])
-    if target_content in window_text and 1 <= raw_start <= raw_end <= total_lines:
+    if (
+        target_content in window_text
+        and 1 <= raw_start <= raw_end <= total_lines
+        and not stripped_target_fence
+        and not stripped_rep_fence
+        and str(fpath) == target_file
+    ):
         return (None, None)
 
     target_lines = target_content.splitlines()
@@ -134,81 +164,109 @@ def heal_replace_file_args(args: dict[str, Any]) -> tuple[dict[str, Any] | None,
     if n_target == 0:
         return (None, None)
 
-    # --- Stage A: Exact substring match anywhere in the file (fixes hallucinated StartLine/EndLine) ---
-    if target_content in file_text:
-        prefix = file_text.split(target_content, 1)[0]
-        true_start = prefix.count("\n") + 1
-        true_end = min(total_lines, true_start + n_target - 1)
+    # --- Stage A: Exact line-block match anywhere in the file (picks closest to raw_start!) ---
+    exact_matches: list[int] = [
+        i
+        for i in range(max(0, total_lines - n_target + 1))
+        if file_lines[i : i + n_target] == target_lines
+    ]
+    if exact_matches:
+        best_i = min(exact_matches, key=lambda idx: abs((idx + 1) - raw_start))
+        true_start = best_i + 1
+        true_end = min(total_lines, best_i + n_target)
         new_args = dict(args)
+        new_args["TargetFile"] = str(fpath)
+        new_args["TargetContent"] = "\n".join(file_lines[best_i : best_i + n_target])
+        new_args["ReplacementContent"] = replacement_content
         new_args["StartLine"] = true_start
         new_args["EndLine"] = true_end
         return (
             new_args,
-            f"auto-healed line range [{raw_start}-{raw_end}] -> [{true_start}-{true_end}] (exact match)",
+            f"auto-healed line range [{raw_start}-{raw_end}] -> [{true_start}-{true_end}] (exact match{fence_note})",
         )
 
-    # --- Stage B: Whitespace/indentation-normalized line block match ---
+    # --- Stage B: Whitespace/indentation-normalized line block match (picks closest to raw_start) ---
     stripped_target = [ln.strip() for ln in target_lines]
     if any(stripped_target):
-        for i in range(total_lines - n_target + 1):
-            candidate_slice = file_lines[i : i + n_target]
-            if [ln.strip() for ln in candidate_slice] == stripped_target:
-                actual_block = "\n".join(candidate_slice)
-                # Calculate leading indentation delta on first non-empty line
-                new_Args = dict(args)
-                new_Args["TargetContent"] = actual_block
-                new_Args["StartLine"] = i + 1
-                new_Args["EndLine"] = i + n_target
+        ws_matches: list[int] = [
+            i
+            for i in range(max(0, total_lines - n_target + 1))
+            if [ln.strip() for ln in file_lines[i : i + n_target]] == stripped_target
+        ]
+        if ws_matches:
+            best_i = min(ws_matches, key=lambda idx: abs((idx + 1) - raw_start))
+            candidate_slice = file_lines[best_i : best_i + n_target]
+            actual_block = "\n".join(candidate_slice)
+            new_args = dict(args)
+            new_args["TargetFile"] = str(fpath)
+            new_args["TargetContent"] = actual_block
+            new_args["ReplacementContent"] = replacement_content
+            new_args["StartLine"] = best_i + 1
+            new_args["EndLine"] = best_i + n_target
 
-                # Also align ReplacementContent indentation if uniform drift occurred
-                for t_ln, c_ln in zip(target_lines, candidate_slice, strict=False):
-                    if t_ln.strip():
-                        t_indent = len(t_ln) - len(t_ln.lstrip(" "))
-                        c_indent = len(c_ln) - len(c_ln.lstrip(" "))
-                        delta = c_indent - t_indent
-                        if delta != 0:
-                            rep_lines = []
-                            for r_ln in replacement_content.splitlines():
-                                if not r_ln.strip():
-                                    rep_lines.append(r_ln)
-                                elif delta > 0:
-                                    rep_lines.append((" " * delta) + r_ln)
-                                else:
-                                    rep_lines.append(
-                                        r_ln[abs(delta) :]
-                                        if r_ln.startswith(" " * abs(delta))
-                                        else r_ln
-                                    )
-                            new_Args["ReplacementContent"] = "\n".join(rep_lines)
-                        break
+            # Align ReplacementContent indentation if uniform drift occurred
+            for t_ln, c_ln in zip(target_lines, candidate_slice, strict=False):
+                if t_ln.strip():
+                    t_indent = len(t_ln) - len(t_ln.lstrip(" "))
+                    c_indent = len(c_ln) - len(c_ln.lstrip(" "))
+                    delta = c_indent - t_indent
+                    if delta != 0:
+                        rep_lines = []
+                        for r_ln in replacement_content.splitlines():
+                            if not r_ln.strip():
+                                rep_lines.append(r_ln)
+                            elif delta > 0:
+                                rep_lines.append((" " * delta) + r_ln)
+                            else:
+                                rep_lines.append(
+                                    r_ln[abs(delta) :]
+                                    if r_ln.startswith(" " * abs(delta))
+                                    else r_ln
+                                )
+                        new_args["ReplacementContent"] = "\n".join(rep_lines)
+                    break
 
-                return (
-                    new_Args,
-                    f"auto-healed indentation & line range [{raw_start}-{raw_end}] -> [{i + 1}-{i + n_target}]",
-                )
+            return (
+                new_args,
+                f"auto-healed indentation & line range [{raw_start}-{raw_end}] -> [{best_i + 1}-{best_i + n_target}]{fence_note}",
+            )
 
-    # --- Stage C: Fuzzy block match (SequenceMatcher ratio >= 0.88) ---
+    # --- Stage C: Fast two-tier Fuzzy block match (quick_ratio pre-filter + SequenceMatcher >= 0.88) ---
     best_ratio = 0.0
     best_idx = -1
     norm_target_str = "\n".join(ln.rstrip() for ln in target_lines)
+    first_anchor = stripped_target[0][:12] if stripped_target and stripped_target[0] else ""
+    matcher = difflib.SequenceMatcher(None, norm_target_str, "")
 
     for i in range(max(0, total_lines - n_target + 1)):
+        # Fast pre-filter on large files: check if first line shares prefix or quick_ratio >= 0.82
         cand_lines = file_lines[i : i + n_target]
+        if total_lines > 400 and first_anchor and first_anchor not in cand_lines[0]:
+            continue
         cand_str = "\n".join(ln.rstrip() for ln in cand_lines)
-        ratio = difflib.SequenceMatcher(None, norm_target_str, cand_str).ratio()
-        if ratio > best_ratio:
+        matcher.set_seq2(cand_str)
+        if matcher.real_quick_ratio() < 0.85 or matcher.quick_ratio() < 0.85:
+            continue
+        ratio = matcher.ratio()
+        if ratio > best_ratio or (
+            abs(ratio - best_ratio) < 1e-6
+            and best_idx >= 0
+            and abs((i + 1) - raw_start) < abs((best_idx + 1) - raw_start)
+        ):
             best_ratio = ratio
             best_idx = i
 
     if best_ratio >= 0.88 and best_idx >= 0:
         actual_block = "\n".join(file_lines[best_idx : best_idx + n_target])
         new_args = dict(args)
+        new_args["TargetFile"] = str(fpath)
         new_args["TargetContent"] = actual_block
+        new_args["ReplacementContent"] = replacement_content
         new_args["StartLine"] = best_idx + 1
         new_args["EndLine"] = best_idx + n_target
         return (
             new_args,
-            f"auto-healed fuzzy block match ({best_ratio:.0%} similarity) at lines [{best_idx + 1}-{best_idx + n_target}]",
+            f"auto-healed fuzzy block match ({best_ratio:.0%} similarity) at lines [{best_idx + 1}-{best_idx + n_target}]{fence_note}",
         )
 
     return (None, None)
@@ -233,6 +291,10 @@ def check_python_syntax(path_str: str) -> str | None:
 
 class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
     """Pre-tool hook providing fuzzy self-healing edits and infinite-loop protection."""
+
+    def __init__(self, workspace: str | None = None) -> None:
+        super().__init__()
+        self.workspace = workspace
 
     async def run(
         self, context: hooks_mod.HookContext, data: types.ToolCall
@@ -263,16 +325,39 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
 
         # 2. Self-healing fuzzy edit for `replace_file_content`
         if name in ("replace_file_content", "BuiltinTools.REPLACE_FILE_CONTENT"):
-            healed_args, reason = heal_replace_file_args(args)
+            healed_args, reason = heal_replace_file_args(args, workspace=self.workspace)
             if healed_args is not None and reason is not None:
                 _GLOBAL_TELEMETRY.healed_edits_count += 1
                 _GLOBAL_TELEMETRY.healed_edit_events.append(
                     {
-                        "file": str(args.get("TargetFile", "")),
+                        "file": str(healed_args.get("TargetFile", args.get("TargetFile", ""))),
                         "reason": reason,
                     }
                 )
                 return types.HookResult(allow=True, modified_args=healed_args)
+
+        # 3. Auto-normalize relative file/directory paths in `view_file`, `write_to_file`, `list_dir`, `grep`
+        if self.workspace:
+            ws_path = Path(self.workspace).resolve()
+            path_keys = (
+                "file_path",
+                "AbsolutePath",
+                "TargetFile",
+                "DirectoryPath",
+                "SearchPath",
+                "path",
+            )
+            modified = False
+            new_args = dict(args)
+            for pk in path_keys:
+                raw_val = new_args.get(pk)
+                if isinstance(raw_val, str) and raw_val.strip() and not os.path.isabs(raw_val):
+                    resolved_str = str((ws_path / raw_val.strip()).resolve())
+                    new_args[pk] = resolved_str
+                    modified = True
+            if modified:
+                _GLOBAL_TELEMETRY.healed_edits_count += 1
+                return types.HookResult(allow=True, modified_args=new_args)
 
         return types.HookResult(allow=True)
 
@@ -298,11 +383,18 @@ class ActionableToolErrorHook(hooks_mod.OnToolErrorHook):
     async def run(self, context: hooks_mod.HookContext, data: Exception) -> str | None:
         err_msg = str(data)
         if "TargetContent" in err_msg or "replace_file_content" in err_msg or "not found" in err_msg.lower():
+            # Try to extract a file path and line number from the error string to inline AST recovery lines!
+            path_match = re.search(r"([/A-Za-z0-9_.-]+\.(?:py|ts|tsx|js|rs|go|c|cpp))", err_msg)
+            line_match = re.search(r"line\s+(\d+)", err_msg, re.IGNORECASE)
+            snippet = ""
+            if path_match and Path(path_match.group(1)).is_file():
+                around = int(line_match.group(1)) if line_match else 1
+                snippet = "\n\n" + diagnose_file_for_recovery(path_match.group(1), around_line=around, window=12)
             return (
                 f"{err_msg}\n\n"
                 "[Harness Self-Healing Recovery Hint]: Your `replace_file_content` target block did "
-                "not match the file contents. Call `view_file` on the target file around the "
-                "intended `StartLine` and `EndLine` first, copy the exact lines, and retry."
+                "not match the file contents. Inspect the exact numbered lines and AST symbol spans "
+                f"below, or call `view_file` before retrying:{snippet}"
             )
         return None
 

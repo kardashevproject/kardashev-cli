@@ -18,6 +18,7 @@ from agy_local import __version__
 from agy_local.ast_map import scout_workspace
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
+from agy_local.harness_hooks import get_harness_telemetry
 from agy_local.integrate import integrate_frontier_agent
 from agy_local.mcp_server import serve_stdio
 from agy_local.presets import BackendKind, get_preset, list_presets
@@ -410,8 +411,22 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2))
         return 0
 
+    effective_prompt = args.prompt
+    if opts.enable_ast_repo_map and opts.workspaces:
+        from agy_local.ast_map import build_turn_zero_context
+
+        ctx_block, _n_files, _n_syms, _n_slices = build_turn_zero_context(
+            opts.workspaces[0], args.prompt
+        )
+        if ctx_block:
+            get_harness_telemetry().ast_maps_injected += 1
+            effective_prompt = (
+                f"{ctx_block}\n\n"
+                f"[User Task]:\n{args.prompt}"
+            )
+
     async with Agent(config=cfg) as agent:
-        response = await agent.chat(args.prompt)
+        response = await agent.chat(effective_prompt)
 
         tasks: list[asyncio.Task[None]] = []
         if args.show_thoughts:

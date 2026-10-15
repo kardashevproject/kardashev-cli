@@ -320,8 +320,18 @@ async def _execute_local_agent_async(
     tool_calls_executed: list[str] = []
     chunks: list[str] = []
 
+    from agy_local.ast_map import build_turn_zero_context
+    from agy_local.harness_hooks import get_harness_telemetry
+
+    effective_prompt = prompt
+    if opts.enable_ast_repo_map:
+        ctx_block, _n_files, _n_syms, _n_slices = build_turn_zero_context(ws, prompt)
+        if ctx_block:
+            get_harness_telemetry().ast_maps_injected += 1
+            effective_prompt = f"{ctx_block}\n\n[User Task]:\n{prompt}"
+
     async with Agent(config=cfg) as agent:
-        response = await agent.chat(prompt)
+        response = await agent.chat(effective_prompt)
 
         async def _collect_tools() -> None:
             async for call in response.tool_calls:

@@ -468,14 +468,65 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     _healed_c, reason_c = heal_replace_file_args(args_c)
     assert reason_c is not None and "fuzzy block match" in reason_c
 
-    # 3. Verify Hook deepcopy compatibility & Loop-Breaker
-    hook = SelfHealingEditHook()
+    # Stage D: markdown code fences + relative path resolution
+    args_d = {
+        "TargetFile": "engine.py",
+        "StartLine": 90,
+        "EndLine": 95,
+        "TargetContent": "```python\ndef helper_fn(a: int, b: int) -> int:\n    return a + b\n```",
+        "ReplacementContent": "```python\ndef helper_fn(a: int, b: int) -> int:\n    return a * b\n```",
+    }
+    healed_d, reason_d = heal_replace_file_args(args_d, workspace=tmp_path)
+    assert healed_d is not None and reason_d is not None
+    assert "stripped markdown fences" in reason_d
+    assert healed_d["TargetFile"] == str(py_file.resolve())
+    assert "```" not in healed_d["ReplacementContent"]
+
+    # Stage E: duplicate identical blocks in a file -> picks occurrence closest to StartLine
+    dup_file = tmp_path / "dup.py"
+    dup_file.write_text(
+        "class First:\n    def reset(self):\n        self.x = 0\n\n"
+        + ("\n" * 10)
+        + "class Second:\n    def reset(self):\n        self.x = 0\n",
+        encoding="utf-8",
+    )
+    healed_dup, _reason_dup = heal_replace_file_args(
+        {
+            "TargetFile": str(dup_file),
+            "StartLine": 20,
+            "EndLine": 22,
+            "TargetContent": "    def reset(self):\n        self.x = 0",
+            "ReplacementContent": "    def reset(self):\n        self.x = 1",
+        }
+    )
+    assert healed_dup is not None
+    assert healed_dup["StartLine"] == 16
+
+    # Turn-0 context builder (AST Repo-Map + high-confidence surgical code slices)
+    from agy_local.ast_map import build_turn_zero_context
+
+    ctx_block, n_files, n_syms, n_slices = build_turn_zero_context(
+        tmp_path, "dispatch_packet QuantumRouter"
+    )
+    assert "<ast_repo_map" in ctx_block
+    assert "<surgical_code_slices>" in ctx_block
+    assert n_files >= 1 and n_syms >= 2 and n_slices >= 1
+
+    # 3. Verify Hook deepcopy compatibility, Relative-Path Auto-Heal & Loop-Breaker
+    hook = SelfHealingEditHook(workspace=str(tmp_path))
     copied_hook = copy.deepcopy(hook)
     assert isinstance(copied_hook, SelfHealingEditHook)
 
     async def _test_loop_breaker() -> None:
         reset_harness_telemetry()
         ctx = hooks_mod.HookContext()
+        # Relative path in view_file should be normalized to absolute path automatically
+        rel_tc = types.ToolCall(name="view_file", args={"file_path": "engine.py"})
+        rel_res = await hook.run(ctx, rel_tc)
+        assert rel_res.allow is True
+        assert rel_res.modified_args is not None
+        assert rel_res.modified_args["file_path"] == str(py_file.resolve())
+
         tc = types.ToolCall(name="run_command", args={"CommandLine": "pytest"})
         r1 = await hook.run(ctx, tc)
         assert r1.allow is True

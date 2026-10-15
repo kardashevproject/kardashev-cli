@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +18,17 @@ DEFAULT_PROBE_ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("Ollama (11434)", "http://127.0.0.1:11434/v1"),
     ("LM Studio (1234)", "http://127.0.0.1:1234/v1"),
     ("SGLang (30000)", "http://127.0.0.1:30000/v1"),
+)
+
+WEIGHT_EXTENSIONS: tuple[str, ...] = (
+    ".safetensors",
+    ".bin",
+    ".gguf",
+    ".litertlm",
+    ".pt",
+    ".pth",
+    ".onnx",
+    ".tflite",
 )
 
 
@@ -45,20 +58,29 @@ class DiscoveredEndpoint:
     error: str | None = None
 
 
-def _dir_size_bytes(path: Path) -> int:
+def _dir_size_and_has_weights(path: Path) -> tuple[int, bool]:
+    """Computes total unique bytes (including external symlinked HF blobs) and checks for weight files."""
     total = 0
-    try:
+    has_weights = False
+    seen_inodes: set[tuple[int, int]] = set()
+    with contextlib.suppress(OSError):
         if path.is_file():
-            return path.stat().st_size
+            st = path.stat()
+            return (st.st_size, path.name.endswith(WEIGHT_EXTENSIONS) or st.st_size >= 1_048_576)
         for entry in path.rglob("*"):
-            if entry.is_file() and not entry.is_symlink():
-                try:
-                    total += entry.stat().st_size
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return total
+            with contextlib.suppress(OSError):
+                if any( entry.name.endswith(ext) or f"{ext}-" in entry.name for ext in WEIGHT_EXTENSIONS ):
+                    has_weights = True
+                # Follow symlinks via stat() so external HF blobs are measured, deduplicating by (st_dev, st_ino)
+                if entry.is_file():
+                    st = entry.stat()
+                    inode_key = (st.st_dev, st.st_ino)
+                    if inode_key not in seen_inodes:
+                        seen_inodes.add(inode_key)
+                        total += st.st_size
+                        if st.st_size >= 50_000_000:
+                            has_weights = True
+    return (total, has_weights)
 
 
 def discover_local_models(
@@ -88,15 +110,15 @@ def discover_local_models(
                 )
             )
 
-    # 2. Scan HuggingFace cache (~/.cache/huggingface/hub)
+    # 2. Scan HuggingFace cache (~/.cache/huggingface/hub) — skip metadata-only 0.00 GB stubs
     hf_root = Path(os.path.expanduser(str(hf_cache_dir or "~/.cache/huggingface/hub")))
     if hf_root.is_dir():
         for entry in sorted(hf_root.iterdir()):
             if entry.is_dir() and entry.name.startswith("models--"):
                 parts = entry.name.split("--")
                 repo_id = "/".join(parts[1:]) if len(parts) >= 3 else entry.name
-                size = _dir_size_bytes(entry)
-                if size > 0:
+                size, has_weights = _dir_size_and_has_weights(entry)
+                if size > 0 and has_weights:
                     discovered.append(
                         DiscoveredModel(
                             name=repo_id,
@@ -117,12 +139,13 @@ def discover_local_models(
             if not child.is_dir() or child.name in ("hf", "logs", ".locks"):
                 continue
             if (child / "config.json").is_file() or any(child.glob("*.safetensors")):
+                size, _ = _dir_size_and_has_weights(child)
                 discovered.append(
                     DiscoveredModel(
                         name=child.name,
                         backend=BackendKind.OPENAI,
                         path=str(child.resolve()),
-                        size_bytes=_dir_size_bytes(child),
+                        size_bytes=size,
                         source="local-dir",
                     )
                 )
@@ -133,7 +156,7 @@ def discover_local_models(
 def probe_endpoint(
     base_url: str,
     label: str = "Custom Endpoint",
-    timeout_sec: float = 1.5,
+    timeout_sec: float = 0.6,
 ) -> DiscoveredEndpoint:
     """Probes an OpenAI-compatible `/v1/models` endpoint to check liveness and model IDs."""
     normalized = base_url.rstrip("/")
@@ -164,9 +187,11 @@ def probe_endpoint(
         )
 
 
-def probe_local_endpoints(timeout_sec: float = 1.2) -> list[DiscoveredEndpoint]:
-    """Probes standard local OpenAI-compatible servers (vLLM, Ollama, LM Studio, SGLang)."""
-    return [
-        probe_endpoint(base_url=url, label=label, timeout_sec=timeout_sec)
-        for label, url in DEFAULT_PROBE_ENDPOINTS
-    ]
+def probe_local_endpoints(timeout_sec: float = 0.6) -> list[DiscoveredEndpoint]:
+    """Concurrently probes standard local OpenAI-compatible servers (vLLM, Ollama, LM Studio, SGLang)."""
+    with ThreadPoolExecutor(max_workers=len(DEFAULT_PROBE_ENDPOINTS)) as pool:
+        futures = [
+            pool.submit(probe_endpoint, url, label, timeout_sec)
+            for label, url in DEFAULT_PROBE_ENDPOINTS
+        ]
+        return [f.result() for f in futures]

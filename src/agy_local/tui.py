@@ -1256,6 +1256,9 @@ class AgyRichTUI:
         return False
 
     async def _run_turn(self, agent: Agent, user_text: str, cfg: Any) -> None:
+        from agy_local.harness_hooks import reset_turn_tool_signatures
+
+        reset_turn_tool_signatures()
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
         augmented_prompt, attached = expand_at_file_mentions(user_text, workspace)
         if attached:
@@ -1263,17 +1266,20 @@ class AgyRichTUI:
                 f"  [dim]📎 Attached {', '.join(f'[cyan]{f}[/cyan]' for f in attached)}[/dim]"
             )
 
-        # On Turn 0 (or when AST Repo-Map is enabled), prepend a compact query-ranked AST Repo-Map
+        # On Turn 0 (or when AST Repo-Map is enabled), prepend a compact query-ranked AST Repo-Map + surgical slices
         if self.auto_inject_ast_map and self.session_turns == 0:
-            idx = await asyncio.to_thread(build_workspace_index, workspace)
-            if idx:
-                rmap = render_compact_repo_map(idx, query=user_text, max_chars=2800)
-                augmented_prompt = f"{rmap}\n\n{augmented_prompt}"
+            from agy_local.ast_map import build_turn_zero_context
+
+            ctx_block, n_files, n_syms, n_slices = await asyncio.to_thread(
+                build_turn_zero_context, workspace, user_text
+            )
+            if ctx_block:
+                augmented_prompt = f"{ctx_block}\n\n{augmented_prompt}"
                 htel = get_harness_telemetry()
                 htel.ast_maps_injected += 1
-                tot_syms = sum(len(f.symbols) for f in idx)
+                slice_tag = f" · {n_slices} surgical slice(s)" if n_slices else ""
                 self.console.print(
-                    f"  [dim]🧭 Grounded with AST Repo-Map ({len(idx)} files · {tot_syms} symbols)[/dim]"
+                    f"  [dim]🧭 Grounded with AST Repo-Map ({n_files} files · {n_syms} symbols{slice_tag})[/dim]"
                 )
 
         # Auto-snapshot git state before the turn in case the agent edits files

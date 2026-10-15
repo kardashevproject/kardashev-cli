@@ -56,6 +56,7 @@ class HarnessOptions:
     system_instructions: str | None = None
     enable_cot_harness: bool = True
     enable_self_healing_edits: bool = True
+    enable_ast_repo_map: bool = True
     skills_paths: list[str] | None = None
     with_chronosml_mcp: bool = False
     with_opencommons_mcp: bool = False
@@ -153,9 +154,10 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
 
     hooks_list: list[Any] = []
     if options.enable_self_healing_edits:
+        primary_ws = workspaces[0] if workspaces else None
         hooks_list.extend(
             [
-                SelfHealingEditHook(),
+                SelfHealingEditHook(workspace=primary_ws),
                 SyntaxGatePostToolHook(),
                 ActionableToolErrorHook(),
             ]

@@ -10,11 +10,13 @@ from agy_local.discovery import (
 from agy_local.mcp_server import handle_mcp_request, list_local_models, run_local_agent_task
 from agy_local.presets import PRESETS, BackendKind, ModelPreset, get_preset, list_presets
 from agy_local.serve import ServePlan, compute_serve_plan
+from agy_local.tui import AgyRichTUI, expand_at_file_mentions, format_tool_badge
 
 __version__ = "0.1.0"
 
 __all__ = [
     "PRESETS",
+    "AgyRichTUI",
     "BackendKind",
     "DiscoveredEndpoint",
     "DiscoveredModel",
@@ -26,6 +28,8 @@ __all__ = [
     "build_agent_config",
     "compute_serve_plan",
     "discover_local_models",
+    "expand_at_file_mentions",
+    "format_tool_badge",
     "get_preset",
     "handle_mcp_request",
     "list_local_models",

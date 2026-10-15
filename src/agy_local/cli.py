@@ -19,6 +19,7 @@ from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.mcp_server import serve_stdio
 from agy_local.presets import BackendKind, get_preset, list_presets
 from agy_local.serve import compute_serve_plan
+from agy_local.tui import AgyRichTUI
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -111,10 +112,15 @@ def _build_parser() -> argparse.ArgumentParser:
             help="Print the resolved Antigravity AgentConfig summary and exit without launching.",
         )
 
-    # 1. chat (interactive REPL via run_interactive_loop)
+    # 1. chat (interactive Rich TUI or plain REPL)
     chat_p = sub.add_parser(
         "chat",
-        help="Launch the interactive Antigravity REPL (run_interactive_loop) in your terminal.",
+        help="Launch the interactive Antigravity Studio TUI in your terminal.",
+    )
+    chat_p.add_argument(
+        "--plain",
+        action="store_true",
+        help="Use the minimal stdin/stdout run_interactive_loop instead of the Rich TUI.",
     )
     _add_harness_args(chat_p)
 
@@ -265,20 +271,12 @@ async def _cmd_chat(args: argparse.Namespace) -> int:
         print(json.dumps(summary, indent=2))
         return 0
 
-    print("============================================================")
-    print("  Antigravity Local Harness (agy-local)")
-    print(f"  Config  : {summary['config_class']} ({summary['backend']})")
-    if summary["backend"] == "litert":
-        print(f"  Model   : {summary.get('model_path')}")
-        print(f"  Device  : {summary.get('litert_device')}")
-    else:
-        print(f"  Model   : {summary.get('model')}")
-        print(f"  Server  : {summary.get('base_url')}")
-    print(f"  Workdir : {', '.join(str(w) for w in summary['workspaces'])}")
-    print("============================================================")
+    if getattr(args, "plain", False):
+        await run_interactive_loop(cfg)
+        return 0
 
-    await run_interactive_loop(cfg)
-    return 0
+    tui = AgyRichTUI(options=opts)
+    return await tui.run()
 
 
 async def _cmd_exec(args: argparse.Namespace) -> int:

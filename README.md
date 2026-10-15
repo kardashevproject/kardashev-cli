@@ -31,7 +31,7 @@ agy-local import-litert --preset gemma4-26b
 # litert-lm import --from-huggingface-repo=litert-community/gemma-4-26B-A4B-it-litert-lm gemma-4-26B-A4B-it-web.litertlm gemma4-26b
 ```
 
-### 3. Launch the Interactive Antigravity Harness (`run_interactive_loop`)
+### 3. Launch the Interactive Antigravity Studio TUI (`agy-local chat`)
 
 ```bash
 # Run on-device with Gemma 4 26B via LiteRT:
@@ -49,11 +49,42 @@ agy-local chat --backend openai --model glm4:9b --base-url http://127.0.0.1:1143
 
 ---
 
+## Interactive Rich TUI (`AgyRichTUI`)
+
+Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches a rich, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
+
+- **Live Workspace & Git Status Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `LocalOpenAIAgentConfig`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), and active MCP servers.
+- **Real-Time Streaming with Thinking & Inline Diffs**:
+  - Collapsible reasoning (`💭 Thinking`) panel streamed in real time.
+  - Structured tool call badges (`Bash(...)`, `Read(...)`, `Edit(...)`, `Write(...)`, `Grep(...)`, `ListDir(...)`).
+  - Automatic syntax-highlighted unified diff previews (`+` green, `-` red) whenever the model edits or writes files.
+  - Per-turn telemetry footer (`⏱ latency · ⚡ tok/s · 📊 output tokens · 🛠 tool calls · ctx usage`).
+- **Interactive Slash Commands, `@file` Context & `!shell` Shortcuts** (with `Tab` completion):
+
+| Shortcut / Command | Description |
+|---|---|
+| `/help` | Display all interactive slash commands, `@file` mentions, and `!shell` shortcuts. |
+| `/status` | Inspect session token usage, context window utilization (`%`), turn count, and compaction events. |
+| `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
+| `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session. |
+| `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`). |
+| `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
+| `/doctor` | Run hardware, GPU, LiteRT, and MCP diagnostics inside the session. |
+| `/diff` | Render a syntax-highlighted `git diff` of uncommitted workspace changes. |
+| `/undo` | Revert unstaged modifications in the workspace (with interactive confirmation). |
+| `/thoughts` | Toggle visibility of live reasoning/thinking traces. |
+| `/clear` | Clear conversation history and reset the terminal view. |
+| `/exit` | Exit the session (or press `Ctrl+D`). |
+| `@path/to/file` | Inline a workspace file directly into your prompt (supports `Tab` auto-completion). |
+| `!<shell command>` | Execute a local shell command immediately in the workspace without invoking the model. |
+
+---
+
 ## CLI Reference
 
 | Subcommand | Description |
 |---|---|
-| `agy-local chat` | Launch the interactive terminal REPL (`run_interactive_loop`) with full Antigravity coding tools. |
+| `agy-local chat` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
 | `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
 | `agy-local serve` | Launch a local vLLM or Ollama server (`--preset qwen3.6-35b-vllm`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
 | `agy-local mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`agy-local-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
@@ -85,11 +116,10 @@ Expose local on-device models (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama
 
 ```python
 import asyncio
-from google.antigravity.utils.interactive import run_interactive_loop
-from agy_local import HarnessOptions, PolicyMode, build_agent_config
+from agy_local import AgyRichTUI, HarnessOptions, PolicyMode
 
 async def main():
-    config = build_agent_config(
+    tui = AgyRichTUI(
         HarnessOptions(
             preset="gemma4-26b",          # Or "glm4-9b-ollama", "qwen3.6-35b-vllm"
             workspaces=["."],
@@ -98,7 +128,7 @@ async def main():
             with_chronosml_mcp=True,
         )
     )
-    await run_interactive_loop(config)
+    await tui.run()
 
 if __name__ == "__main__":
     asyncio.run(main())

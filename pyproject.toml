@@ -35,7 +35,9 @@ classifiers = [
 ]
 dependencies = [
     "google-antigravity>=0.1.22",
+    "prompt-toolkit>=3.0.40",
     "pydantic>=2.0.0",
+    "rich>=13.7.0",
 ]
 
 [project.optional-dependencies]

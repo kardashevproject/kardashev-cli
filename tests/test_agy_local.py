@@ -14,6 +14,7 @@ from agy_local.discovery import discover_local_models
 from agy_local.mcp_server import handle_mcp_request
 from agy_local.presets import BackendKind, get_preset, list_presets
 from agy_local.serve import compute_serve_plan
+from agy_local.tui import AgyCompleter, AgyRichTUI, expand_at_file_mentions, format_tool_badge
 
 
 def test_list_and_get_presets() -> None:
@@ -143,4 +144,53 @@ def test_mcp_server_jsonrpc() -> None:
     assert call_resp["result"]["isError"] is False
     structured = call_resp["result"]["structuredContent"]
     assert "gemma4-26b" in structured["presets"]
+
+
+def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
+    from google.antigravity import types
+    from prompt_toolkit.document import Document
+
+    # 1. Test Edit diff badge
+    edit_tc = types.ToolCall(
+        name="replace_file_content",
+        args={
+            "TargetFile": str(tmp_path / "app.py"),
+            "TargetContent": "x = 1\ny = 2\n",
+            "ReplacementContent": "x = 10\ny = 2\n",
+        },
+    )
+    badge, summary, diff_preview = format_tool_badge(edit_tc)
+    assert badge == "Edit"
+    assert "app.py" in summary
+    assert diff_preview is not None
+    assert "-x = 1" in diff_preview
+    assert "+x = 10" in diff_preview
+
+    # 2. Test @file mention expansion
+    sample_file = tmp_path / "hello.py"
+    sample_file.write_text("print('hi')\n", encoding="utf-8")
+    augmented, attached = expand_at_file_mentions("Explain @hello.py please", str(tmp_path))
+    assert attached == ["hello.py"]
+    assert "<attached_file path=\"hello.py\">" in augmented
+    assert "print('hi')" in augmented
+
+    # 3. Test slash & @file tab completion
+    completer = AgyCompleter(str(tmp_path))
+    slash_completions = [
+        c.text for c in completer.get_completions(Document("/pre", cursor_position=4), None)
+    ]
+    assert "/preset" in slash_completions
+
+    file_completions = [
+        c.text for c in completer.get_completions(Document("check @hel", cursor_position=10), None)
+    ]
+    assert "@hello.py" in file_completions
+
+    # 4. Test welcome banner rendering
+    opts = HarnessOptions(preset="gemma4-26b", workspaces=[str(tmp_path)])
+    tui = AgyRichTUI(options=opts)
+    cfg = build_agent_config(opts)
+    panel = tui.render_welcome_banner(cfg)
+    assert panel is not None
+
 

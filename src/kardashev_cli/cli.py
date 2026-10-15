@@ -346,11 +346,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "push",
             "serve-hub",
             "mcp",
+            "settings",
+            "dashboard",
         ],
         default="status",
         help="Action to perform (default: status).",
     )
-    com_p.add_argument("target", nargs="*", help="Search query, file path, proposal ID, hub URL, or replica JSON path.")
+    com_p.add_argument(
+        "target",
+        nargs="*",
+        help="Search query, file path, proposal ID, hub URL, replica JSON path, or 'show'/'set KEY VALUE' for settings.",
+    )
+    com_p.add_argument("--no-browser", action="store_true", help="Don't open a browser tab for 'dashboard'.")
     com_p.add_argument("--domain", default="general", help="Domain when recording a Python file.")
     com_p.add_argument("--summary", default="", help="Summary when recording a Python file.")
     com_p.add_argument("--modality", default="dual_card_with_pitfalls", help="Rendering modality for find.")
@@ -819,6 +826,48 @@ def _cmd_commons(args: argparse.Namespace) -> int:
     action = getattr(args, "action", "status") or "status"
     targets = list(getattr(args, "target", []) or [])
     store_path = getattr(args, "store", None)
+
+    if action == "settings":
+        from kardashev_cli import contrib_settings
+
+        sub = targets[0] if targets else "show"
+        if sub == "show":
+            print(json.dumps(contrib_settings.load_settings().to_dict(), indent=2))
+            return 0
+        if sub == "set":
+            if len(targets) < 3:
+                print("Usage: kardashev commons settings set KEY VALUE", file=sys.stderr)
+                return 1
+            key, value = targets[1], " ".join(targets[2:])
+            try:
+                current = contrib_settings.load_settings()
+                updated = contrib_settings.apply_update(current, key, value)
+                contrib_settings.save_settings(updated)
+            except contrib_settings.ContribSettingsError as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            print(json.dumps(updated.to_dict(), indent=2))
+            return 0
+        print("Usage: kardashev commons settings show|set KEY VALUE", file=sys.stderr)
+        return 1
+
+    if action == "dashboard":
+        from kardashev_cli.contrib_dashboard import start_dashboard, stop_dashboard
+
+        port = int(getattr(args, "port", 0) or 0)
+        no_browser = bool(getattr(args, "no_browser", False))
+        srv, thread = start_dashboard(port=port, open_browser=not no_browser)
+        host, actual_port = srv.server_address[:2]
+        print(f"=== OpenCommons contribution dashboard listening on http://{host}:{actual_port} ===")
+        print("  (127.0.0.1 only; Ctrl+C to stop)")
+        try:
+            while thread.is_alive():
+                thread.join(timeout=1)
+        except KeyboardInterrupt:
+            print("\nShutting down dashboard...")
+        finally:
+            stop_dashboard(srv, thread)
+        return 0
 
     if action == "mcp":
         return run_opencommons_stdio_server(store_path=store_path)

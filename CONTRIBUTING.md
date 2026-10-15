@@ -1,38 +1,40 @@
-# Contributing to ChronosML
+# Contributing to kardashev-cli
 
-Thank you for your interest in contributing to **ChronosML**! We welcome pull requests, bug reports, hardware calibration profiles, and architectural Roofline extensions from the community.
+Thanks for helping. This file covers the code in this repository. To contribute concepts to OpenCommons, use `opencommons-mcp` or `kardashev commons` instead; you don't need a pull request.
 
----
-
-## Development Setup
+## Setup
 
 ```bash
-git clone https://github.com/kardashevproject/chronosml.git
-cd chronosml
-pip install -e ".[dev]"
+git clone https://github.com/kardashevproject/kardashev-cli.git
+cd kardashev-cli
+python -m venv .venv
+.venv/bin/pip install -e ".[dev]"
 ```
 
-## Running Verification & Benchmarks
+Add `[litert]` to the extras if you work on the on-device LiteRT backend.
 
-Before submitting a Pull Request, please ensure all tests, hardware calibration checks, and empirical benchmarks pass:
+## Before you open a pull request
 
 ```bash
-# 1. Run hardware calibration suite (<2s)
-make calibrate
-
-# 2. Run pytest verification suite
-make test
-
-# 3. Run empirical PyTorch benchmark suite
-make benchmark
+make lint    # ruff check
+make test    # pytest
+.venv/bin/python benchmarks/evaluate_opencommons.py --store commons/store.json
 ```
 
-## Contribution Guidelines
+CI runs the same three steps on every pull request.
 
-1. **Zero Context Tax for MCP**: Any changes to `chronosml.mcp_server` (`MCP_TOOLS_SCHEMA`) must keep the total serialized tool schema under **300 tokens** (`test_mcp_server_schema_budget_and_jsonrpc_protocol` enforces this automatically).
-2. **Empirical Grounding**: New model architecture estimators (e.g., new attention variants, MoE routers, or state-space layers) in `chronosml.roofline` must include unit tests in `tests/test_chronosml.py` verifying exact FLOPs and KV/state cache byte math.
-3. **Code Style**: Format and lint code with `ruff check src/ tests/ examples/`.
+## Guidelines
+
+- **Keep changes focused.** One fix or feature per pull request, with a test that fails without it.
+- **Claims must be true.** Docs, help text, and commit messages describe what the code does today. If a feature is partial, say so.
+- **Keep MCP tool schemas small.** Tool descriptions are loaded into every connected agent's context. Keep them short and static, and never put concept content in them.
+- **No personal or machine identifiers.** Don't commit home-directory paths, usernames, hostnames, IP addresses, hardware serials, or keys, including in tests and examples. Use `~` or a placeholder.
+- **Style.** `ruff check` must pass. Match the surrounding code; use type hints on public functions.
+
+## Commit messages
+
+Use the conventional prefixes (`fix:`, `feat:`, `docs:`, `test:`, `refactor:`, `chore:`), an optional scope (`fix(mcp): ...`), and a plain, factual summary.
 
 ## License
 
-By contributing to ChronosML, you agree that your contributions will be licensed under the [Apache-2.0 License](LICENSE).
+By contributing, you agree that your contributions are licensed under the [Apache-2.0 License](LICENSE).

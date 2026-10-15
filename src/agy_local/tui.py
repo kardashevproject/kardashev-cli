@@ -64,7 +64,7 @@ from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.harness_hooks import get_harness_telemetry
 from agy_local.integrate import integrate_frontier_agent
-from agy_local.presets import PRESETS, list_presets
+from agy_local.presets import PRESETS, BackendKind, list_presets
 from agy_local.updater import UserConfig, check_for_updates, perform_self_update
 
 _NOISY_STDERR_SUBSTRINGS: tuple[str, ...] = (
@@ -123,10 +123,10 @@ def suppress_noisy_cpp_stderr() -> Iterator[None]:
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
     "/status": "Show session token usage, context window utilization bar, turn count, and telemetry",
-    "/commons": "Inspect, search, review, or approve OpenCommons research concepts (/commons \\[status|find|review|approve|reject|seed])",
+    "/commons": "Inspect, search, review, or sync OpenCommons research (/commons \\[status|find|review|approve|reject|pull|push|seed])",
     "/ast": "Render or toggle automatic AST Repo-Map context injection (/ast \\[show|on|off])",
     "/scout": "Run the AST Context Scout on a query to extract surgical code slices (/scout <query>)",
-    "/integrate": "Install agy-local Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
+    "/integrate": "Install Kardashev Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
     "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset glm4-9b-ollama)",
     "/model": "Switch model ID or OpenAI base URL (e.g., /model qwen3-vl-8b http://127.0.0.1:8000/v1)",
     "/policy": "Switch tool execution policy mode (/policy allow-all | ask | sandbox)",
@@ -140,12 +140,12 @@ SLASH_COMMANDS: dict[str, str] = {
     "/load": "Load and resume a saved session (/load <name>)",
     "/export": "Export full conversation & tool trace to a Markdown file (/export \\[path.md])",
     "/config": "View or save persistent user defaults in ~/.config/agy-local/config.json",
-    "/update": "Self-update agy-local from GitHub main and refresh ~/.local/bin symlinks",
+    "/update": "Self-update kardashev-cli from GitHub main and refresh ~/.local/bin symlinks",
     "/models": "Scan local disk checkpoints and probe localhost OpenAI servers",
     "/doctor": "Run hardware, GPU, LiteRT, and MCP diagnostics",
     "/thoughts": "Toggle display of model reasoning/thinking traces (or press Alt+T)",
     "/clear": "Clear conversation history and terminal screen",
-    "/exit": "Exit agy-local session (or Ctrl+D)",
+    "/exit": "Exit interactive session (or Ctrl+D)",
 }
 
 
@@ -776,11 +776,41 @@ class AgyRichTUI:
 
         return Panel(
             grid,
-            title="[bold bright_white]✦ Antigravity Local Studio[/bold bright_white] [dim](agy-local v0.1.0)[/dim]",
+            title="[bold bright_white]✦ Kardashev CLI · Local & Distributed Agent Studio[/bold bright_white] [dim](kardashev / ksh / agy v0.2.0)[/dim]",
             subtitle="[dim]The Kardashev Project · Engineered AST, CoT, OpenCommons & Self-Healing Harness[/dim]",
             border_style="bright_blue",
             padding=(0, 1),
         )
+
+    def _render_connection_error(self, exc: Exception, cfg: Any) -> None:
+        """Renders a diagnostic panel when a local/remote inference endpoint fails without crashing the TUI."""
+        model_label, backend_label, _ = self._active_model_summary(cfg)
+        base_url = str(getattr(cfg, "base_url", "http://127.0.0.1:8000/v1"))
+        err_str = str(exc)
+        is_conn_refused = "connection refused" in err_str.lower() or "failed to send http request" in err_str.lower()
+
+        if is_conn_refused:
+            body = (
+                f"[bold red]✗ Could not connect to OpenAI inference server at `{base_url}`[/bold red]\n"
+                f"[dim]{err_str}[/dim]\n\n"
+                f"[bold white]How to resolve:[/bold white]\n"
+                f"1. Start the local server in another terminal:\n"
+                f"   [bold green]kardashev serve --model {model_label}[/bold green]\n"
+                f"2. Or switch immediately to an in-process LiteRT GPU/NPU model (zero server required):\n"
+                f"   [bold cyan]/preset gemma4-26b[/bold cyan]  or  [bold cyan]/models[/bold cyan]"
+            )
+            title = "[bold red]Inference Endpoint Unreachable[/bold red]"
+        else:
+            body = (
+                f"[bold red]✗ Model execution error on `{model_label}` ({backend_label}):[/bold red]\n"
+                f"[dim]{err_str}[/dim]\n\n"
+                f"[dim]Tip: Use `/preset gemma4-26b` or `/models` to switch models, or `/doctor` to inspect hardware.[/dim]"
+            )
+            title = "[bold red]Agent Execution Error[/bold red]"
+
+        self.console.print()
+        self.console.print(Panel(body, title=title, border_style="red", padding=(0, 1)))
+        self.console.print()
 
     def _upgrade_interactive_config(self, cfg: Any) -> Any:
         hooks_list = list(getattr(cfg, "hooks", []) or [])
@@ -1128,6 +1158,25 @@ class AgyRichTUI:
             if target_key not in PRESETS:
                 self.console.print(f"[red]Unknown preset '{target_key}'. Type /preset to list all.[/red]")
                 return False
+            preset_obj = PRESETS[target_key]
+            if preset_obj.backend == BackendKind.OPENAI:
+                from agy_local.discovery import probe_endpoint
+
+                ep = await asyncio.to_thread(probe_endpoint, preset_obj.default_base_url, preset_obj.key, 0.8)
+                if not ep.reachable and "--force" not in args:
+                    self.console.print(
+                        Panel(
+                            f"[bold yellow]⚠ Preset `{target_key}` uses `{preset_obj.default_base_url}` which is currently OFFLINE.[/bold yellow]\n\n"
+                            f"• Start the server first:\n"
+                            f"  [bold green]kardashev serve --model {preset_obj.model_id}[/bold green]\n"
+                            f"• Or stay on in-process LiteRT GPU/NPU:\n"
+                            f"  [bold cyan]/preset gemma4-26b[/bold cyan]\n"
+                            f"[dim](Pass `/preset {target_key} --force` to switch anyway.)[/dim]",
+                            title="[bold yellow]Preset Endpoint Offline[/bold yellow]",
+                            border_style="yellow",
+                        )
+                    )
+                    return False
             self.options.preset = target_key
             self.options.backend = None
             self.options.model = None
@@ -1142,19 +1191,80 @@ class AgyRichTUI:
                 self.console.print("[yellow]Usage: /model <model_id_or_litert_path> [base_url][/yellow]")
                 return False
             target_model = args[0]
-            self.options.preset = None
+            if target_model.lower() in PRESETS and len(args) == 1:
+                self.options.preset = target_model.lower()
+                self.options.backend = None
+                self.options.model = None
+                self.options.model_path = None
+                self.options.base_url = None
+                self._restart_requested = True
+                self.console.print(f"[green]✓ Switching active preset to '{target_model.lower()}'...[/green]")
+                return True
+
             if target_model.endswith(".litertlm"):
+                self.options.preset = None
                 self.options.backend = "litert"
                 self.options.model_path = target_model
                 self.options.model = None
-            else:
-                self.options.backend = "openai"
-                self.options.model = target_model
-                self.options.model_path = None
-                if len(args) > 1:
-                    self.options.base_url = args[1]
+                self._restart_requested = True
+                self.console.print(f"[green]✓ Switching LiteRT model to '{target_model}'...[/green]")
+                return True
+
+            # Check if a discovered local LiteRT model matches by stem
+            discovered = discover_local_models()
+            litert_match = next(
+                (m for m in discovered if m.backend == BackendKind.LITERT and m.name.lower() == target_model.lower()),
+                None,
+            )
+            if litert_match and len(args) == 1:
+                self.options.preset = None
+                self.options.backend = "litert"
+                self.options.model_path = litert_match.path
+                self.options.model = None
+                self._restart_requested = True
+                self.console.print(f"[green]✓ Switching to local LiteRT model '{litert_match.name}'...[/green]")
+                return True
+
+            target_url = args[1] if len(args) > 1 else (self.options.base_url or "http://127.0.0.1:8000/v1")
+            from agy_local.discovery import probe_endpoint
+
+            ep = await asyncio.to_thread(probe_endpoint, target_url, "Target Endpoint", 0.8)
+            if not ep.reachable:
+                # Check if any other local server (e.g. Ollama on 11434) is online and serves this model
+                all_eps = await asyncio.to_thread(probe_local_endpoints, 0.6)
+                alt_ep = next(
+                    (e for e in all_eps if e.reachable and any(target_model.lower() in m.lower() for m in e.models)),
+                    None,
+                )
+                if alt_ep is not None and len(args) == 1:
+                    target_url = alt_ep.base_url
+                else:
+                    self.console.print(
+                        Panel(
+                            f"[bold yellow]⚠ Local inference server at `{target_url}` is currently OFFLINE.[/bold yellow]\n\n"
+                            f"Model [bold cyan]{target_model}[/bold cyan] requires a running OpenAI-compatible server (vLLM / Ollama / SGLang).\n"
+                            f"• To start the server in another terminal, run:\n"
+                            f"  [bold green]kardashev serve --model {target_model}[/bold green]\n"
+                            f"• Or stay on in-process LiteRT GPU/NPU (no server needed):\n"
+                            f"  [bold cyan]/preset gemma4-26b[/bold cyan]",
+                            title="[bold yellow]Inference Server Offline[/bold yellow]",
+                            border_style="yellow",
+                        )
+                    )
+                    if "--force" not in args:
+                        self.console.print(
+                            "[dim]Staying on your current active model so your session isn't interrupted. "
+                            "(Pass `/model <name> <url> --force` to switch anyway.)[/dim]"
+                        )
+                        return False
+
+            self.options.preset = None
+            self.options.backend = "openai"
+            self.options.model = target_model
+            self.options.model_path = None
+            self.options.base_url = target_url
             self._restart_requested = True
-            self.console.print(f"[green]✓ Switching model to '{target_model}'...[/green]")
+            self.console.print(f"[green]✓ Switching model to '{target_model}' @ {target_url}...[/green]")
             return True
 
         if cmd == "/models":
@@ -1313,6 +1423,8 @@ class AgyRichTUI:
                 approve_pending_proposal,
                 load_pending_proposals,
                 load_persistent_store,
+                pull_from_remote_hub,
+                push_to_remote_hub,
                 reject_pending_proposal,
                 save_persistent_store,
                 seed_default_scientific_primitives,
@@ -1326,6 +1438,30 @@ class AgyRichTUI:
                 self.console.print(
                     f"[green]✓ Seeded {added} foundational primitives ({len(merged.canonical_block_by_cid)} active concepts in {DEFAULT_STORE_PATH}).[/green]"
                 )
+                return False
+
+            if sub == "pull":
+                hub_url = args[1] if len(args) > 1 else None
+                res_pull = await asyncio.to_thread(pull_from_remote_hub, hub_url)
+                if res_pull.get("ok"):
+                    self.console.print(
+                        f"[green]✓ Pulled from {res_pull['hub_url']} ({res_pull['protocol']} · {res_pull['elapsed_ms']}ms): "
+                        f"+{res_pull['new_blocks_pulled']} new block(s), {res_pull['active_concepts_cid']} active concepts (Merkle: {res_pull['merkle_root']}).[/green]"
+                    )
+                else:
+                    self.console.print(f"[red]✗ Pull failed: {res_pull.get('error')}[/red]")
+                return False
+
+            if sub == "push":
+                hub_url = args[1] if len(args) > 1 else None
+                res_push = await asyncio.to_thread(push_to_remote_hub, hub_url)
+                if res_push.get("ok"):
+                    self.console.print(
+                        f"[green]✓ Pushed to {res_push['hub_url']} ({res_push['elapsed_ms']}ms): "
+                        f"accepted={res_push['accepted_by_hub']}, total_active={res_push['total_active_concepts']} (Merkle: {res_push['merkle_root']}).[/green]"
+                    )
+                else:
+                    self.console.print(f"[red]✗ Push failed: {res_push.get('error')}[/red]")
                 return False
 
             if sub == "find":
@@ -1397,6 +1533,7 @@ class AgyRichTUI:
             # Default: /commons status
             store = await asyncio.to_thread(load_persistent_store)
             pending = await asyncio.to_thread(load_pending_proposals)
+            manifest = store.compute_merkle_manifest()
             tbl = Table(title=f"OpenCommons Research Store ({DEFAULT_STORE_PATH})", border_style="magenta")
             tbl.add_column("Block ID", style="bold cyan")
             tbl.add_column("CID", style="magenta")
@@ -1410,8 +1547,9 @@ class AgyRichTUI:
             self.console.print(
                 f"  [dim]Active equivalence classes:[/dim] [bold green]{len(store.canonical_block_by_cid)}[/bold green] · "
                 f"[dim]Quarantined:[/dim] [red]{len(store.quarantined_ids)}[/red] · "
-                f"[dim]Pending review queue:[/dim] [yellow]{len(pending)}[/yellow] "
-                f"[dim](use `/commons find <query>` or `/commons review`)[/dim]"
+                f"[dim]Pending review:[/dim] [yellow]{len(pending)}[/yellow] · "
+                f"[dim]Merkle Root:[/dim] [cyan]{manifest['merkle_root']}[/cyan]\n"
+                f"  [dim]Commands: `/commons find <q>`, `/commons review`, `/commons pull [url]`, `/commons push [url]`[/dim]"
             )
             return False
 
@@ -1554,7 +1692,11 @@ class AgyRichTUI:
 
             return Group(*renderables)
 
-        await agent.conversation.send(augmented_prompt)
+        try:
+            await agent.conversation.send(augmented_prompt)
+        except Exception as exc:  # noqa: BLE001
+            self._render_connection_error(exc, cfg)
+            return
 
         with Live(_render_live_frame(), console=self.console, refresh_per_second=12, transient=False) as live:
             try:
@@ -1591,6 +1733,10 @@ class AgyRichTUI:
             except KeyboardInterrupt:
                 await agent.conversation.cancel()
                 self.console.print("\n[yellow]⚠ Turn cancelled by user (Ctrl+C).[/yellow]")
+                return
+            except Exception as exc:  # noqa: BLE001
+                live.stop()
+                self._render_connection_error(exc, cfg)
                 return
 
         dt = max(0.001, time.perf_counter() - t0)

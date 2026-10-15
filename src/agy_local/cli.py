@@ -325,24 +325,40 @@ def _build_parser() -> argparse.ArgumentParser:
     scout_p.add_argument("--max-slices", type=int, default=5, help="Max code slices to extract.")
     scout_p.add_argument("--json", action="store_true", help="Output full ScoutResult as JSON.")
 
-    # 14. commons (OpenCommons Research Store & Pending Review Queue CLI)
+    # 14. commons (OpenCommons Research Store, Networked CRDT Gossip Hub & Pending Review Queue CLI)
     com_p = sub.add_parser(
         "commons",
-        help="Manage the OpenCommons Concept Commons store, search Dual Concept Cards, or review agent proposals.",
+        help="Manage the OpenCommons Concept Commons store, sync over HTTP CRDT Gossip, or review agent proposals.",
     )
     com_p.add_argument(
         "action",
         nargs="?",
-        choices=["status", "find", "record", "review", "approve", "reject", "seed", "sync", "mcp"],
+        choices=[
+            "status",
+            "find",
+            "record",
+            "review",
+            "approve",
+            "reject",
+            "seed",
+            "sync",
+            "pull",
+            "push",
+            "serve-hub",
+            "mcp",
+        ],
         default="status",
         help="Action to perform (default: status).",
     )
-    com_p.add_argument("target", nargs="*", help="Search query, file path, proposal ID, or replica JSON path.")
+    com_p.add_argument("target", nargs="*", help="Search query, file path, proposal ID, hub URL, or replica JSON path.")
     com_p.add_argument("--domain", default="general", help="Domain when recording a Python file.")
     com_p.add_argument("--summary", default="", help="Summary when recording a Python file.")
     com_p.add_argument("--modality", default="dual_card_with_pitfalls", help="Rendering modality for find.")
     com_p.add_argument("--top-k", type=int, default=3, help="Max hits for find.")
     com_p.add_argument("--store", default=None, help="Override path to store.json.")
+    com_p.add_argument("--host", default="127.0.0.1", help="Bind host for serve-hub (default: 127.0.0.1).")
+    com_p.add_argument("--port", type=int, default=8765, help="Bind port for serve-hub (default: 8765).")
+    com_p.add_argument("--force", action="store_true", help="Force full pull ignoring cached ETag.")
     com_p.add_argument("--json", action="store_true", help="Output as JSON.")
 
     return parser
@@ -488,6 +504,19 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
     except (KeyboardInterrupt, asyncio.CancelledError):
         sys.stderr.write("\n[Interrupted]\n")
         return 130
+    except Exception as exc:  # noqa: BLE001
+        err_msg = str(exc)
+        if "connection refused" in err_msg.lower() or "failed to send http request" in err_msg.lower():
+            base_url = getattr(cfg, "base_url", "http://127.0.0.1:8000/v1")
+            model_name = getattr(cfg, "model", "local-model")
+            sys.stderr.write(
+                f"\n✗ Inference endpoint unreachable at {base_url} for model '{model_name}'.\n"
+                f"  • Start the local server first: kardashev serve --model {model_name}\n"
+                f"  • Or use in-process LiteRT GPU/NPU: kardashev exec -p gemma4-26b \"...\"\n"
+            )
+            return 1
+        sys.stderr.write(f"\n✗ Agent execution error: {err_msg}\n")
+        return 1
 
     return 0
 
@@ -604,7 +633,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
         return 0
 
-    print("=== agy-local Environment Doctor ===")
+    print("=== Kardashev CLI (agy-local) Environment Doctor ===")
     print(f"  Python interpreter   : {report['python']}")
     print(f"  litert-lm CLI        : {report['litert_lm_cli'] or 'MISSING (pip install litert-lm)'}")
     print(f"  NVIDIA GPU (CUDA)    : {'DETECTED' if report['nvidia_gpu_detected'] else 'Not found'}")
@@ -662,7 +691,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         return 0
 
     print("============================================================")
-    print(f"  agy-local Server Launcher ({plan.engine})")
+    print(f"  Kardashev CLI Server Launcher ({plan.engine})")
     print(f"  Model Target : {plan.model_target} (as '{plan.served_model_name}')")
     print(f"  Endpoint     : http://{plan.host}:{plan.port}/v1")
     print(
@@ -710,7 +739,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
         key = getattr(args, "key", None)
         val = getattr(args, "value", None)
         if not key or val is None:
-            print("Usage: agy-local config set <key> <value>", file=sys.stderr)
+            print("Usage: kardashev config set <key> <value>", file=sys.stderr)
             return 1
         if not hasattr(cfg, key):
             valid = ", ".join(UserConfig.__dataclass_fields__.keys())
@@ -739,7 +768,7 @@ def _cmd_integrate(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(json.dumps([r.to_dict() for r in results], indent=2))
         return 0
-    print("=== agy-local Frontier Agent Co-Processor Integration ===")
+    print("=== Kardashev CLI Frontier Agent Co-Processor Integration ===")
     for r in results:
         print(f"  ✓ [{r.target.upper()}]")
         print(f"      MCP Config : {r.mcp_config_path}")
@@ -775,9 +804,12 @@ def _cmd_commons(args: argparse.Namespace) -> int:
         DEFAULT_PENDING_PATH,
         DEFAULT_STORE_PATH,
         approve_pending_proposal,
+        create_opencommons_hub_server,
         execute_commons_record,
         load_pending_proposals,
         load_persistent_store,
+        pull_from_remote_hub,
+        push_to_remote_hub,
         reject_pending_proposal,
         run_opencommons_stdio_server,
         save_persistent_store,
@@ -790,6 +822,39 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
     if action == "mcp":
         return run_opencommons_stdio_server(store_path=store_path)
+
+    if action == "pull":
+        hub_url = targets[0] if targets else None
+        res = pull_from_remote_hub(
+            hub_url=hub_url,
+            store_path=store_path,
+            force=bool(getattr(args, "force", False)),
+        )
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("ok") else 1
+
+    if action == "push":
+        hub_url = targets[0] if targets else None
+        res = push_to_remote_hub(hub_url=hub_url, store_path=store_path)
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("ok") else 1
+
+    if action == "serve-hub":
+        host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
+        port = int(getattr(args, "port", 8765) or 8765)
+        srv = create_opencommons_hub_server(host=host, port=port, store_path=store_path)
+        actual_host, actual_port = srv.server_address[:2]
+        print(f"=== OpenCommons CRDT Gossip Hub listening on http://{actual_host}:{actual_port} ===")
+        print("  • GET  /v1/manifest  (16-bucket Merkle tree + ETag)")
+        print("  • GET  /v1/store     (Full gzipped store replica)")
+        print("  • POST /v1/sync      (Zero-Trust 5-gate verification + CRDT join)")
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            print("\nShutting down OpenCommons Hub...")
+        finally:
+            srv.server_close()
+        return 0
 
     if action == "seed":
         store = load_persistent_store(store_path)
@@ -806,7 +871,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
     if action == "find":
         query = " ".join(targets).strip()
         if not query:
-            print("Usage: agy-local commons find <query>", file=sys.stderr)
+            print("Usage: kardashev commons find <query>", file=sys.stderr)
             return 1
         store = load_persistent_store(store_path)
         hits = store.find(query=query, top_k=int(getattr(args, "top_k", 3)))
@@ -834,7 +899,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
     if action == "record":
         if not targets:
-            print("Usage: agy-local commons record <file.py_or_code>", file=sys.stderr)
+            print("Usage: kardashev commons record <file.py_or_code>", file=sys.stderr)
             return 1
         raw_arg = targets[0]
         src = _Path(raw_arg).read_text(encoding="utf-8") if _Path(raw_arg).is_file() else " ".join(targets)
@@ -864,7 +929,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
     if action == "approve":
         if not targets:
-            print("Usage: agy-local commons approve <proposal_id_or_func_name>", file=sys.stderr)
+            print("Usage: kardashev commons approve <proposal_id_or_func_name>", file=sys.stderr)
             return 1
         res = approve_pending_proposal(targets[0], store_path=store_path)
         print(json.dumps(res, indent=2))
@@ -872,7 +937,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
     if action == "reject":
         if not targets:
-            print("Usage: agy-local commons reject <proposal_id_or_func_name>", file=sys.stderr)
+            print("Usage: kardashev commons reject <proposal_id_or_func_name>", file=sys.stderr)
             return 1
         res = reject_pending_proposal(targets[0])
         print(json.dumps(res, indent=2))
@@ -880,7 +945,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
     if action == "sync":
         if not targets:
-            print("Usage: agy-local commons sync <other_replica.json>", file=sys.stderr)
+            print("Usage: kardashev commons sync <other_replica.json>", file=sys.stderr)
             return 1
         other = load_persistent_store(targets[0], auto_seed_if_empty=False)
         merged = save_persistent_store(other, path=store_path, crdt_merge_existing=True)
@@ -899,6 +964,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
     # Default: status
     store = load_persistent_store(store_path)
     pending = load_pending_proposals()
+    manifest = store.compute_merkle_manifest()
     payload = {
         "store_path": str(_Path(store_path or DEFAULT_STORE_PATH).expanduser()),
         "pending_queue_path": str(DEFAULT_PENDING_PATH),
@@ -908,6 +974,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
         "pending_proposals_count": len(pending),
         "peer_review_executions": store.peer_review_executions,
         "sid_dedup_hits": store.sid_dedup_hits,
+        "merkle_root": manifest["merkle_root"],
     }
     print(json.dumps(payload, indent=2))
     return 0

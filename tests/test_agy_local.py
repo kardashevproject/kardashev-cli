@@ -381,14 +381,14 @@ def test_cli_updater_config_and_completions(
         assert "gemma4-26b" in script
 
     assert main(["completions", "zsh"]) == 0
-    assert "#compdef agy-local agy" in capsys.readouterr().out
+    assert "#compdef kardashev ksh agy-local agy" in capsys.readouterr().out
 
     # 3. Install layout & --version
     mode, root = detect_install_layout()
     assert mode in ("git-editable", "managed-venv", "pip")
     assert root is not None
     assert main(["--version"]) == 0
-    assert "agy-local 0.1.0" in capsys.readouterr().out
+    assert "agy-local 0.2.0" in capsys.readouterr().out
 
 
 def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
@@ -725,10 +725,109 @@ def trojan_cube(n: int) -> int:
     assert "commons_find" in t_names
     assert "commons_record" in t_names
 
-    # 9. Test `agy-local commons` CLI subcommands
+    # 9. Test `kardashev commons` CLI subcommands
     assert cli_main(["commons", "status", "--store", str(store_file), "--json"]) == 0
     assert cli_main(["commons", "find", "logsumexp", "--store", str(store_file), "--json"]) == 0
 
 
+def test_opencommons_zero_trust_sandbox_and_network_gossip_hub(tmp_path: Path) -> None:
+    import threading
 
+    import pytest
+    from rich.console import Console
 
+    from agy_local.builder import HarnessOptions, build_agent_config
+    from agy_local.opencommons import (
+        UnsafeConceptCodeError,
+        create_opencommons_hub_server,
+        execute_commons_record,
+        load_persistent_store,
+        pull_from_remote_hub,
+        push_to_remote_hub,
+        verify_ast_safety_static,
+    )
+    from agy_local.tui import AgyRichTUI
+
+    # 1. Layer-1 Static AST Capability Sandbox blocks imports, dunders, and forbidden calls
+    with pytest.raises(UnsafeConceptCodeError, match="Import statements"):
+        verify_ast_safety_static("def bad(x: int) -> int:\n    import os\n    return x\n")
+
+    with pytest.raises(UnsafeConceptCodeError, match="Dunder attribute"):
+        verify_ast_safety_static("def escape(x: int) -> int:\n    return x.__class__.__base__\n")
+
+    with pytest.raises(UnsafeConceptCodeError, match="forbidden by security policy"):
+        verify_ast_safety_static("def run_eval(x: int) -> int:\n    return eval('x + 1')\n")
+
+    # 2. Live Multi-Threaded HTTP CRDT Gossip Hub: Agent A pushes -> Hub verifies -> Agent B pulls delta
+    hub_store_path = tmp_path / "hub_store.json"
+    agent_a_store = tmp_path / "agent_a.json"
+    agent_b_store = tmp_path / "agent_b.json"
+
+    # Initialize Hub on an ephemeral localhost port (port=0)
+    srv = create_opencommons_hub_server(host="127.0.0.1", port=0, store_path=hub_store_path)
+    host, port = srv.server_address[:2]
+    hub_url = f"http://{host}:{port}"
+    srv_thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    srv_thread.start()
+
+    try:
+        # Agent A records Kahan compensated summation locally
+        kahan_src = """
+def kahan_compensated_sum(values: list) -> float:
+    total = 0.0
+    c = 0.0
+    for x in values:
+        y = float(x) - c
+        t = total + y
+        c = (t - total) - y
+        total = t
+    return total
+"""
+        rec_a = execute_commons_record(
+            {
+                "source_code": kahan_src,
+                "domain": "numerical_analysis",
+                "summary": "O(1) error Kahan summation",
+                "invariants": ["abs(kahan_compensated_sum([1.0, 1e-16, -1.0]) - 1e-16) <= 1e-16"],
+            },
+            store_path=agent_a_store,
+            pending_path=tmp_path / "pending_a.json",
+        )
+        assert rec_a["status"] == "accepted"
+
+        # Agent A pushes its local store to the live HTTP CRDT Hub
+        push_res = push_to_remote_hub(hub_url=hub_url, store_path=agent_a_store)
+        assert push_res["ok"] is True
+        assert push_res["accepted_by_hub"] >= 1
+
+        # Agent B pulls from the HTTP CRDT Hub -> receives kahan_compensated_sum via Merkle delta
+        pull_res = pull_from_remote_hub(hub_url=hub_url, store_path=agent_b_store, force=True)
+        assert pull_res["ok"] is True
+        assert pull_res["new_blocks_pulled"] >= 1
+
+        b_store = load_persistent_store(agent_b_store)
+        hits = b_store.find("kahan_compensated_sum", top_k=1)
+        assert len(hits) == 1
+        assert "kahan_compensated_sum" in hits[0].block.block_id
+
+        # Second pull with matching ETag/Merkle root hits the 0-block fast-path
+        pull_cached = pull_from_remote_hub(hub_url=hub_url, store_path=agent_b_store, force=False)
+        assert pull_cached["ok"] is True
+        assert pull_cached["up_to_date"] is True
+        assert pull_cached["new_blocks_pulled"] == 0
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+    # 3. Verify TUI connection error panel renders cleanly without raising when an OpenAI server is offline
+    buf_console = Console(record=True, width=100)
+    opts = HarnessOptions(backend="openai", model="qwen3.6-35b-a3b-fp8", base_url="http://127.0.0.1:59999/v1")
+    cfg = build_agent_config(opts)
+    tui = AgyRichTUI(options=opts, console=buf_console)
+    tui._render_connection_error(
+        RuntimeError('Post "http://127.0.0.1:59999/v1/chat/completions": dial tcp 127.0.0.1:59999: connect: connection refused'),
+        cfg,
+    )
+    rendered = buf_console.export_text()
+    assert "Inference Endpoint Unreachable" in rendered
+    assert "kardashev serve --model qwen3.6-35b-a3b-fp8" in rendered

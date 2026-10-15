@@ -1,0 +1,151 @@
+{
+  "schema_version": "1.0.0",
+  "blocks": [
+    {
+      "block_id": "fnv1a_32_ints@e5c9e4f9",
+      "cid": "cid:a589f7423673bf7f",
+      "sid": "sid:e5c9e4f9ad3d0a4e",
+      "fp": "fp:a589f7423673bf7f",
+      "name": "fnv1a_32_ints",
+      "domain": "cryptography_and_framing",
+      "summary": "32-bit FNV-1a deterministic byte payload hash with standard offset basis 0x811c9dc5",
+      "pseudocode": "1. h = 0x811c9dc5; 2. for b in data: h = ((h ^ b) * 0x01000193) & 0xffffffff",
+      "invariants": [
+        "0 <= h <= 0xffffffff",
+        "avalanche on single-bit flip"
+      ],
+      "source_code": "\ndef fnv1a_32_ints(data: list[int]) -> int:\n    h = 0x811C9DC5\n    for b in data:\n        h = ((h ^ (b & 0xFF)) * 0x01000193) & 0xFFFFFFFF\n    return h\n",
+      "param_types": [
+        "list[int]"
+      ],
+      "return_type": "int",
+      "dependencies": [],
+      "pitfalls": [
+        {
+          "pitfall_id": "wrong_fnv_offset",
+          "naive_pattern": "h = 0",
+          "failure_mechanism": "Zero initialization collapses all-zero prefixes to hash 0",
+          "counterexample_input": "[0, 0, 0]",
+          "verified_fix": "Initialize with FNV-1a 32-bit offset basis 0x811c9dc5"
+        }
+      ],
+      "teleological_intent": "Non-cryptographic uniform hash distribution over byte frames",
+      "dimensional_units": "data: list[int] -> uint32",
+      "trust_tier": "peer_reviewed",
+      "contributor_agent": "agy-local",
+      "wave": 1,
+      "created_at_ms": 1792060154700.6367
+    },
+    {
+      "block_id": "stable_logsumexp@d19e7e05",
+      "cid": "cid:d4eb13604009c856",
+      "sid": "sid:d19e7e0546fc9c61",
+      "fp": "fp:d4eb13604009c856",
+      "name": "stable_logsumexp",
+      "domain": "numerical_analysis",
+      "summary": "Shifted numerically stable LogSumExp preventing exp(x) overflow for x >= 710",
+      "pseudocode": "1. m = max(xs); 2. return m + log(sum(exp(x - m) for x in xs))",
+      "invariants": [
+        "LSE(x + c) == LSE(x) + c",
+        "max(xs) <= LSE(xs) <= max(xs) + log(N)"
+      ],
+      "source_code": "\ndef stable_logsumexp(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    m = max(xs)\n    return m + math.log(sum(math.exp(x - m) for x in xs))\n",
+      "param_types": [
+        "list[float]"
+      ],
+      "return_type": "float",
+      "dependencies": [],
+      "pitfalls": [
+        {
+          "pitfall_id": "lse_overflow",
+          "naive_pattern": "math.log(sum(math.exp(x) for x in xs))",
+          "failure_mechanism": "OverflowError when max(xs) >= 710.0",
+          "counterexample_input": "[1000.0, 1001.0, 1002.0]",
+          "verified_fix": "Subtract m = max(xs) before exponentiating"
+        }
+      ],
+      "teleological_intent": "Log-partition function free-energy normalization without IEEE-754 overflow",
+      "dimensional_units": "logits: nats -> nats",
+      "trust_tier": "peer_reviewed",
+      "contributor_agent": "agy-local",
+      "wave": 1,
+      "created_at_ms": 1792060154697.522
+    },
+    {
+      "block_id": "symplectic_leapfrog_step@cdc07209",
+      "cid": "cid:093bf7ec3b7f4cb6",
+      "sid": "sid:cdc07209d80b64f9",
+      "fp": "fp:093bf7ec3b7f4cb6",
+      "name": "symplectic_leapfrog_step",
+      "domain": "hamiltonian_dynamics",
+      "summary": "Symplectic Velocity Verlet / Leapfrog step preserving phase-space volume (det J == 1)",
+      "pseudocode": "1. v_half = v - 0.5*dt*k*x; 2. x_new = x + dt*v_half; 3. v_new = v_half - 0.5*dt*k*x_new",
+      "invariants": [
+        "det(Jacobian) == 1.0",
+        "bounded energy oscillation O(dt^2)"
+      ],
+      "source_code": "\ndef symplectic_leapfrog_step(x: float, v: float, k: float, dt: float) -> tuple[float, float]:\n    v_half = v - 0.5 * dt * k * x\n    x_new = x + dt * v_half\n    v_new = v_half - 0.5 * dt * k * x_new\n    return (x_new, v_new)\n",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "return_type": "tuple[float, float]",
+      "dependencies": [],
+      "pitfalls": [
+        {
+          "pitfall_id": "euler_energy_drift",
+          "naive_pattern": "x_new = x + dt*v; v_new = v - dt*k*x",
+          "failure_mechanism": "Explicit Euler inflates phase-space area det J = 1 + k*dt^2 > 1",
+          "counterexample_input": "(1.0, 0.0, 1.0, 0.1) over 1000 steps",
+          "verified_fix": "Use half-step kick-drift-kick symplectic update"
+        }
+      ],
+      "teleological_intent": "Liouville theorem phase-space volume conservation in Hamiltonian mechanics",
+      "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
+      "trust_tier": "peer_reviewed",
+      "contributor_agent": "agy-local",
+      "wave": 1,
+      "created_at_ms": 1792060154699.8682
+    },
+    {
+      "block_id": "welford_variance@fe73ee69",
+      "cid": "cid:f71d1b0174ca76bd",
+      "sid": "sid:fe73ee692ca1fcd5",
+      "fp": "fp:f71d1b0174ca76bd",
+      "name": "welford_variance",
+      "domain": "numerical_analysis",
+      "summary": "Welford single-pass online variance avoiding subtractive cancellation at kappa >= 10^8",
+      "pseudocode": "1. Track running mean and M2 = sum((x - mean_old)*(x - mean_new)); 2. return M2 / n",
+      "invariants": [
+        "Var(X + c) == Var(X)",
+        "Var(X) >= 0"
+      ],
+      "source_code": "\ndef welford_variance(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    count = 0\n    mean = 0.0\n    m2 = 0.0\n    for x in xs:\n        count += 1\n        delta = x - mean\n        mean += delta / count\n        delta2 = x - mean\n        m2 += delta * delta2\n    return m2 / count\n",
+      "param_types": [
+        "list[float]"
+      ],
+      "return_type": "float",
+      "dependencies": [],
+      "pitfalls": [
+        {
+          "pitfall_id": "variance_cancellation",
+          "naive_pattern": "sum(x*x)/n - (sum(x)/n)**2",
+          "failure_mechanism": "Severe precision loss from subtractive cancellation when kappa >= 10^8",
+          "counterexample_input": "[1e12 + 1.0, 1e12 + 2.0, 1e12 + 3.0]",
+          "verified_fix": "Use Welford online delta * delta2 update"
+        }
+      ],
+      "teleological_intent": "Orthogonal running residual accumulation preserving mantissa bits on shifted streams",
+      "dimensional_units": "xs: [U] -> U^2",
+      "trust_tier": "peer_reviewed",
+      "contributor_agent": "agy-local",
+      "wave": 1,
+      "created_at_ms": 1792060154698.738
+    }
+  ],
+  "quarantined_ids": [],
+  "peer_review_executions": 4,
+  "sid_dedup_hits": 0
+}

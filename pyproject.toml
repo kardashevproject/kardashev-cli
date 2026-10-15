@@ -1,7 +1,7 @@
 [project]
 name = "agy-local"
-version = "0.1.0"
-description = "Open-source local & open-weight model harness for Google Antigravity (LiteRT, vLLM, Ollama, SGLang, LM Studio, GLM-4, Qwen, Gemma 4)."
+version = "0.2.0"
+description = "Kardashev CLI (kardashev / ksh / agy): Engineered local & open-weight coding agent harness with AST Repo-Map, Self-Healing Edits, and Distributed OpenCommons CRDT Research."
 readme = "README.md"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.10"
@@ -9,6 +9,8 @@ authors = [
     { name = "The Kardashev Project", email = "opensource@kardashevproject.org" },
 ]
 keywords = [
+    "kardashev",
+    "opencommons",
     "antigravity",
     "ai-agents",
     "litert",
@@ -50,12 +52,15 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kardashevproject/agy-local"
-Repository = "https://github.com/kardashevproject/agy-local"
-Issues = "https://github.com/kardashevproject/agy-local/issues"
-Changelog = "https://github.com/kardashevproject/agy-local/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/kardashevproject/kardashev-cli"
+Repository = "https://github.com/kardashevproject/kardashev-cli"
+Issues = "https://github.com/kardashevproject/kardashev-cli/issues"
+Changelog = "https://github.com/kardashevproject/kardashev-cli/blob/main/CHANGELOG.md"
 
 [project.scripts]
+kardashev = "agy_local.cli:main"
+ksh = "agy_local.cli:main"
+kardashev-mcp = "agy_local.mcp_server:main"
 agy-local = "agy_local.cli:main"
 agy = "agy_local.cli:main"
 agy-local-mcp = "agy_local.mcp_server:main"

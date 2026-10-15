@@ -1,23 +1,25 @@
-# agy-local
+# kardashev-cli (`kardashev` / `ksh` / `agy`)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Antigravity SDK](https://img.shields.io/badge/Antigravity-localharness-success.svg)](https://github.com/google-antigravity/antigravity-sdk-python)
 
-**`agy-local`** is an open-source CLI, interactive terminal REPL, and configuration harness that lets you run the full **Google Antigravity `localharness`** (`view_file`, `replace_file_content`, `write_to_file`, `run_command`, `grep`, `list_dir`, MCP servers, and skills) backed by **any local or open-weight model**:
+**`kardashev-cli`** (CLI executables **`kardashev`**, **`ksh`**, **`agy`**, and **`agy-local`**) is The Kardashev Project's flagship open-source CLI, interactive terminal studio, distributed OpenCommons CRDT research engine, and coding harness that lets you run the full **Google Antigravity `localharness`** (`view_file`, `replace_file_content`, `write_to_file`, `run_command`, `grep`, `list_dir`, MCP servers, and skills) backed by **any local or open-weight model**:
 
 - **Managed On-Device LiteRT Runtime (`LiteRTAgentConfig`)**: Run `Gemma 4 26B A4B` natively on GPU (CUDA / Apple Metal) or NPU with zero API keys, speculative decoding, and automatic 64k KV-cache compaction (`token_threshold=40960`).
-- **OpenAI-Compatible Local & Open Model Servers (`LocalOpenAIAgentConfig`)**: Connect the Antigravity harness to **vLLM**, **Ollama**, **SGLang**, **LM Studio**, or **Zhipu GLM API** endpoints with automatic `.lightweight()` tool and prompt optimizations.
+- **OpenAI-Compatible Local & Open Model Servers (`LocalOpenAIAgentConfig`)**: Connect the Antigravity harness to **vLLM**, **Ollama**, **SGLang**, **LM Studio**, or **Zhipu GLM API** endpoints with automatic `.lightweight()` tool and prompt optimizations, plus pre-flight endpoint liveness probing and zero-crash diagnostics if a local server is offline.
 - **Curated Open-Weight Presets**: Built-in presets for `gemma4-26b`, `glm4-9b-ollama`, `glm4-vllm`, `glm-zhipu-api`, `qwen3.6-35b-vllm`, `qwen3.8-27b-vllm`, `qwen3-vl-8b-vllm`, `gpt-oss-20b-vllm`, and `lm-studio`.
-- **Zero-Config Local Discovery (`agy-local models` & `agy-local doctor`)**: Automatically scans `~/.litert-lm/models`, `~/.cache/huggingface/hub`, and `~/models`, and probes local ports (`8000`, `11434`, `1234`, `30000`) to detect ready-to-run checkpoints and live servers.
+- **Zero-Config Local Discovery (`kardashev models` & `kardashev doctor`)**: Automatically scans `~/.litert-lm/models`, `~/.cache/huggingface/hub`, and `~/models`, and probes local ports (`8000`, `11434`, `1234`, `30000`) to detect ready-to-run checkpoints and live servers.
 
 - **4-Phase Super-Intelligence Cognitive Harness (`SUPER_INTELLIGENCE_COT_PROMPT`)**: Replaces generic tool prompts with a strict 4-phase engineering protocol (`[1. LOCATE & GROUND]` $\rightarrow$ `[2. HYPOTHESIZE & INVARIANTS]` $\rightarrow$ `[3. SURGICAL EDIT]` $\rightarrow$ `[4. EMPIRICAL VERIFICATION & COMMONS CONTRIBUTION]`) plus automatic Turn-0 AST Repo-Map and `<opencommons_knowledge>` injection.
-- **Built-in OpenCommons Research Engine (`src/agy_local/opencommons.py` & `opencommons-mcp`)**:
+- **Distributed OpenCommons Research Engine & Zero-Trust CRDT Gossip Hub (`src/agy_local/opencommons.py` & `opencommons-mcp`)**:
   - **Fast Structural & Behavioral Fingerprinting (`<5ms`)**: Alpha-normalized De Bruijn AST Merkle hash (`sid`) for $O(1)$ structural deduplication plus 16-probe canonical execution fingerprinting (`fp -> cid`) that merges distinct algorithms computing the same mathematical function into a single Canonical Equivalence Class.
+  - **3-Layer Zero-Trust Security Sandbox**: Blocks `ast.Import`/`ast.ImportFrom`, `ast.Global`/`ast.Nonlocal`, all `__dunder__` attribute/identifier escapes (`__subclasses__`, `__globals__`, `__builtins__`), and forbidden dynamic builtins (`eval`, `exec`, `open`, `getattr`), paired with a pure-math `SAFE_EXEC_BUILTINS` whitelist and lazy execution compilation (`0` untrusted network code executed on pull).
+  - **16-Bucket Merkle Tree + HTTP `ETag` (`304`) & Gzipped Delta Sync (`kardashev commons pull|push|serve-hub`)**: Synchronize verified research concepts globally via static GitHub Raw CDN (`commons/store.json`) or a live multi-threaded HTTP CRDT Gossip Hub (`kardashev commons serve-hub`).
   - **5-Gate Adversarial Peer Review & Tiered Commit Policy**: Automatically commits agent-contributed Python functions into `~/.opencommons/store.json` (via atomic `fcntl`-locked G-Set join-semilattice CRDT merge $\sqcup$) when all 5 adversarial gates pass, and stages domain-specific or human-review proposals into `~/.opencommons/pending_queue.json` for `/commons review`.
   - **Monotonic Counterexample Ratchet & Autonomous Post-Edit Harvesting**: Agents can report $(K+1)$-th input counterexamples to quarantine flawed blocks and attach `PitfallWarning`s, while `SyntaxGatePostToolHook` automatically harvests newly written, type-annotated pure helper functions after verified file edits.
 - **3-Stage Self-Healing Fuzzy Edit Engine (`SelfHealingEditHook` + `SyntaxGatePostToolHook`)**: Automatically heals hallucinated `StartLine`/`EndLine` coordinates (Stage A), class-method indentation drift (Stage B), and minor whitespace/typo divergence $\ge 88\%$ (Stage C) before `replace_file_content` executes, backed by an AST syntax gate and per-turn SHA-256 infinite-loop breaker.
-- **One-Command Frontier Agent Co-Processor (`agy-local integrate`)**: Connects `agy-local-mcp` and installs the `agy-local-coprocessor` skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase`, `apply_smart_patch`, `commons_find`, and `commons_record`.
+- **One-Command Frontier Agent Co-Processor (`kardashev integrate`)**: Connects `kardashev-mcp` / `agy-local-mcp` and installs the co-processor skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase`, `apply_smart_patch`, `commons_find`, and `commons_record`.
 
 ---
 
@@ -26,59 +28,61 @@
 ### 1. One-Line CLI Install (Claude Code / Codex Style)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/kardashevproject/agy-local/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/kardashevproject/kardashev-cli/main/install.sh | bash
 ```
 
 Or install via `uv tool` / `pip`:
 ```bash
-uv tool install "git+https://github.com/kardashevproject/agy-local.git"
+uv tool install "git+https://github.com/kardashevproject/kardashev-cli.git"
 # Or from a local clone:
-git clone https://github.com/kardashevproject/agy-local.git
-cd agy-local && pip install -e ".[litert]"
+git clone https://github.com/kardashevproject/kardashev-cli.git
+cd kardashev-cli && pip install -e ".[litert]"
 ```
 
-This installs **`agy-local`**, the short alias **`agy`**, **`agy-local-mcp`**, and **`opencommons-mcp`** into `~/.local/bin`.
+This installs **`kardashev`**, **`ksh`**, **`agy`**, **`agy-local`**, **`kardashev-mcp`**, **`agy-local-mcp`**, and **`opencommons-mcp`** into `~/.local/bin`.
 
 ### 2. Integrate with Frontier Coding Agents (`Antigravity`, `Claude Code`, `Cursor`, `Codex`)
 
 Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, OpenCommons Knowledge Base, and Verification Co-Processor for frontier coding agents in one command:
 
 ```bash
-agy-local integrate antigravity   # Or: claude, cursor, codex, all
+kardashev integrate antigravity   # Or: claude, cursor, codex, all
 ```
 
-### 3. Self-Update Anytime (`agy-local update` or `/update`)
+### 3. Self-Update & Global OpenCommons Sync Anytime
 
 ```bash
-agy-local update          # Pulls latest commits, upgrades dependencies, refreshes symlinks
-agy-local update --check  # Check if a newer release/commit is available
+kardashev update                  # Pulls latest CLI commits, upgrades dependencies, refreshes symlinks
+kardashev commons pull            # Pulls latest verified OpenCommons concepts via Merkle-root + ETag sync
+kardashev commons push <hub_url>  # Pushes local peer-reviewed discoveries to an OpenCommons CRDT Hub
+kardashev commons serve-hub       # Launches a multi-threaded HTTP CRDT Gossip Hub on port 8765
 ```
 
 ### 4. Import the Gemma 4 26B LiteRT Checkpoint (On-Device GPU/NPU)
 
 ```bash
-agy-local import-litert --preset gemma4-26b
+kardashev import-litert --preset gemma4-26b
 ```
 
-### 5. Launch the Interactive Antigravity Studio TUI (`agy` / `agy-local`)
+### 5. Launch the Interactive Kardashev Studio TUI (`kardashev` / `ksh` / `agy`)
 
 ```bash
 # Launch directly with your saved user defaults (~/.config/agy-local/config.json):
-agy
+kardashev   # or: ksh / agy
 
 # Run on-device with Gemma 4 26B via LiteRT + autonomous pytest verification loop:
-agy chat --preset gemma4-26b --ralph "pytest -q"
+kardashev chat --preset gemma4-26b --ralph "pytest -q"
 
 # Run with GLM-4 via Ollama or Qwen3.6-35B on local vLLM:
-agy chat --preset glm4-9b-ollama
-agy chat --preset qwen3.6-35b-vllm
+kardashev chat --preset glm4-9b-ollama
+kardashev chat --preset qwen3.6-35b-vllm
 ```
 
 ---
 
 ## Interactive Rich TUI (`AgyRichTUI`)
 
-Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches a state-of-the-art, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
+Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / `agy`) launches a state-of-the-art, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
 
 - **Live Workspace, Git, Context Gauge & Ralph Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `LocalOpenAIAgentConfig`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), autonomous Ralph verification loop status, and active MCP servers.
 - **Real-Time Streaming with Thinking, Live Tool Results & Unified Diffs**:
@@ -98,10 +102,10 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), self-healing edit stats, OpenCommons stats, checkpoints, and compactions. |
 | `/ast [query]` | Render the ranked Aider-style AST Repository Map (`classes`, `methods`, `functions`, `[start-end]` lines). |
 | `/scout <query>` | Run the Surgical Context Scout to extract ranked AST symbols and exact code slices (`<2,000 tokens`). |
-| `/commons [action]` | Manage the OpenCommons research engine (`status`, `find <query>`, `review`, `approve <id>`, `reject <id>`, `seed`). |
-| `/integrate [target]` | Auto-configure `agy-local-mcp` and co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
+| `/commons [action]` | Manage the OpenCommons research engine (`status`, `find <query>`, `review`, `approve <id>`, `reject <id>`, `pull [url]`, `push [url]`, `seed`). |
+| `/integrate [target]` | Auto-configure `kardashev-mcp` / `agy-local-mcp` and co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
 | `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
-| `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session. |
+| `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session (with automatic endpoint liveness check). |
 | `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`) or press `Alt+P`. |
 | `/ralph <cmd\|off>` | Enable or disable autonomous self-verification loop (e.g., `/ralph pytest -q`). |
 | `/checkpoint [create\|list]` | Create a named git workspace snapshot or list all turn checkpoints. |
@@ -110,7 +114,7 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `/save [name]` / `/load [name]` | Save or restore session transcripts in `~/.local/share/agy-local/sessions/`. |
 | `/export [path.md]` | Export the full session transcript, thinking traces, and tool timeline to Markdown. |
 | `/config [show\|save]` | Inspect or save current session settings as persistent user defaults in `~/.config/agy-local/config.json`. |
-| `/update` | Self-update `agy-local` in-place from GitHub `main` and refresh CLI symlinks. |
+| `/update` | Self-update `kardashev-cli` in-place from GitHub `main` and refresh CLI symlinks. |
 | `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
 | `/doctor` | Run hardware, GPU, LiteRT, OpenCommons, and MCP diagnostics inside the session. |
 | `/diff` | Render a syntax-highlighted `git diff` of uncommitted workspace changes. |

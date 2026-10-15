@@ -12,6 +12,7 @@ Provides Claude Code / OpenAI Codex CLI style installation & lifecycle managemen
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
@@ -26,7 +27,7 @@ from typing import Any
 
 from agy_local import __version__
 
-GITHUB_REPO = "kardashevproject/agy-local"
+GITHUB_REPO = "kardashevproject/kardashev-cli"
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 GITHUB_API_MAIN_COMMIT = f"https://api.github.com/repos/{GITHUB_REPO}/commits/main"
 UPDATE_CHECK_TTL_SECONDS = 12 * 3600  # 12 hours
@@ -126,6 +127,24 @@ def _update_cache_path() -> Path:
     return d / "update_check.json"
 
 
+def _is_remote_ahead(repo_root: Path | None, local_sha: str | None, remote_sha: str | None) -> bool:
+    """Returns True ONLY if remote_sha differs from local_sha AND local_sha is not already ahead of remote_sha."""
+    if not local_sha or not remote_sha or local_sha == remote_sha:
+        return False
+    if repo_root is not None and (repo_root / ".git").exists():
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            # If remote_sha is already an ancestor of local HEAD, local is ahead of remote -> no update needed!
+            proc = subprocess.run(
+                ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", remote_sha, local_sha],
+                capture_output=True,
+                timeout=1.5,
+                check=False,
+            )
+            if proc.returncode == 0:
+                return False
+    return True
+
+
 def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateStatus:
     """Checks GitHub for newer releases or commits on `main`, caching results for 12 hours."""
     install_mode, repo_root = detect_install_layout()
@@ -139,14 +158,14 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
                 remote_sha = cached.get("remote_commit")
                 latest_ver = cached.get("latest_version", __version__)
                 up_avail = bool(
-                    (local_sha and remote_sha and local_sha != remote_sha)
+                    _is_remote_ahead(repo_root, local_sha, remote_sha)
                     or (latest_ver != __version__)
                 )
                 msg = (
                     f"Update available ({local_sha[:7] if local_sha else __version__} -> "
-                    f"{remote_sha[:7] if remote_sha else latest_ver}). Run `agy-local update`."
+                    f"{remote_sha[:7] if remote_sha else latest_ver}). Run `kardashev update`."
                     if up_avail
-                    else f"agy-local v{__version__} is up to date."
+                    else f"kardashev v{__version__} is up to date."
                 )
                 return UpdateStatus(
                     current_version=__version__,
@@ -164,7 +183,7 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
     latest_ver = __version__
     remote_sha: str | None = None
 
-    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"agy-local/{__version__}"}
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": f"kardashev-cli/{__version__}"}
     try:
         req = urllib.request.Request(GITHUB_API_RELEASES, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -201,14 +220,14 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
         pass
 
     up_avail = bool(
-        (local_sha and remote_sha and local_sha != remote_sha)
+        _is_remote_ahead(repo_root, local_sha, remote_sha)
         or (latest_ver and latest_ver != __version__)
     )
     msg = (
         f"Update available ({local_sha[:7] if local_sha else __version__} -> "
-        f"{remote_sha[:7] if remote_sha else latest_ver}). Run `agy-local update`."
+        f"{remote_sha[:7] if remote_sha else latest_ver}). Run `kardashev update`."
         if up_avail
-        else f"agy-local v{__version__} ({local_sha[:7] if local_sha else 'release'}) is up to date."
+        else f"kardashev v{__version__} ({local_sha[:7] if local_sha else 'release'}) is up to date."
     )
     return UpdateStatus(
         current_version=__version__,
@@ -223,16 +242,22 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
 
 
 def ensure_bin_symlinks() -> list[str]:
-    """Ensures `~/.local/bin/{agy,agy-local,agy-local-mcp,opencommons-mcp}` point to the active venv scripts."""
+    """Ensures `~/.local/bin/{kardashev,ksh,kardashev-mcp,agy,agy-local,agy-local-mcp,opencommons-mcp}` point to the active venv scripts."""
     bin_dir = Path(sys.executable).parent
     user_bin = Path.home() / ".local" / "bin"
     user_bin.mkdir(parents=True, exist_ok=True)
     linked: list[str] = []
 
+    primary_cli = bin_dir / "kardashev" if (bin_dir / "kardashev").exists() else bin_dir / "agy-local"
+    primary_mcp = bin_dir / "kardashev-mcp" if (bin_dir / "kardashev-mcp").exists() else bin_dir / "agy-local-mcp"
+
     targets = {
-        "agy-local": bin_dir / "agy-local",
-        "agy": bin_dir / "agy-local",
-        "agy-local-mcp": bin_dir / "agy-local-mcp",
+        "kardashev": primary_cli,
+        "ksh": primary_cli,
+        "kardashev-mcp": primary_mcp,
+        "agy-local": primary_cli,
+        "agy": primary_cli,
+        "agy-local-mcp": primary_mcp,
         "opencommons-mcp": bin_dir / "opencommons-mcp",
     }
     for name, src in targets.items():
@@ -250,7 +275,7 @@ def ensure_bin_symlinks() -> list[str]:
 
 
 def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
-    """Performs an in-place self-update of `agy-local` (like `claude update` / `codex --upgrade`)."""
+    """Performs an in-place self-update of `kardashev-cli` / `agy-local`."""
     install_mode, repo_root = detect_install_layout()
     pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
     uv_bin = shutil.which("uv")
@@ -289,13 +314,13 @@ def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
         check_for_updates(force=True)
         return (
             True,
-            f"Updated agy-local ({install_mode}) to {new_sha[:8]} and linked {len(linked)} binaries in ~/.local/bin.",
+            f"Updated kardashev-cli ({install_mode}) to {new_sha[:8]} and linked {len(linked)} binaries in ~/.local/bin.",
         )
 
     # Standalone pip/uv git upgrade from GitHub
     git_url = f"git+https://github.com/{GITHUB_REPO}.git"
     if include_litert:
-        git_url = f"agy-local[litert] @ git+https://github.com/{GITHUB_REPO}.git"
+        git_url = f"kardashev-cli[litert] @ git+https://github.com/{GITHUB_REPO}.git"
     inst = subprocess.run(
         [*pip_cmd, git_url],
         capture_output=True,
@@ -306,7 +331,7 @@ def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
         return (False, f"pip upgrade failed: {(inst.stderr or inst.stdout).strip()}")
     linked = ensure_bin_symlinks()
     check_for_updates(force=True)
-    return (True, f"Updated agy-local from GitHub main and linked {len(linked)} binaries.")
+    return (True, f"Updated kardashev-cli from GitHub main and linked {len(linked)} binaries.")
 
 
 def generate_shell_completion(shell: str) -> str:
@@ -316,8 +341,8 @@ def generate_shell_completion(shell: str) -> str:
     flags = "--preset --backend --model --model-path --base-url --workspace --policy --litert-device --speculative --with-chronosml --with-opencommons --ralph --plain --dry-run --json --help --version"
 
     if shell == "zsh":
-        return f"""#compdef agy-local agy
-_agy_local() {{
+        return f"""#compdef kardashev ksh agy-local agy
+_kardashev() {{
   local -a subcmds presets
   subcmds=({subcommands})
   presets=({presets})
@@ -337,24 +362,30 @@ _agy_local() {{
       ;;
   esac
 }}
-compdef _agy_local agy-local agy
+compdef _kardashev kardashev ksh agy-local agy
 """
 
     if shell == "fish":
         lines = [
-            "# Fish completions for agy-local & agy",
+            "# Fish completions for kardashev, ksh, agy-local & agy",
+            f"complete -c kardashev -f -n '__fish_use_subcommand' -a '{subcommands}'",
+            f"complete -c ksh -f -n '__fish_use_subcommand' -a '{subcommands}'",
             f"complete -c agy-local -f -n '__fish_use_subcommand' -a '{subcommands}'",
             f"complete -c agy -f -n '__fish_use_subcommand' -a '{subcommands}'",
+            f"complete -c kardashev -l preset -s p -a '{presets}'",
+            f"complete -c ksh -l preset -s p -a '{presets}'",
             f"complete -c agy-local -l preset -s p -a '{presets}'",
             f"complete -c agy -l preset -s p -a '{presets}'",
+            "complete -c kardashev -l policy -a 'allow-all ask sandbox'",
+            "complete -c ksh -l policy -a 'allow-all ask sandbox'",
             "complete -c agy-local -l policy -a 'allow-all ask sandbox'",
             "complete -c agy -l policy -a 'allow-all ask sandbox'",
         ]
         return "\n".join(lines) + "\n"
 
     # Default: bash
-    return f"""# Bash completion for agy-local & agy
-_agy_local_completions() {{
+    return f"""# Bash completion for kardashev, ksh, agy-local & agy
+_kardashev_completions() {{
   local cur prev subcmds presets flags
   COMPREPLY=()
   cur="${{COMP_WORDS[COMP_CWORD]}}"
@@ -382,5 +413,5 @@ _agy_local_completions() {{
   COMPREPLY=( $(compgen -W "${{flags}}" -- "${{cur}}") )
   return 0
 }}
-complete -F _agy_local_completions agy-local agy
+complete -F _kardashev_completions kardashev ksh agy-local agy
 """

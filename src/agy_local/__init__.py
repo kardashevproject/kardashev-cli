@@ -1,6 +1,6 @@
-"""agy-local: Open-source local & open-weight model harness for Google Antigravity."""
+"""kardashev-cli (agy-local): Engineered local & open-weight coding agent harness with OpenCommons CRDT research."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from agy_local.ast_map import (
     FileSymbolSummary,

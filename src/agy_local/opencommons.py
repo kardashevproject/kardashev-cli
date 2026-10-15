@@ -41,7 +41,9 @@ import builtins
 import contextlib
 import copy
 import fcntl
+import gzip
 import hashlib
+import http.server
 import json
 import math
 import os
@@ -49,6 +51,8 @@ import re
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
@@ -65,6 +69,128 @@ DEFAULT_STORE_PATH = Path(
 DEFAULT_PENDING_PATH = Path(
     os.environ.get("OPENCOMMONS_PENDING_PATH", "~/.opencommons/pending_queue.json")
 ).expanduser()
+
+DEFAULT_HUB_URL = os.environ.get(
+    "OPENCOMMONS_HUB_URL",
+    "https://raw.githubusercontent.com/kardashevproject/kardashev-cli/main/commons/store.json",
+)
+
+MAX_AST_NODES = 500
+FORBIDDEN_CALL_NAMES = frozenset(
+    {
+        "eval",
+        "exec",
+        "compile",
+        "open",
+        "input",
+        "breakpoint",
+        "__import__",
+        "getattr",
+        "setattr",
+        "delattr",
+        "globals",
+        "locals",
+        "vars",
+        "dir",
+        "help",
+        "memoryview",
+        "exit",
+        "quit",
+    }
+)
+
+SAFE_EXEC_BUILTINS: dict[str, Any] = {
+    "abs": abs,
+    "all": all,
+    "any": any,
+    "bin": bin,
+    "bool": bool,
+    "bytearray": bytearray,
+    "bytes": bytes,
+    "callable": callable,
+    "chr": chr,
+    "complex": complex,
+    "dict": dict,
+    "divmod": divmod,
+    "enumerate": enumerate,
+    "filter": filter,
+    "float": float,
+    "frozenset": frozenset,
+    "hasattr": hasattr,
+    "hash": hash,
+    "hex": hex,
+    "int": int,
+    "isinstance": isinstance,
+    "issubclass": issubclass,
+    "iter": iter,
+    "len": len,
+    "list": list,
+    "map": map,
+    "max": max,
+    "min": min,
+    "next": next,
+    "oct": oct,
+    "ord": ord,
+    "pow": pow,
+    "range": range,
+    "repr": repr,
+    "reversed": reversed,
+    "round": round,
+    "set": set,
+    "slice": slice,
+    "sorted": sorted,
+    "str": str,
+    "sum": sum,
+    "tuple": tuple,
+    "type": type,
+    "zip": zip,
+    "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "ZeroDivisionError": ZeroDivisionError,
+    "ArithmeticError": ArithmeticError,
+    "OverflowError": OverflowError,
+    "IndexError": IndexError,
+    "KeyError": KeyError,
+    "RuntimeError": RuntimeError,
+    "AssertionError": AssertionError,
+    "StopIteration": StopIteration,
+}
+
+
+class UnsafeConceptCodeError(ValueError):
+    """Raised when a candidate Python concept block violates the static AST security policy."""
+
+
+def verify_ast_safety_static(source_code: str) -> ast.Module:
+    """Layer-1 Zero-Trust Static AST Capability Verifier (<0.05ms).
+
+    Rejects:
+    - Any `import` or `from ... import` statement (`ast.Import`, `ast.ImportFrom`)
+    - Any dunder identifier or attribute access containing `__` (blocks `__subclasses__`,
+      `__globals__`, `__builtins__`, `__code__`, `__dict__`, `__import__` sandbox escapes)
+    - Calls to forbidden dynamic execution or I/O builtins (`eval`, `exec`, `open`, `getattr`, etc.)
+    - Syntax-bomb DoS trees exceeding `MAX_AST_NODES` (500 nodes)
+    """
+    tree = ast.parse(source_code)
+    for node_count, node in enumerate(ast.walk(tree), start=1):
+        if node_count > MAX_AST_NODES:
+            raise UnsafeConceptCodeError(
+                f"AST exceeds maximum allowed complexity ({node_count} > {MAX_AST_NODES} nodes)."
+            )
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            raise UnsafeConceptCodeError("Import statements are forbidden in OpenCommons pure concept blocks.")
+        if isinstance(node, (ast.Global, ast.Nonlocal)):
+            raise UnsafeConceptCodeError("Global/nonlocal state mutation is forbidden in OpenCommons blocks.")
+        if isinstance(node, ast.Name):
+            if "__" in node.id:
+                raise UnsafeConceptCodeError(f"Dunder identifier '{node.id}' is forbidden by security policy.")
+            if node.id in FORBIDDEN_CALL_NAMES:
+                raise UnsafeConceptCodeError(f"Builtin '{node.id}' is forbidden by security policy.")
+        if isinstance(node, ast.Attribute) and "__" in node.attr:
+            raise UnsafeConceptCodeError(f"Dunder attribute '.{node.attr}' is forbidden by security policy.")
+    return tree
+
 
 _TOKEN_RE = re.compile(r"[a-zA-Z]+|\d+")
 _ALPHANUM_CONCEPT_RE = re.compile(r"([a-zA-Z]+)(\d+)")
@@ -177,8 +303,8 @@ class _AlphaNormalizer(ast.NodeTransformer):
 
 
 def compute_structural_sid(source_code: str) -> tuple[str, str, tuple[str, ...], str, tuple[str, ...]]:
-    """Parse Python source code, extract primary function metadata, dependencies, and compute Merkle sid."""
-    tree = ast.parse(source_code)
+    """Parse Python source code, verify static AST security, and compute Merkle sid."""
+    tree = verify_ast_safety_static(source_code)
     func_nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
     if not func_nodes:
         raise ValueError("No top-level FunctionDef found in source code.")
@@ -427,7 +553,7 @@ def fingerprint_function(
     t0 = time.perf_counter()
     sid, func_name, param_types, return_type, deps = compute_structural_sid(source_code)
 
-    ns: dict[str, Any] = {"math": math}
+    ns: dict[str, Any] = {"__builtins__": SAFE_EXEC_BUILTINS, "math": math}
     if extra_globals:
         ns.update(extra_globals)
     exec(compile(source_code, "<commons_block>", "exec"), ns)  # noqa: S102
@@ -529,7 +655,8 @@ def run_async_peer_review(
             reasons=("silent_argument_mutation: mutated caller input container in-place while returning a value",),
         )
 
-    ns: dict[str, Any] = {"math": math}
+    verify_ast_safety_static(source_code)
+    ns: dict[str, Any] = {"__builtins__": SAFE_EXEC_BUILTINS, "math": math}
     if extra_globals:
         ns.update(extra_globals)
     exec(compile(source_code, "<peer_review>", "exec"), ns)  # noqa: S102
@@ -865,7 +992,7 @@ class OpenCommonsStore:
         if block_id not in self.blocks_by_id:
             return False
         block = self.blocks_by_id[block_id]
-        fn = self._compiled_cache.get(block_id)
+        fn = self._get_compiled_fn(block_id)
         refuted = False
         if fn is None:
             refuted = True
@@ -906,26 +1033,46 @@ class OpenCommonsStore:
         return True
 
     def _build_dependency_globals(self) -> dict[str, Any]:
-        ns: dict[str, Any] = {"math": math}
+        ns: dict[str, Any] = {"__builtins__": SAFE_EXEC_BUILTINS, "math": math}
         for bid in self.canonical_block_by_cid.values():
             if bid in self.quarantined_ids:
                 continue
             b = self.blocks_by_id[bid]
-            if bid in self._compiled_cache:
-                ns[b.name] = self._compiled_cache[bid]
+            fn = self._get_compiled_fn(bid)
+            if fn is not None:
+                ns[b.name] = fn
         return ns
+
+    def _get_compiled_fn(self, block_id: str) -> Callable[..., Any] | None:
+        """Lazily compiles and caches a concept block inside the restricted SAFE_EXEC_BUILTINS sandbox."""
+        if block_id in self._compiled_cache:
+            return self._compiled_cache[block_id]
+        block = self.blocks_by_id.get(block_id)
+        if block is None or block.trust_tier == "quarantined":
+            return None
+        with contextlib.suppress(Exception):
+            verify_ast_safety_static(block.source_code)
+            ns: dict[str, Any] = {"__builtins__": SAFE_EXEC_BUILTINS, "math": math}
+            for dep_name in block.dependencies:
+                dep_cids = self._name_to_cids.get(dep_name, set())
+                for dcid in dep_cids:
+                    dbid = self.canonical_block_by_cid.get(dcid)
+                    if dbid and dbid != block_id and dbid not in self.quarantined_ids:
+                        dep_fn = self._get_compiled_fn(dbid)
+                        if dep_fn is not None:
+                            ns[dep_name] = dep_fn
+                        break
+            exec(compile(block.source_code, f"<{block.block_id}>", "exec"), ns)  # noqa: S102
+            if block.name in ns and callable(ns[block.name]):
+                self._compiled_cache[block.block_id] = ns[block.name]
+                return ns[block.name]
+        return None
 
     def _insert_block(self, block: ConceptBlock) -> None:
         self.blocks_by_id[block.block_id] = block
         if block.trust_tier == "quarantined":
             self.quarantined_ids.add(block.block_id)
             return
-
-        with contextlib.suppress(Exception):
-            ns = self._build_dependency_globals()
-            exec(compile(block.source_code, f"<{block.block_id}>", "exec"), ns)  # noqa: S102
-            if block.name in ns and callable(ns[block.name]):
-                self._compiled_cache[block.block_id] = ns[block.name]
 
         self.cid_by_fp.setdefault(block.fp, block.cid)
 
@@ -950,6 +1097,31 @@ class OpenCommonsStore:
         tokens, _ = tokenize_concept_query(index_text)
         for tok in tokens:
             self._token_index.setdefault(tok, set()).add(block.cid)
+
+    def compute_merkle_manifest(self) -> dict[str, Any]:
+        """Compute deterministic Merkle root and 16 hex-prefix bucket hashes for O(delta) network sync."""
+        buckets: dict[str, list[str]] = {f"{i:x}": [] for i in range(16)}
+        for bid in sorted(self.blocks_by_id.keys()):
+            blk = self.blocks_by_id[bid]
+            q_flag = "Q" if bid in self.quarantined_ids else "A"
+            entry = f"{bid}:{blk.sid}:{blk.cid}:{q_flag}:{len(blk.pitfalls)}"
+            prefix = blk.sid[4] if len(blk.sid) > 4 and blk.sid[4] in buckets else "0"
+            buckets[prefix].append(entry)
+
+        bucket_hashes: dict[str, str] = {}
+        for k, items in buckets.items():
+            bucket_hashes[k] = hashlib.sha256("\n".join(items).encode("utf-8")).hexdigest()[:16]
+
+        root_material = "|".join(f"{k}:{bucket_hashes[k]}" for k in sorted(bucket_hashes.keys()))
+        merkle_root = hashlib.sha256(root_material.encode("utf-8")).hexdigest()[:24]
+        return {
+            "schema_version": "1.0.0",
+            "merkle_root": merkle_root,
+            "total_blocks": len(self.blocks_by_id),
+            "active_concepts_cid": len(self.canonical_block_by_cid),
+            "quarantined_blocks": len(self.quarantined_ids),
+            "bucket_hashes": bucket_hashes,
+        }
 
     def find(
         self,
@@ -1016,7 +1188,7 @@ class OpenCommonsStore:
 
             io_verified = False
             if io_examples:
-                fn = self._compiled_cache.get(block.block_id)
+                fn = self._get_compiled_fn(block.block_id)
                 if fn is None:
                     continue
                 all_passed = True
@@ -1246,17 +1418,33 @@ def store_to_dict(store: OpenCommonsStore) -> dict[str, Any]:
     }
 
 
-def store_from_dict(payload: dict[str, Any]) -> OpenCommonsStore:
+def store_from_dict(
+    payload: dict[str, Any],
+    *,
+    verify_network_safety: bool = False,
+) -> OpenCommonsStore:
     store = OpenCommonsStore()
     q_set = set(payload.get("quarantined_ids", []))
     for b_dict in payload.get("blocks", []):
+        if not isinstance(b_dict, dict):
+            continue
+        if verify_network_safety:
+            try:
+                src = str(b_dict.get("source_code", ""))
+                computed_sid, _, _, _, _ = compute_structural_sid(src)
+                if b_dict.get("sid") and str(b_dict["sid"]) != computed_sid:
+                    continue
+                b_dict = dict(b_dict)
+                b_dict["sid"] = computed_sid
+            except (UnsafeConceptCodeError, SyntaxError, ValueError):
+                continue
         if b_dict.get("block_id") in q_set:
             b_dict = dict(b_dict)
             b_dict["trust_tier"] = "quarantined"
         block = deserialize_block(b_dict)
         store._block_id_by_sid[block.sid] = block.block_id
         store._insert_block(block)
-    store.quarantined_ids.update(q_set)
+    store.quarantined_ids.update(q_set & set(store.blocks_by_id.keys()))
     store.peer_review_executions = int(payload.get("peer_review_executions", 0))
     store.sid_dedup_hits = int(payload.get("sid_dedup_hits", 0))
     return store
@@ -1342,6 +1530,330 @@ def save_persistent_store(
             return final_store
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _decode_http_body(raw_bytes: bytes, content_encoding: str | None) -> dict[str, Any]:
+    if content_encoding and "gzip" in content_encoding.lower():
+        raw_bytes = gzip.decompress(raw_bytes)
+    return json.loads(raw_bytes.decode("utf-8"))
+
+
+def pull_from_remote_hub(
+    hub_url: str | None = None,
+    *,
+    store_path: Path | str | None = None,
+    timeout: float = 8.0,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Pull verified OpenCommons updates over the network using Merkle-root & delta sync."""
+    t0 = time.perf_counter()
+    target_url = (hub_url or DEFAULT_HUB_URL).rstrip("/")
+    local_store = load_persistent_store(store_path)
+    before_blocks = len(local_store.blocks_by_id)
+    before_cids = len(local_store.canonical_block_by_cid)
+    local_manifest = local_store.compute_merkle_manifest()
+
+    headers: dict[str, str] = {
+        "Accept": "application/json",
+        "Accept-Encoding": "gzip",
+        "User-Agent": "kardashev-opencommons/1.0",
+    }
+    if not force:
+        headers["If-None-Match"] = f'"{local_manifest["merkle_root"]}"'
+
+    # If pointing to a live OpenCommons Hub (as opposed to a static .json file), try /v1/sync-delta first
+    if not target_url.endswith(".json"):
+        delta_endpoint = f"{target_url}/v1/sync-delta"
+        req_payload = {
+            "mode": "pull_only",
+            "merkle_root": "" if force else local_manifest["merkle_root"],
+            "known_block_ids": [] if force else sorted(local_store.blocks_by_id.keys()),
+            "known_quarantined_ids": sorted(local_store.quarantined_ids),
+        }
+        try:
+            body_bytes = gzip.compress(json.dumps(req_payload).encode("utf-8"))
+            req = urllib.request.Request(
+                delta_endpoint,
+                data=body_bytes,
+                headers={
+                    **headers,
+                    "Content-Type": "application/json",
+                    "Content-Encoding": "gzip",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_data = _decode_http_body(resp.read(), resp.headers.get("Content-Encoding"))
+                delta_store = store_from_dict(resp_data, verify_network_safety=True)
+                merged = local_store.merge(delta_store)
+                saved = save_persistent_store(merged, store_path)
+                elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                return {
+                    "ok": True,
+                    "protocol": "delta_sync",
+                    "hub_url": target_url,
+                    "up_to_date": resp_data.get("up_to_date", False),
+                    "new_blocks_pulled": len(saved.blocks_by_id) - before_blocks,
+                    "active_concepts_cid": len(saved.canonical_block_by_cid),
+                    "new_cids_added": len(saved.canonical_block_by_cid) - before_cids,
+                    "merkle_root": saved.compute_merkle_manifest()["merkle_root"],
+                    "elapsed_ms": elapsed_ms,
+                }
+        except urllib.error.HTTPError as http_err:
+            if http_err.code == 304:
+                return {
+                    "ok": True,
+                    "protocol": "etag_304",
+                    "hub_url": target_url,
+                    "up_to_date": True,
+                    "new_blocks_pulled": 0,
+                    "active_concepts_cid": before_cids,
+                    "merkle_root": local_manifest["merkle_root"],
+                    "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+                }
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+
+    # Fallback: GET static store JSON (e.g. GitHub Raw CDN or /v1/store)
+    store_url = target_url if target_url.endswith(".json") else f"{target_url}/v1/store"
+    try:
+        req = urllib.request.Request(store_url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            remote_dict = _decode_http_body(resp.read(), resp.headers.get("Content-Encoding"))
+            remote_store = store_from_dict(remote_dict, verify_network_safety=True)
+            merged = local_store.merge(remote_store)
+            saved = save_persistent_store(merged, store_path)
+            elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            return {
+                "ok": True,
+                "protocol": "static_cdn_get",
+                "hub_url": store_url,
+                "up_to_date": len(saved.blocks_by_id) == before_blocks,
+                "new_blocks_pulled": len(saved.blocks_by_id) - before_blocks,
+                "active_concepts_cid": len(saved.canonical_block_by_cid),
+                "new_cids_added": len(saved.canonical_block_by_cid) - before_cids,
+                "merkle_root": saved.compute_merkle_manifest()["merkle_root"],
+                "elapsed_ms": elapsed_ms,
+            }
+    except urllib.error.HTTPError as http_err:
+        if http_err.code == 304:
+            return {
+                "ok": True,
+                "protocol": "etag_304",
+                "hub_url": store_url,
+                "up_to_date": True,
+                "new_blocks_pulled": 0,
+                "active_concepts_cid": before_cids,
+                "merkle_root": local_manifest["merkle_root"],
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+            }
+        return {"ok": False, "hub_url": store_url, "error": f"HTTP {http_err.code}: {http_err.reason}"}
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"ok": False, "hub_url": store_url, "error": str(exc)}
+
+
+def push_to_remote_hub(
+    hub_url: str | None = None,
+    *,
+    store_path: Path | str | None = None,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    """Push local peer-reviewed OpenCommons discoveries & counterexamples to a remote CRDT Hub."""
+    t0 = time.perf_counter()
+    target_url = (hub_url or DEFAULT_HUB_URL).rstrip("/")
+    local_store = load_persistent_store(store_path)
+    local_manifest = local_store.compute_merkle_manifest()
+
+    sync_endpoint = target_url if target_url.endswith("/v1/sync-delta") else f"{target_url}/v1/sync-delta"
+    payload = {
+        "mode": "bidirectional",
+        "merkle_root": local_manifest["merkle_root"],
+        "known_block_ids": sorted(local_store.blocks_by_id.keys()),
+        "known_quarantined_ids": sorted(local_store.quarantined_ids),
+        "blocks": [serialize_block(b) for b in local_store.blocks_by_id.values()],
+        "quarantined_ids": sorted(local_store.quarantined_ids),
+    }
+
+    try:
+        compressed = gzip.compress(json.dumps(payload).encode("utf-8"))
+        req = urllib.request.Request(
+            sync_endpoint,
+            data=compressed,
+            headers={
+                "Content-Type": "application/json",
+                "Content-Encoding": "gzip",
+                "Accept-Encoding": "gzip",
+                "User-Agent": "kardashev-opencommons/1.0",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            resp_data = _decode_http_body(resp.read(), resp.headers.get("Content-Encoding"))
+            delta_down = store_from_dict(resp_data, verify_network_safety=True)
+            merged = local_store.merge(delta_down)
+            saved = save_persistent_store(merged, store_path)
+            return {
+                "ok": True,
+                "hub_url": sync_endpoint,
+                "accepted_by_hub": resp_data.get("accepted_count", 0),
+                "rejected_unsafe_or_failed": resp_data.get("rejected_count", 0),
+                "total_active_concepts": len(saved.canonical_block_by_cid),
+                "merkle_root": saved.compute_merkle_manifest()["merkle_root"],
+                "payload_bytes_sent": len(compressed),
+                "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
+            }
+    except (urllib.error.URLError, OSError, ValueError) as exc:
+        return {"ok": False, "hub_url": sync_endpoint, "error": str(exc)}
+
+
+def process_hub_sync_request(
+    req_payload: dict[str, Any],
+    *,
+    store_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Server-side handler for `/v1/sync-delta` that audits incoming blocks through the AST security gate
+    + 5-gate adversarial peer review before merging into the Hub's CRDT store, and returns only the
+    delta blocks missing on the client.
+    """
+    hub_store = load_persistent_store(store_path)
+    hub_manifest = hub_store.compute_merkle_manifest()
+    client_root = str(req_payload.get("merkle_root", ""))
+    client_known_ids = set(req_payload.get("known_block_ids", []))
+    mode = str(req_payload.get("mode", "bidirectional"))
+
+    accepted_count = 0
+    rejected_count = 0
+
+    if mode == "bidirectional" and req_payload.get("blocks"):
+        for b_dict in req_payload.get("blocks", []):
+            if not isinstance(b_dict, dict):
+                continue
+            bid = str(b_dict.get("block_id", ""))
+            if bid in hub_store.blocks_by_id and bid not in req_payload.get("quarantined_ids", []):
+                continue
+            try:
+                src = str(b_dict.get("source_code", ""))
+                verify_ast_safety_static(src)
+                pitfalls = tuple(
+                    PitfallWarning(**pf)
+                    for pf in b_dict.get("pitfalls", [])
+                    if isinstance(pf, dict)
+                )
+                blk, _fp, verdict = hub_store.ingest(
+                    source_code=src,
+                    domain=str(b_dict.get("domain", "general")),
+                    summary=str(b_dict.get("summary", "")),
+                    pseudocode=str(b_dict.get("pseudocode", "")),
+                    invariants=tuple(str(x) for x in b_dict.get("invariants", [])),
+                    pitfalls=pitfalls,
+                    teleological_intent=str(b_dict.get("teleological_intent", "")),
+                    dimensional_units=str(b_dict.get("dimensional_units", "")),
+                    contributor_agent=str(b_dict.get("contributor_agent", "remote-agent")),
+                    run_peer_review=True,
+                )
+                if b_dict.get("trust_tier") == "quarantined" or bid in req_payload.get("quarantined_ids", []):
+                    hub_store.quarantined_ids.add(blk.block_id)
+                    hub_store.blocks_by_id[blk.block_id] = replace(blk, trust_tier="quarantined")
+                    accepted_count += 1
+                elif verdict and verdict.passed:
+                    accepted_count += 1
+                else:
+                    hub_store.blocks_by_id.pop(blk.block_id, None)
+                    hub_store.quarantined_ids.discard(blk.block_id)
+                    rejected_count += 1
+            except (UnsafeConceptCodeError, SyntaxError, ValueError, TypeError):
+                rejected_count += 1
+
+        if accepted_count > 0:
+            hub_store = save_persistent_store(hub_store, store_path)
+            hub_manifest = hub_store.compute_merkle_manifest()
+
+    if client_root == hub_manifest["merkle_root"] and accepted_count == 0:
+        return {
+            "schema_version": "1.0.0",
+            "up_to_date": True,
+            "merkle_root": hub_manifest["merkle_root"],
+            "accepted_count": 0,
+            "rejected_count": rejected_count,
+            "blocks": [],
+            "quarantined_ids": sorted(hub_store.quarantined_ids),
+        }
+
+    # Compute O(delta) missing blocks for client: ΔB_down = B_hub \ B_client
+    delta_blocks = [
+        serialize_block(hub_store.blocks_by_id[bid])
+        for bid in sorted(hub_store.blocks_by_id.keys())
+        if bid not in client_known_ids or bid in hub_store.quarantined_ids
+    ]
+    return {
+        "schema_version": "1.0.0",
+        "up_to_date": len(delta_blocks) == 0,
+        "merkle_root": hub_manifest["merkle_root"],
+        "accepted_count": accepted_count,
+        "rejected_count": rejected_count,
+        "blocks": delta_blocks,
+        "quarantined_ids": sorted(hub_store.quarantined_ids),
+    }
+
+
+def create_opencommons_hub_server(
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    store_path: Path | str | None = None,
+) -> http.server.ThreadingHTTPServer:
+    """Create a multi-threaded HTTP OpenCommons CRDT Gossip Hub server (`GET /v1/manifest`, `GET /v1/store`, `POST /v1/sync-delta`)."""
+
+    class _HubHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, format: str, *args: Any) -> None:
+            return
+
+        def _send_json(self, status_code: int, payload: dict[str, Any], etag: str | None = None) -> None:
+            raw = json.dumps(payload).encode("utf-8")
+            accept_enc = self.headers.get("Accept-Encoding", "")
+            use_gzip = "gzip" in accept_enc.lower()
+            body = gzip.compress(raw) if use_gzip else raw
+
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            if use_gzip:
+                self.send_header("Content-Encoding", "gzip")
+            if etag:
+                self.send_header("ETag", f'"{etag}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            store = load_persistent_store(store_path)
+            manifest = store.compute_merkle_manifest()
+            client_etag = (self.headers.get("If-None-Match") or "").strip().strip('"')
+            if client_etag and client_etag == manifest["merkle_root"]:
+                self.send_response(304)
+                self.end_headers()
+                return
+
+            if self.path.startswith("/v1/manifest"):
+                self._send_json(200, manifest, etag=manifest["merkle_root"])
+                return
+            if self.path.startswith("/v1/store") or self.path.endswith(".json"):
+                self._send_json(200, store_to_dict(store), etag=manifest["merkle_root"])
+                return
+            self._send_json(404, {"error": f"Unknown endpoint: {self.path}"})
+
+        def do_POST(self) -> None:
+            if not self.path.startswith("/v1/sync"):
+                self._send_json(404, {"error": f"Unknown endpoint: {self.path}"})
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                req_data = _decode_http_body(raw_body, self.headers.get("Content-Encoding"))
+                resp_payload = process_hub_sync_request(req_data, store_path=store_path)
+                self._send_json(200, resp_payload, etag=resp_payload.get("merkle_root"))
+            except (ValueError, KeyError, OSError) as exc:
+                self._send_json(400, {"error": str(exc)})
+
+    return http.server.ThreadingHTTPServer((host, port), _HubHandler)
 
 
 def load_pending_proposals(pending_path: Path | str | None = None) -> list[PendingProposal]:

@@ -14,12 +14,20 @@ from collections.abc import Sequence
 from google.antigravity import Agent
 from google.antigravity.utils.interactive import run_interactive_loop
 
+from agy_local import __version__
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.mcp_server import serve_stdio
 from agy_local.presets import BackendKind, get_preset, list_presets
 from agy_local.serve import compute_serve_plan
 from agy_local.tui import AgyRichTUI
+from agy_local.updater import (
+    UserConfig,
+    check_for_updates,
+    ensure_bin_symlinks,
+    generate_shell_completion,
+    perform_self_update,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -29,6 +37,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "Run the Google Antigravity coding harness with local LiteRT models "
             "(Gemma 4 26B) or OpenAI-compatible servers (vLLM, Ollama, SGLang, LM Studio, GLM-4, Qwen)."
         ),
+    )
+    parser.add_argument(
+        "-V",
+        "--version",
+        action="store_true",
+        help="Show agy-local version and installation mode.",
+    )
+    parser.add_argument(
+        "--upgrade",
+        action="store_true",
+        help="Self-update agy-local from GitHub main and refresh CLI symlinks.",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -233,27 +252,84 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run the agy-local JSON-RPC 2.0 stdio MCP server for zero-cost local agent delegation.",
     )
 
+    # 9. update / upgrade (Claude Code / Codex style self-updater)
+    upd_p = sub.add_parser(
+        "update",
+        aliases=["upgrade"],
+        help="Check for updates or self-update agy-local from GitHub main.",
+    )
+    upd_p.add_argument(
+        "--check",
+        action="store_true",
+        help="Only check if a newer version/commit is available without installing.",
+    )
+    upd_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Output update check status as JSON.",
+    )
+
+    # 10. config (manage ~/.config/agy-local/config.json defaults)
+    cfg_p = sub.add_parser(
+        "config",
+        help="View or modify persistent user defaults in ~/.config/agy-local/config.json.",
+    )
+    cfg_p.add_argument(
+        "action",
+        nargs="?",
+        choices=["show", "set", "reset", "path"],
+        default="show",
+        help="Action to perform (default: show).",
+    )
+    cfg_p.add_argument("key", nargs="?", help="Config key to set (e.g., default_preset, policy_mode).")
+    cfg_p.add_argument("value", nargs="?", help="Value to set.")
+
+    # 11. completions (generate bash/zsh/fish tab completions)
+    comp_p = sub.add_parser(
+        "completions",
+        help="Generate shell tab-completion script for bash, zsh, or fish.",
+    )
+    comp_p.add_argument(
+        "shell",
+        nargs="?",
+        choices=["bash", "zsh", "fish"],
+        default="bash",
+        help="Target shell (default: bash).",
+    )
+
     return parser
 
 
 def _options_from_args(args: argparse.Namespace) -> HarnessOptions:
+    user_cfg = UserConfig.load()
     workspaces = args.workspaces if getattr(args, "workspaces", None) else [os.getcwd()]
+    preset = getattr(args, "preset", None)
+    backend = getattr(args, "backend", None)
+    model = getattr(args, "model", None)
+    model_path = getattr(args, "model_path", None)
+    if not any([preset, backend, model, model_path]):
+        preset = user_cfg.default_preset
+    policy_arg = getattr(args, "policy", None) or user_cfg.policy_mode
+    speculative = bool(getattr(args, "speculative", False)) or user_cfg.speculative_decoding
+    with_chronos = bool(getattr(args, "with_chronosml", False)) or user_cfg.with_chronosml_mcp
+    with_opencommons = bool(getattr(args, "with_opencommons", False)) or user_cfg.with_opencommons_mcp
+
     return HarnessOptions(
-        preset=getattr(args, "preset", None),
-        backend=getattr(args, "backend", None),
-        model=getattr(args, "model", None),
-        model_path=getattr(args, "model_path", None),
+        preset=preset,
+        backend=backend,
+        model=model,
+        model_path=model_path,
         base_url=getattr(args, "base_url", None),
         litert_backend=getattr(args, "litert_device", "gpu"),
-        speculative_decoding=bool(getattr(args, "speculative", False)),
+        speculative_decoding=speculative,
         download_if_missing=bool(getattr(args, "download_if_missing", False)),
         workspaces=workspaces,
-        policy_mode=PolicyMode(getattr(args, "policy", "allow-all")),
+        policy_mode=PolicyMode(policy_arg),
         lightweight=not bool(getattr(args, "no_lightweight", False)),
         token_threshold=getattr(args, "token_threshold", None),
         system_instructions=getattr(args, "system_instructions", None),
-        with_chronosml_mcp=bool(getattr(args, "with_chronosml", False)),
-        with_opencommons_mcp=bool(getattr(args, "with_opencommons", False)),
+        with_chronosml_mcp=with_chronos,
+        with_opencommons_mcp=with_opencommons,
     )
 
 
@@ -513,18 +589,97 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return proc.returncode
 
 
+def _cmd_update(args: argparse.Namespace) -> int:
+    status = check_for_updates(force=True)
+    if getattr(args, "json", False):
+        print(json.dumps(status.to_dict(), indent=2))
+        return 0
+    if getattr(args, "check", False):
+        print(status.message)
+        return 0
+
+    print(f"Checking for updates ({status.install_mode})...")
+    ok, msg = perform_self_update(include_litert=True)
+    if ok:
+        print(f"✓ {msg}")
+        return 0
+    print(f"✗ {msg}", file=sys.stderr)
+    return 1
+
+
+def _cmd_config(args: argparse.Namespace) -> int:
+    cfg = UserConfig.load()
+    action = getattr(args, "action", "show")
+    if action == "path":
+        print(UserConfig.config_path())
+        return 0
+    if action == "reset":
+        fresh = UserConfig()
+        path = fresh.save()
+        print(f"✓ Reset user configuration to defaults at {path}")
+        return 0
+    if action == "set":
+        key = getattr(args, "key", None)
+        val = getattr(args, "value", None)
+        if not key or val is None:
+            print("Usage: agy-local config set <key> <value>", file=sys.stderr)
+            return 1
+        if not hasattr(cfg, key):
+            valid = ", ".join(UserConfig.__dataclass_fields__.keys())
+            print(f"Error: Unknown config key '{key}'. Valid keys: {valid}", file=sys.stderr)
+            return 1
+        current = getattr(cfg, key)
+        if isinstance(current, bool):
+            parsed: object = str(val).lower() in ("1", "true", "yes", "on")
+        elif val.lower() in ("none", "null", "off") and key == "ralph_verify_cmd":
+            parsed = None
+        else:
+            parsed = val
+        setattr(cfg, key, parsed)
+        path = cfg.save()
+        print(f"✓ Set {key} = {parsed!r} in {path}")
+        return 0
+
+    print(json.dumps(cfg.__dict__, indent=2))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args_list = list(argv) if argv is not None else sys.argv[1:]
+
+    if args_list in (["-V"], ["--version"]):
+        status = check_for_updates(force=False)
+        sha_info = f" ({status.local_commit[:7]})" if status.local_commit else ""
+        print(f"agy-local {__version__}{sha_info} [{status.install_mode}]")
+        return 0
+
+    if args_list == ["--upgrade"]:
+        args_list = ["update"]
+
     if not args_list:
         args_list = ["chat"]
     args = parser.parse_args(args_list)
 
+    if getattr(args, "version", False):
+        status = check_for_updates(force=False)
+        sha_info = f" ({status.local_commit[:7]})" if status.local_commit else ""
+        print(f"agy-local {__version__}{sha_info} [{status.install_mode}]")
+        return 0
+
+    if getattr(args, "upgrade", False) or args.command in ("update", "upgrade"):
+        return _cmd_update(args)
+    if args.command == "config":
+        return _cmd_config(args)
+    if args.command == "completions":
+        print(generate_shell_completion(getattr(args, "shell", "bash")))
+        return 0
     if args.command == "presets":
         return _cmd_presets(args)
     if args.command == "models":
         return _cmd_models(args)
     if args.command == "doctor":
+        ensure_bin_symlinks()
         return _cmd_doctor(args)
     if args.command == "import-litert":
         return _cmd_import_litert(args)

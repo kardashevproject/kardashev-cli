@@ -57,6 +57,7 @@ Changelog = "https://github.com/kardashevproject/agy-local/blob/main/CHANGELOG.m
 
 [project.scripts]
 agy-local = "agy_local.cli:main"
+agy = "agy_local.cli:main"
 agy-local-mcp = "agy_local.mcp_server:main"
 
 [build-system]

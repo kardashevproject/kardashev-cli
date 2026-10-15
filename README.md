@@ -15,36 +15,47 @@
 
 ## Quickstart
 
-### 1. Install `agy-local`
+### 1. One-Line CLI Install (Claude Code / Codex Style)
 
 ```bash
-git clone https://github.com/kardashevproject/agy-local.git
-cd agy-local
-pip install -e ".[litert]"
+curl -fsSL https://raw.githubusercontent.com/kardashevproject/agy-local/main/install.sh | bash
 ```
 
-### 2. Import the Gemma 4 26B LiteRT Checkpoint (On-Device GPU/NPU)
+Or install via `uv tool` / `pip`:
+```bash
+uv tool install "git+https://github.com/kardashevproject/agy-local.git"
+# Or from a local clone:
+git clone https://github.com/kardashevproject/agy-local.git
+cd agy-local && pip install -e ".[litert]"
+```
+
+This installs **`agy-local`**, the short alias **`agy`**, and **`agy-local-mcp`** into `~/.local/bin`.
+
+### 2. Self-Update Anytime (`agy-local update` or `/update`)
+
+```bash
+agy-local update          # Pulls latest commits, upgrades dependencies, refreshes symlinks
+agy-local update --check  # Check if a newer release/commit is available
+```
+
+### 3. Import the Gemma 4 26B LiteRT Checkpoint (On-Device GPU/NPU)
 
 ```bash
 agy-local import-litert --preset gemma4-26b
-# Or directly via litert-lm:
-# litert-lm import --from-huggingface-repo=litert-community/gemma-4-26B-A4B-it-litert-lm gemma-4-26B-A4B-it-web.litertlm gemma4-26b
 ```
 
-### 3. Launch the Interactive Antigravity Studio TUI (`agy-local chat`)
+### 4. Launch the Interactive Antigravity Studio TUI (`agy` / `agy-local`)
 
 ```bash
-# Run on-device with Gemma 4 26B via LiteRT:
-agy-local chat --preset gemma4-26b
+# Launch directly with your saved user defaults (~/.config/agy-local/config.json):
+agy
 
-# Run with GLM-4 via Ollama:
-agy-local chat --preset glm4-9b-ollama
+# Run on-device with Gemma 4 26B via LiteRT + autonomous pytest verification loop:
+agy chat --preset gemma4-26b --ralph "pytest -q"
 
-# Run with Qwen3.6-35B-A3B-FP8 or GLM-4 on local vLLM:
-agy-local chat --preset qwen3.6-35b-vllm
-
-# Point to any custom OpenAI-compatible server + attach ChronosML MCP:
-agy-local chat --backend openai --model glm4:9b --base-url http://127.0.0.1:11434/v1 --with-chronosml
+# Run with GLM-4 via Ollama or Qwen3.6-35B on local vLLM:
+agy chat --preset glm4-9b-ollama
+agy chat --preset qwen3.6-35b-vllm
 ```
 
 ---
@@ -78,6 +89,8 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `/compact` | Summarize earlier turns and reset the conversation window to free context tokens. |
 | `/save [name]` / `/load [name]` | Save or restore session transcripts in `~/.local/share/agy-local/sessions/`. |
 | `/export [path.md]` | Export the full session transcript, thinking traces, and tool timeline to Markdown. |
+| `/config [show\|save]` | Inspect or save current session settings as persistent user defaults in `~/.config/agy-local/config.json`. |
+| `/update` | Self-update `agy-local` in-place from GitHub `main` and refresh CLI symlinks. |
 | `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
 | `/doctor` | Run hardware, GPU, LiteRT, and MCP diagnostics inside the session. |
 | `/diff` | Render a syntax-highlighted `git diff` of uncommitted workspace changes. |
@@ -96,8 +109,11 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 
 | Subcommand | Description |
 |---|---|
-| `agy-local chat` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
+| `agy` / `agy-local [chat]` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
 | `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
+| `agy-local update` (`--upgrade`) | Self-update `agy-local` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
+| `agy-local config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
+| `agy-local completions [bash\|zsh\|fish]` | Output shell tab-completion scripts (`eval "$(agy-local completions zsh)"`). |
 | `agy-local serve` | Launch a local vLLM or Ollama server (`--preset qwen3.6-35b-vllm`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
 | `agy-local mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`agy-local-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
 | `agy-local presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |

@@ -300,3 +300,42 @@ def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
     assert "Looks clean." in report_path.read_text(encoding="utf-8")
 
 
+def test_cli_updater_config_and_completions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from agy_local.updater import UserConfig, detect_install_layout, generate_shell_completion
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+    # 1. UserConfig persistence via CLI
+    assert main(["config", "set", "default_preset", "glm4-9b-ollama"]) == 0
+    assert main(["config", "set", "speculative_decoding", "false"]) == 0
+    capsys.readouterr()
+
+    loaded = UserConfig.load()
+    assert loaded.default_preset == "glm4-9b-ollama"
+    assert loaded.speculative_decoding is False
+
+    assert main(["config", "reset"]) == 0
+    capsys.readouterr()
+    assert UserConfig.load().default_preset == "gemma4-26b"
+
+    # 2. Shell completions
+    for sh in ("bash", "zsh", "fish"):
+        script = generate_shell_completion(sh)
+        assert "agy-local" in script
+        assert "gemma4-26b" in script
+
+    assert main(["completions", "zsh"]) == 0
+    assert "#compdef agy-local agy" in capsys.readouterr().out
+
+    # 3. Install layout & --version
+    mode, root = detect_install_layout()
+    assert mode in ("git-editable", "managed-venv", "pip")
+    assert root is not None
+    assert main(["--version"]) == 0
+    assert "agy-local 0.1.0" in capsys.readouterr().out
+
+
+

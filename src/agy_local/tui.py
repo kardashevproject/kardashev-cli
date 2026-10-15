@@ -60,6 +60,7 @@ from rich.text import Text
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.presets import PRESETS, list_presets
+from agy_local.updater import UserConfig, check_for_updates, perform_self_update
 
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
@@ -76,6 +77,8 @@ SLASH_COMMANDS: dict[str, str] = {
     "/save": "Save session transcript and metadata (/save \\[name])",
     "/load": "Load and resume a saved session (/load <name>)",
     "/export": "Export full conversation & tool trace to a Markdown file (/export \\[path.md])",
+    "/config": "View or save persistent user defaults in ~/.config/agy-local/config.json",
+    "/update": "Self-update agy-local from GitHub main and refresh ~/.local/bin symlinks",
     "/models": "Scan local disk checkpoints and probe localhost OpenAI servers",
     "/doctor": "Run hardware, GPU, LiteRT, and MCP diagnostics",
     "/thoughts": "Toggle display of model reasoning/thinking traces (or press Alt+T)",
@@ -686,8 +689,14 @@ class AgyRichTUI:
         )
         grid.add_row(
             "Shortcuts",
-            "[dim][bold]/help[/bold] commands · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] context · [bold]!cmd[/bold] shell · [bold]/ralph[/bold] auto-verify · [bold]Alt+T[/bold] thoughts · [bold]Alt+P[/bold] policy[/dim]",
+            "[dim][bold]/help[/bold] commands · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] context · [bold]!cmd[/bold] shell · [bold]/ralph[/bold] auto-verify · [bold]/update[/bold] self-update[/dim]",
         )
+        upd = check_for_updates(force=False)
+        if upd.update_available:
+            grid.add_row(
+                "Update",
+                f"[bold yellow]⬆ {upd.message}[/bold yellow] [dim](type /update)[/dim]",
+            )
 
         return Panel(
             grid,
@@ -1127,6 +1136,41 @@ class AgyRichTUI:
             if ans in ("y", "yes"):
                 await asyncio.to_thread(subprocess.run, ["git", "-C", workspace, "checkout", "--", "."], check=False)
                 self.console.print("[green]✓ Reverted unstaged changes.[/green]")
+            return False
+
+        if cmd in ("/update", "/upgrade"):
+            self.console.print("[cyan]Checking for updates from GitHub main...[/cyan]")
+            ok, msg = await asyncio.to_thread(perform_self_update, include_litert=True)
+            color = "green" if ok else "red"
+            icon = "✓" if ok else "✗"
+            self.console.print(f"[{color}]{icon} {msg}[/{color}]")
+            return False
+
+        if cmd == "/config":
+            ucfg = UserConfig.load()
+            if not args or args[0] == "show":
+                tbl = Table(title=f"User Defaults ({UserConfig.config_path()})", border_style="cyan")
+                tbl.add_column("Key", style="bold cyan")
+                tbl.add_column("Value", style="white")
+                for k, v in ucfg.__dict__.items():
+                    tbl.add_row(k, repr(v))
+                self.console.print(tbl)
+                return False
+            if args[0] == "save":
+                ucfg.default_preset = self.options.preset or ucfg.default_preset
+                ucfg.policy_mode = (
+                    self.options.policy_mode.value
+                    if isinstance(self.options.policy_mode, PolicyMode)
+                    else str(self.options.policy_mode)
+                )
+                ucfg.show_thoughts = self.show_thoughts
+                ucfg.ralph_verify_cmd = self.ralph_verify_cmd
+                ucfg.with_chronosml_mcp = self.options.with_chronosml_mcp
+                ucfg.with_opencommons_mcp = self.options.with_opencommons_mcp
+                saved = ucfg.save()
+                self.console.print(f"[green]✓ Saved current session settings as user defaults in {saved}[/green]")
+                return False
+            self.console.print("[yellow]Usage: /config [show|save][/yellow]")
             return False
 
         self.console.print(f"[yellow]Unknown command '{cmd}'. Type /help for available commands.[/yellow]")

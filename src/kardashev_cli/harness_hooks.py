@@ -407,8 +407,12 @@ class SyntaxGatePostToolHook(hooks_mod.PostToolCallHook):
             import contextlib
 
             with contextlib.suppress(Exception):
+                from kardashev_cli.contrib_settings import decide
                 from kardashev_cli.opencommons import extract_candidate_functions_from_source
 
+                decision = decide({"domain": "general"}, "harvest_edits", repo_path=Path(last_file).parent)
+                if decision.action == "drop":
+                    return
                 src = Path(last_file).read_text(encoding="utf-8")
                 extract_candidate_functions_from_source(src, contributor_agent="kardashev-hook")
 

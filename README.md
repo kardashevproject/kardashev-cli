@@ -51,32 +51,44 @@ agy-local chat --backend openai --model glm4:9b --base-url http://127.0.0.1:1143
 
 ## Interactive Rich TUI (`AgyRichTUI`)
 
-Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches a rich, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
+Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches a state-of-the-art, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
 
-- **Live Workspace & Git Status Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `LocalOpenAIAgentConfig`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), and active MCP servers.
-- **Real-Time Streaming with Thinking & Inline Diffs**:
+- **Live Workspace, Git, Context Gauge & Ralph Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `LocalOpenAIAgentConfig`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), autonomous Ralph verification loop status, and active MCP servers.
+- **Real-Time Streaming with Thinking, Live Tool Results & Unified Diffs**:
   - Collapsible reasoning (`💭 Thinking`) panel streamed in real time.
-  - Structured tool call badges (`Bash(...)`, `Read(...)`, `Edit(...)`, `Write(...)`, `Grep(...)`, `ListDir(...)`).
+  - Structured tool call timeline (`⏺ Bash(...)`, `⏺ Read(...)`, `⏺ Edit(...)`, `⏺ Write(...)`, `⏺ Grep(...)`, `⏺ ListDir(...)`) paired with live `PostToolCallHook` execution durations (`[ms]`) and result trees (`⎿ ✓ ...` / `⎿ ✗ ...`).
   - Automatic syntax-highlighted unified diff previews (`+` green, `-` red) whenever the model edits or writes files.
-  - Per-turn telemetry footer (`⏱ latency · ⚡ tok/s · 📊 output tokens · 🛠 tool calls · ctx usage`).
-- **Interactive Slash Commands, `@file` Context & `!shell` Shortcuts** (with `Tab` completion):
+  - Per-turn telemetry footer (`⏱ latency · ⚡ tok/s · 📊 output tokens · 🛠 tool calls · ctx usage % · 🗜 compactions`).
+- **Autonomous Self-Verification Loop (`/ralph` & `--ralph`)**:
+  - Powered by `RalphVerifyStopHook` (`StopHook`): automatically executes a verification shell command (e.g. `pytest -q && ruff check`) before allowing the agent turn to finish. If tests fail, the failure output is automatically injected back into the agent to self-repair.
+- **Workspace Git Checkpoints & Time-Travel Rewind (`/checkpoint` & `/rewind`)**:
+  - Automatically snapshots the workspace tree before every turn and lets you rewind to any numbered checkpoint via `/rewind <index>`.
+- **Interactive Slash Commands, Context Providers & Keybindings** (with `Tab` completion):
 
 | Shortcut / Command | Description |
 |---|---|
-| `/help` | Display all interactive slash commands, `@file` mentions, and `!shell` shortcuts. |
-| `/status` | Inspect session token usage, context window utilization (`%`), turn count, and compaction events. |
+| `/help` | Display all interactive slash commands, keybindings, `@file` mentions, and `!shell` shortcuts. |
+| `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), turn count, checkpoints, and compactions. |
 | `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
 | `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session. |
-| `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`). |
+| `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`) or press `Alt+P`. |
+| `/ralph <cmd\|off>` | Enable or disable autonomous self-verification loop (e.g., `/ralph pytest -q`). |
+| `/checkpoint [create\|list]` | Create a named git workspace snapshot or list all turn checkpoints. |
+| `/rewind <index>` | Rewind workspace files to a numbered checkpoint from `/checkpoint list`. |
+| `/compact` | Summarize earlier turns and reset the conversation window to free context tokens. |
+| `/save [name]` / `/load [name]` | Save or restore session transcripts in `~/.local/share/agy-local/sessions/`. |
+| `/export [path.md]` | Export the full session transcript, thinking traces, and tool timeline to Markdown. |
 | `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
 | `/doctor` | Run hardware, GPU, LiteRT, and MCP diagnostics inside the session. |
 | `/diff` | Render a syntax-highlighted `git diff` of uncommitted workspace changes. |
 | `/undo` | Revert unstaged modifications in the workspace (with interactive confirmation). |
-| `/thoughts` | Toggle visibility of live reasoning/thinking traces. |
+| `/thoughts` | Toggle visibility of live reasoning/thinking traces (or press `Alt+T`). |
 | `/clear` | Clear conversation history and reset the terminal view. |
 | `/exit` | Exit the session (or press `Ctrl+D`). |
-| `@path/to/file` | Inline a workspace file directly into your prompt (supports `Tab` auto-completion). |
+| `@path/to/file[:start-end]` | Inline a full workspace file or exact line slice (e.g. `@src/agy_local/cli.py:1-50`). |
+| `@git:diff` / `@git:status` | Inline live uncommitted git diff or working tree status directly into your prompt. |
 | `!<shell command>` | Execute a local shell command immediately in the workspace without invoking the model. |
+| `Alt+T` / `Alt+P` | Instant keybindings to toggle thinking traces (`Alt+T`) or cycle safety policy (`Alt+P`). |
 
 ---
 

@@ -194,3 +194,109 @@ def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
     assert panel is not None
 
 
+def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
+    import asyncio
+    import subprocess
+
+    from google.antigravity import types
+    from google.antigravity.hooks import hooks as hooks_mod
+
+    import agy_local.tui as tui_mod
+    from agy_local.tui import (
+        RalphVerifyStopHook,
+        ToolEventRecord,
+        TurnTranscript,
+        create_git_checkpoint,
+        render_context_gauge,
+        restore_git_checkpoint,
+        summarize_tool_result,
+    )
+
+    # 1. Test @file:start-end line slicing
+    sliced_file = tmp_path / "code.py"
+    sliced_file.write_text("line1\nline2\nline3\nline4\nline5\n", encoding="utf-8")
+    aug, attached = expand_at_file_mentions("Inspect @code.py:2-4", str(tmp_path))
+    assert attached == ["code.py:2-4"]
+    assert "line2\nline3\nline4" in aug
+    assert "line1" not in aug
+    assert "line5" not in aug
+
+    # 2. Test git checkpoint & rewind in a temporary git repo
+    subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "code.py"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "--no-verify", "-m", "init"], check=True, capture_output=True)
+
+    cp = create_git_checkpoint(str(tmp_path), index=1, turn=1, label="initial")
+    assert cp is not None
+    sliced_file.write_text("corrupted\n", encoding="utf-8")
+    aug_diff, att_diff = expand_at_file_mentions("Review @git:diff", str(tmp_path))
+    assert "@git:diff" in att_diff
+    assert "+corrupted" in aug_diff
+
+    assert restore_git_checkpoint(str(tmp_path), cp) is True
+    assert "line1\nline2" in sliced_file.read_text(encoding="utf-8")
+
+    # 3. Test PostToolCallHook result recording & context gauge
+    opts = HarnessOptions(preset="gemma4-26b", workspaces=[str(tmp_path)])
+    tui = AgyRichTUI(options=opts)
+    tui._active_turn_tools.append(
+        ToolEventRecord(call_id="tc-1", name="view_file", badge="Read", summary="code.py")
+    )
+    tui.record_tool_result(
+        types.ToolResult(name="view_file", id="tc-1", step_id="s-1", result="line1\nline2\nline3")
+    )
+    assert tui._active_turn_tools[0].completed_at is not None
+    assert tui._active_turn_tools[0].result_preview == "✓ line1 (+2 lines)"
+    assert tui._active_turn_tools[0].is_error is False
+
+    err_summary, is_err = summarize_tool_result(
+        types.ToolResult(name="run_command", id="tc-2", step_id="s-2", error="Command exited with code 1")
+    )
+    assert is_err is True
+    assert "Command exited with code 1" in err_summary
+
+    gauge_str = render_context_gauge(20480, 40960)
+    assert "50.0%" in gauge_str
+
+    # 4. Test RalphVerifyStopHook (fail -> CONTINUE, pass -> ALLOW_STOP)
+    async def _run_ralph_checks() -> None:
+        tui_mod._ACTIVE_TUI = tui
+        try:
+            tui.ralph_verify_cmd = "false"
+            hook = RalphVerifyStopHook()
+            res_fail = await hook.run(
+                hooks_mod.HookContext(),
+                types.StopArgs(response_text="done", trajectory_id="t1", continuation_count=0),
+            )
+            assert res_fail.decision == types.StopDecision.CONTINUE
+
+            tui.ralph_verify_cmd = "true"
+            res_pass = await hook.run(
+                hooks_mod.HookContext(),
+                types.StopArgs(response_text="done", trajectory_id="t1", continuation_count=0),
+            )
+            assert res_pass.decision == types.StopDecision.ALLOW_STOP
+        finally:
+            tui_mod._ACTIVE_TUI = None
+
+    asyncio.run(_run_ralph_checks())
+
+    # 5. Test Markdown session export
+    tui.transcripts.append(
+        TurnTranscript(
+            turn_index=1,
+            user_prompt="Check code.py",
+            thinking="Checking file...",
+            assistant_response="Looks clean.",
+            tools=[{"badge": "Read", "summary": "code.py", "duration_ms": 12.0, "result_preview": "✓ line1"}],
+            duration_s=1.25,
+            prompt_tokens=100,
+            output_tokens=25,
+        )
+    )
+    cfg = build_agent_config(opts)
+    report_path = tui.export_markdown(tmp_path / "report.md", cfg)
+    assert report_path.is_file()
+    assert "Looks clean." in report_path.read_text(encoding="utf-8")
+
+

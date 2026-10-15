@@ -107,6 +107,11 @@ def _build_parser() -> argparse.ArgumentParser:
             help="Attach the ChronosML MCP server (chronosml-mcp) for zero-guesswork ML runtime/VRAM estimation.",
         )
         p.add_argument(
+            "--with-opencommons",
+            action="store_true",
+            help="Attach the OpenCommons 2-tool MCP server (opencommons-mcp) for shared verified concept retrieval and recording.",
+        )
+        p.add_argument(
             "--dry-run",
             action="store_true",
             help="Print the resolved Antigravity AgentConfig summary and exit without launching.",
@@ -121,6 +126,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--plain",
         action="store_true",
         help="Use the minimal stdin/stdout run_interactive_loop instead of the Rich TUI.",
+    )
+    chat_p.add_argument(
+        "--ralph",
+        help="Autonomous verification shell command executed before stopping each turn (e.g. 'pytest -q').",
+    )
+    chat_p.add_argument(
+        "--ralph-max-iter",
+        type=int,
+        default=3,
+        help="Maximum autonomous self-repair iterations per turn when --ralph is enabled (default: 3).",
     )
     _add_harness_args(chat_p)
 
@@ -238,6 +253,7 @@ def _options_from_args(args: argparse.Namespace) -> HarnessOptions:
         token_threshold=getattr(args, "token_threshold", None),
         system_instructions=getattr(args, "system_instructions", None),
         with_chronosml_mcp=bool(getattr(args, "with_chronosml", False)),
+        with_opencommons_mcp=bool(getattr(args, "with_opencommons", False)),
     )
 
 
@@ -276,6 +292,9 @@ async def _cmd_chat(args: argparse.Namespace) -> int:
         return 0
 
     tui = AgyRichTUI(options=opts)
+    if getattr(args, "ralph", None):
+        tui.ralph_verify_cmd = args.ralph
+    tui.ralph_max_iterations = getattr(args, "ralph_max_iter", 3)
     return await tui.run()
 
 

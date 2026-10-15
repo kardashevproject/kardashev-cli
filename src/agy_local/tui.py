@@ -1,30 +1,41 @@
 """Rich Terminal UI (TUI) for agy-local inspired by Claude Code & OpenAI Codex CLI.
 
-Features:
-- Claude Code / Codex style header card with live workspace, git branch, active model,
-  hardware backend, policy badge, and MCP server indicators.
-- Real-time streaming with Rich `Live`:
-  - Collapsible/dimmed reasoning (`Thinking`) block.
-  - Inline diffs for `replace_file_content` / `write_to_file` (`+` green, `-` red).
-  - Structured tool call badges (`Bash(...)`, `Read(...)`, `Edit(...)`, `Grep(...)`, `ListDir(...)`).
+State-of-the-art interactive agent harness featuring:
+- Claude Code / Codex style header card with live workspace, git branch & dirty counter,
+  active model & backend, safety policy badge, autonomous Ralph loop status, and MCP indicators.
+- Real-time Rich `Live` streaming:
+  - Collapsible/dimmed reasoning (`💭 Thinking`) panel.
+  - Live tool call timeline (`⏺ Bash(...)`, `⏺ Read(...)`, `⏺ Edit(...)`, `⏺ Write(...)`,
+    `⏺ Grep(...)`, `⏺ ListDir(...)`) paired with real-time `PostToolCallHook` result previews,
+    execution durations (`ms`), and error diagnostics.
+  - Automatic syntax-highlighted unified diff previews (`+` green, `-` red) on file edits.
   - Live Markdown rendering with syntax-highlighted code blocks.
-- Interactive `prompt_toolkit` prompt with:
-  - Slash command completion (`/help`, `/model`, `/preset`, `/policy`, `/status`, `/doctor`,
-    `/models`, `/diff`, `/undo`, `/compact`, `/clear`, `/bash`, `/exit`).
-  - `@file` workspace path tab-completion & inline file context injection.
-  - `!cmd` direct shell execution shortcut.
-  - Telemetry footer after each turn (`⏱ latency · tok/s · prompt/output tokens · tool count`).
+- Workspace Git Checkpoint & Rewind Engine (`/checkpoint`, `/rewind`, `/undo`, `/diff`):
+  - Snapshots workspace state before agent edits and lets you rewind to any turn checkpoint.
+- Autonomous Verification Loop (`/ralph`, `StopHook`):
+  - Automatically runs a verification command (e.g. `pytest -q && ruff check`) when the model
+    finishes a turn; if verification fails, feeds the failure output back into the model to
+    self-repair up to `max_iterations`.
+- Session Persistence & Export (`/save`, `/load`, `/export`, `/compact`):
+  - Save/restore session transcripts & state in `~/.local/share/agy-local/sessions/` or export
+    clean Markdown reports.
+- Interactive `prompt_toolkit` prompt with keybindings (`Alt+T` toggle thoughts, `Alt+P` cycle
+  policy), `/slash` command & sub-argument tab completion, `@file:start-end` & `@git:diff`
+  inline context injection, and `!cmd` shell execution.
 """
 
 from __future__ import annotations
 
 import asyncio
 import difflib
+import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +46,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style as PtStyle
 from rich.console import Console, Group
 from rich.live import Live
@@ -50,19 +62,76 @@ from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.presets import PRESETS, list_presets
 
 SLASH_COMMANDS: dict[str, str] = {
-    "/help": "Show interactive slash commands, @file mentions, and !shell shortcuts",
-    "/status": "Show session token usage, context window utilization, turn count, and active tools",
+    "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
+    "/status": "Show session token usage, context window utilization bar, turn count, and telemetry",
     "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset glm4-9b-ollama)",
     "/model": "Switch model ID or OpenAI base URL (e.g., /model qwen3-vl-8b http://127.0.0.1:8000/v1)",
     "/policy": "Switch tool execution policy mode (/policy allow-all | ask | sandbox)",
-    "/models": "Scan local disk checkpoints and probe localhost OpenAI servers",
-    "/doctor": "Run hardware, GPU, LiteRT, and MCP diagnostics",
+    "/ralph": "Configure autonomous self-verification loop (e.g., /ralph pytest -q | /ralph off)",
+    "/checkpoint": "Create or list workspace git checkpoints (/checkpoint \\[create|list])",
+    "/rewind": "Rewind workspace files to a numbered checkpoint (/rewind <index>)",
     "/diff": "Show colorized git diff of uncommitted changes in the workspace",
     "/undo": "Revert unstaged file modifications in the workspace (with confirmation)",
-    "/thoughts": "Toggle display of model reasoning/thinking traces",
+    "/compact": "Summarize conversation history to free up context window tokens",
+    "/save": "Save session transcript and metadata (/save \\[name])",
+    "/load": "Load and resume a saved session (/load <name>)",
+    "/export": "Export full conversation & tool trace to a Markdown file (/export \\[path.md])",
+    "/models": "Scan local disk checkpoints and probe localhost OpenAI servers",
+    "/doctor": "Run hardware, GPU, LiteRT, and MCP diagnostics",
+    "/thoughts": "Toggle display of model reasoning/thinking traces (or press Alt+T)",
     "/clear": "Clear conversation history and terminal screen",
     "/exit": "Exit agy-local session (or Ctrl+D)",
 }
+
+
+@dataclass
+class ToolEventRecord:
+    """Tracks a single tool invocation from `ToolCall` through `PostToolCallHook` completion."""
+
+    call_id: str
+    name: str
+    badge: str
+    summary: str
+    diff_preview: str | None = None
+    started_at: float = field(default_factory=time.perf_counter)
+    completed_at: float | None = None
+    result_preview: str | None = None
+    is_error: bool = False
+
+    @property
+    def duration_ms(self) -> float | None:
+        if self.completed_at is None:
+            return None
+        return max(0.0, (self.completed_at - self.started_at) * 1000.0)
+
+
+@dataclass
+class WorkspaceCheckpoint:
+    """Represents a git stash/tree snapshot created before or during a session."""
+
+    index: int
+    turn: int
+    timestamp: str
+    label: str
+    commit_oid: str
+
+
+@dataclass
+class TurnTranscript:
+    """Stores a completed turn for `/save`, `/load`, `/export`, and `/compact`."""
+
+    turn_index: int
+    user_prompt: str
+    thinking: str
+    assistant_response: str
+    tools: list[dict[str, Any]]
+    duration_s: float
+    prompt_tokens: int
+    output_tokens: int
+
+
+# Module-level active TUI pointer used by stateless SDK hooks (avoids pickling RLock on Console).
+_ACTIVE_TUI: AgyRichTUI | None = None
 
 
 def _git_branch_and_dirty(workspace: str) -> tuple[str | None, int]:
@@ -89,6 +158,49 @@ def _git_branch_and_dirty(workspace: str) -> tuple[str | None, int]:
         return branch, dirty
     except (OSError, subprocess.SubprocessError):
         return None, 0
+
+
+def create_git_checkpoint(workspace: str, index: int, turn: int, label: str) -> WorkspaceCheckpoint | None:
+    """Creates a non-destructive git snapshot OID (via `git stash create` or `HEAD`) for `/rewind`."""
+    try:
+        stash_proc = subprocess.run(
+            ["git", "-C", workspace, "stash", "create", f"agy-local-checkpoint-{index}"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+        oid = stash_proc.stdout.strip()
+        if not oid:
+            head_proc = subprocess.run(
+                ["git", "-C", workspace, "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+                check=False,
+            )
+            if head_proc.returncode != 0:
+                return None
+            oid = head_proc.stdout.strip()
+        ts = time.strftime("%H:%M:%S")
+        return WorkspaceCheckpoint(index=index, turn=turn, timestamp=ts, label=label, commit_oid=oid)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def restore_git_checkpoint(workspace: str, checkpoint: WorkspaceCheckpoint) -> bool:
+    """Restores tracked workspace files to the state captured in `checkpoint.commit_oid`."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", workspace, "checkout", checkpoint.commit_oid, "--", "."],
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+            check=False,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
@@ -152,8 +264,24 @@ def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
     return (name, compact_args, None)
 
 
+def summarize_tool_result(tool_result: types.ToolResult) -> tuple[str, bool]:
+    """Formats a `types.ToolResult` into `(one_line_summary, is_error)` for the live TUI tree."""
+    if tool_result.error or tool_result.exception:
+        err_text = str(tool_result.error or tool_result.exception).strip().splitlines()[0]
+        return (f"✗ {err_text[:96]}", True)
+    raw = str(tool_result.result or "").strip()
+    if not raw:
+        return ("✓ completed", False)
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    line_count = len(raw.splitlines())
+    first_line = lines[0][:84] if lines else "done"
+    if line_count > 1:
+        return (f"✓ {first_line} (+{line_count - 1} lines)", False)
+    return (f"✓ {first_line}", False)
+
+
 def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list[str]]:
-    """Detects `@path/to/file` mentions in user input and attaches file contents inline."""
+    """Detects `@path/to/file`, `@path/to/file:10-50`, `@git:diff`, and `@git:status` mentions."""
     tokens = prompt_text.split()
     attached_files: list[str] = []
     context_blocks: list[str] = []
@@ -161,13 +289,52 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
     for tok in tokens:
         if not tok.startswith("@") or len(tok) < 2:
             continue
-        rel_candidate = tok[1:].strip(",.:;!?")
+        raw_spec = tok[1:].strip(",.:;!?")
+        if not raw_spec:
+            continue
+
+        # Special @git:diff and @git:status context providers
+        if raw_spec in ("git:diff", "git:status"):
+            git_args = ["diff"] if raw_spec == "git:diff" else ["status", "--short"]
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", workspace, *git_args],
+                    capture_output=True,
+                    text=True,
+                    timeout=3.0,
+                    check=False,
+                )
+                git_out = proc.stdout.strip() or "(empty)"
+                if len(git_out) > 20000:
+                    git_out = git_out[:20000] + "\n... [truncated]"
+                attached_files.append(f"@{raw_spec}")
+                context_blocks.append(f"<git_context type=\"{raw_spec}\">\n{git_out}\n</git_context>")
+            except (OSError, subprocess.SubprocessError):
+                pass
+            continue
+
+        # Parse optional :start-end line range (e.g. @src/agy_local/cli.py:10-45)
+        line_start: int | None = None
+        line_end: int | None = None
+        m = re.match(r"^(.+?):(\d+)(?:-(\d+))?$", raw_spec)
+        if m:
+            rel_candidate = m.group(1)
+            line_start = int(m.group(2))
+            line_end = int(m.group(3)) if m.group(3) else line_start
+        else:
+            rel_candidate = raw_spec
+
         candidate_path = Path(workspace) / rel_candidate
         if not candidate_path.is_file():
             candidate_path = Path(os.path.expanduser(rel_candidate))
         if candidate_path.is_file():
             try:
                 text = candidate_path.read_text(encoding="utf-8")
+                if line_start is not None:
+                    all_lines = text.splitlines()
+                    s_idx = max(0, line_start - 1)
+                    e_idx = min(len(all_lines), line_end or line_start)
+                    text = "\n".join(all_lines[s_idx:e_idx])
                 if len(text) > 24000:
                     text = text[:24000] + "\n... [truncated]"
                 rel_display = (
@@ -175,8 +342,10 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
                     if candidate_path.is_relative_to(workspace)
                     else str(candidate_path)
                 )
-                attached_files.append(rel_display)
-                context_blocks.append(f"<attached_file path=\"{rel_display}\">\n{text}\n</attached_file>")
+                range_suffix = f":{line_start}-{line_end}" if line_start is not None else ""
+                label = f"{rel_display}{range_suffix}"
+                attached_files.append(label)
+                context_blocks.append(f"<attached_file path=\"{label}\">\n{text}\n</attached_file>")
             except (UnicodeDecodeError, OSError):
                 pass
 
@@ -187,7 +356,7 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
 
 
 class AgyCompleter(Completer):
-    """Provides tab completion for `/slash` commands, preset names, and `@file` workspace paths."""
+    """Provides tab completion for `/slash` commands, presets, policies, and `@file` / `@git:` mentions."""
 
     def __init__(self, workspace: str) -> None:
         self.workspace = workspace
@@ -211,7 +380,7 @@ class AgyCompleter(Completer):
                         )
                 return
 
-            # Sub-argument completion for /preset and /policy
+            # Sub-argument completion for /preset, /policy, /ralph, /checkpoint
             cmd_name = parts[0].lower()
             cur_arg = parts[1] if len(parts) > 1 and not text_before.endswith(" ") else ""
             if cmd_name == "/preset":
@@ -229,10 +398,28 @@ class AgyCompleter(Completer):
                     if mode.startswith(cur_arg):
                         yield Completion(mode, start_position=-len(cur_arg), display=mode)
                 return
+            if cmd_name == "/ralph":
+                for opt in ("off", "pytest -q", "ruff check src tests && pytest -q"):
+                    if opt.startswith(cur_arg):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
+            if cmd_name == "/checkpoint":
+                for opt in ("create", "list"):
+                    if opt.startswith(cur_arg):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
 
-        # 2. @file path completion
+        # 2. @file and @git: completion
         if word.startswith("@"):
             partial = word[1:]
+            for special, meta in (("git:diff", "git uncommitted diff"), ("git:status", "git working tree status")):
+                if special.startswith(partial):
+                    yield Completion(
+                        f"@{special}",
+                        start_position=-len(word),
+                        display=f"@{special}",
+                        display_meta=meta,
+                    )
             root = Path(self.workspace)
             try:
                 search_dir = (root / os.path.dirname(partial)).resolve()
@@ -291,6 +478,65 @@ class RichAskQuestionHook(hooks_mod.OnInteractionHook):
         return hooks_mod.QuestionHookResult(responses=responses)
 
 
+class RichPostToolCallHook(hooks_mod.PostToolCallHook):
+    """Captures real-time tool completion results and durations for the live TUI tree."""
+
+    async def run(self, context: hooks_mod.HookContext, data: types.ToolResult) -> None:
+        if _ACTIVE_TUI is not None:
+            _ACTIVE_TUI.record_tool_result(data)
+
+
+class RichCompactionHook(hooks_mod.OnCompactionHook):
+    """Notifies the active TUI whenever automatic KV-cache / context compaction occurs."""
+
+    async def run(self, context: hooks_mod.HookContext, data: types.Step) -> None:
+        if _ACTIVE_TUI is not None:
+            _ACTIVE_TUI.compaction_notifications += 1
+
+
+class RalphVerifyStopHook(hooks_mod.StopHook):
+    """Autonomous verification StopHook (`/ralph <cmd>`) that runs a verification command before stopping."""
+
+    async def run(
+        self, context: hooks_mod.HookContext, data: types.StopArgs
+    ) -> types.StopHookResult:
+        tui = _ACTIVE_TUI
+        if tui is None or not tui.ralph_verify_cmd:
+            return types.StopHookResult(decision=types.StopDecision.ALLOW_STOP)
+        if data.continuation_count >= tui.ralph_max_iterations:
+            return types.StopHookResult(decision=types.StopDecision.ALLOW_STOP)
+
+        workspace = tui.options.workspaces[0] if tui.options.workspaces else os.getcwd()
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            tui.ralph_verify_cmd,
+            shell=True,
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode == 0:
+            tui.last_ralph_status = f"✓ PASS ({tui.ralph_verify_cmd})"
+            return types.StopHookResult(decision=types.StopDecision.ALLOW_STOP)
+
+        combined_out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+        tail_out = "\n".join(combined_out.splitlines()[-30:])
+        tui.last_ralph_status = (
+            f"↻ Retry {data.continuation_count + 1}/{tui.ralph_max_iterations} "
+            f"(exit {proc.returncode})"
+        )
+        return types.StopHookResult(
+            decision=types.StopDecision.CONTINUE,
+            reason=(
+                f"Autonomous verification command `{tui.ralph_verify_cmd}` failed with exit code "
+                f"{proc.returncode}. Inspect the failure output below and fix the root cause:\n\n"
+                f"```\n{tail_out}\n```"
+            ),
+        )
+
+
 async def _nonblocking_input(prompt_text: str) -> str:
     loop = asyncio.get_running_loop()
     fut = loop.create_future()
@@ -323,6 +569,15 @@ async def _confirm_tool_handler(tc: types.ToolCall, reason: str = "") -> bool:
     return ans.strip().lower() in ("y", "yes")
 
 
+def render_context_gauge(used_tokens: int, limit_tokens: int, width: int = 16) -> str:
+    """Renders a visual Unicode progress bar for context window utilization."""
+    pct = min(1.0, max(0.0, used_tokens / max(1, limit_tokens)))
+    filled = round(pct * width)
+    bar = "█" * filled + "░" * (width - filled)
+    color = "green" if pct < 0.65 else ("yellow" if pct < 0.85 else "red")
+    return f"[{color}]{bar}[/{color}] {pct * 100:.1f}%"
+
+
 class AgyRichTUI:
     """Claude Code & OpenAI Codex inspired interactive TUI session manager."""
 
@@ -338,7 +593,39 @@ class AgyRichTUI:
         self.session_tool_calls = 0
         self.total_prompt_tokens = 0
         self.total_output_tokens = 0
+        self.compaction_notifications = 0
+        self.ralph_verify_cmd: str | None = None
+        self.ralph_max_iterations: int = 3
+        self.last_ralph_status: str | None = None
+        self.checkpoints: list[WorkspaceCheckpoint] = []
+        self.transcripts: list[TurnTranscript] = []
+        self._active_turn_tools: list[ToolEventRecord] = []
         self._restart_requested = False
+
+    def record_tool_result(self, result: types.ToolResult) -> None:
+        """Matches a `PostToolCallHook` result to the most recent in-flight `ToolEventRecord`."""
+        summary, is_err = summarize_tool_result(result)
+        now = time.perf_counter()
+        for rec in reversed(self._active_turn_tools):
+            if (result.id and rec.call_id == result.id) or (
+                rec.completed_at is None and rec.name == str(result.name)
+            ):
+                rec.completed_at = now
+                rec.result_preview = summary
+                rec.is_error = is_err
+                return
+        # Fallback if no matching call_id was seen yet
+        self._active_turn_tools.append(
+            ToolEventRecord(
+                call_id=result.id or str(result.name),
+                name=str(result.name),
+                badge=str(result.name),
+                summary="",
+                completed_at=now,
+                result_preview=summary,
+                is_error=is_err,
+            )
+        )
 
     def _active_model_summary(self, cfg: Any) -> tuple[str, str, int]:
         cls_name = type(cfg).__name__
@@ -346,7 +633,11 @@ class AgyRichTUI:
         ctx_limit = getattr(compaction, "token_threshold", None) or 40960
         if hasattr(cfg, "model_path"):
             path = str(getattr(cfg, "model_path", ""))
-            model_short = os.path.basename(os.path.dirname(path)) if path.endswith("model.litertlm") else os.path.basename(path)
+            model_short = (
+                os.path.basename(os.path.dirname(path))
+                if path.endswith("model.litertlm")
+                else os.path.basename(path)
+            )
             dev = str(getattr(cfg, "backend", "gpu")).replace("LiteRTBackend.", "")
             spec = " + speculative" if getattr(cfg, "enable_speculative_decoding", False) else ""
             return (model_short or "litert", f"LiteRT ({dev}{spec})", ctx_limit)
@@ -384,19 +675,24 @@ class AgyRichTUI:
         mcp_list = ["chronosml"] if self.options.with_chronosml_mcp else []
         mcp_list.extend(name for name, _, _ in self.options.extra_mcp_stdio)
         mcp_str = ", ".join(mcp_list) if mcp_list else "none (use --with-chronosml to enable)"
+        ralph_badge = (
+            f"  [dim]· Ralph Verify:[/dim] [bold green]{self.ralph_verify_cmd}[/bold green]"
+            if self.ralph_verify_cmd
+            else ""
+        )
         grid.add_row(
             "Safety & Context",
-            f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [dim]· compaction ceiling:[/dim] {ctx_limit:,} tok  [dim]· MCP:[/dim] {mcp_str}",
+            f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [dim]· compaction ceiling:[/dim] {ctx_limit:,} tok  [dim]· MCP:[/dim] {mcp_str}{ralph_badge}",
         )
         grid.add_row(
             "Shortcuts",
-            "[dim][bold]/help[/bold] commands · [bold]@file[/bold] attach file · [bold]!cmd[/bold] run shell · [bold]/preset[/bold] switch model · [bold]/diff[/bold] git diff[/dim]",
+            "[dim][bold]/help[/bold] commands · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] context · [bold]!cmd[/bold] shell · [bold]/ralph[/bold] auto-verify · [bold]Alt+T[/bold] thoughts · [bold]Alt+P[/bold] policy[/dim]",
         )
 
         return Panel(
             grid,
             title="[bold bright_white]✦ Antigravity Local Studio[/bold bright_white] [dim](agy-local v0.1.0)[/dim]",
-            subtitle="[dim]The Kardashev Project · Open & On-Device Agent Harness[/dim]",
+            subtitle="[dim]The Kardashev Project · State-of-the-Art Local Agent Harness[/dim]",
             border_style="bright_blue",
             padding=(0, 1),
         )
@@ -405,6 +701,12 @@ class AgyRichTUI:
         hooks_list = list(getattr(cfg, "hooks", []) or [])
         if not any(isinstance(h, RichAskQuestionHook) for h in hooks_list):
             hooks_list.append(RichAskQuestionHook())
+        if not any(isinstance(h, RichPostToolCallHook) for h in hooks_list):
+            hooks_list.append(RichPostToolCallHook())
+        if not any(isinstance(h, RichCompactionHook) for h in hooks_list):
+            hooks_list.append(RichCompactionHook())
+        if not any(isinstance(h, RalphVerifyStopHook) for h in hooks_list):
+            hooks_list.append(RalphVerifyStopHook())
 
         capabilities = cfg.capabilities
         if capabilities.agent_behavior != types.AgentBehavior.INTERACTIVE:
@@ -438,7 +740,51 @@ class AgyRichTUI:
             }
         )
 
-    def _handle_slash_command(self, raw_cmd: str, agent: Agent, cfg: Any) -> bool:
+    def _sessions_dir(self) -> Path:
+        d = Path.home() / ".local" / "share" / "agy-local" / "sessions"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def export_markdown(self, target_path: Path, cfg: Any) -> Path:
+        """Exports the current session transcript and tool trace to a Markdown report."""
+        model_label, backend_label, _ = self._active_model_summary(cfg)
+        lines = [
+            f"# Antigravity Local Studio Session (`{model_label}`)",
+            "",
+            f"- **Backend**: `{backend_label}`",
+            f"- **Turns**: {self.session_turns}",
+            f"- **Tool Calls**: {self.session_tool_calls}",
+            f"- **Tokens**: {self.total_prompt_tokens:,} prompt / {self.total_output_tokens:,} output",
+            "",
+            "---",
+            "",
+        ]
+        for tr in self.transcripts:
+            lines.append(f"## Turn {tr.turn_index} ({tr.duration_s:.2f}s)")
+            lines.append("")
+            lines.append("### User")
+            lines.append(tr.user_prompt)
+            lines.append("")
+            if tr.thinking:
+                lines.append("<details><summary>💭 Thinking Trace</summary>\n")
+                lines.append(tr.thinking)
+                lines.append("\n</details>\n")
+            if tr.tools:
+                lines.append("### Tool Calls")
+                for tc in tr.tools:
+                    dur = f" ({tc['duration_ms']:.0f}ms)" if tc.get("duration_ms") is not None else ""
+                    res = f" → {tc.get('result_preview', '')}" if tc.get("result_preview") else ""
+                    lines.append(f"- **`{tc['badge']}({tc['summary']})`**{dur}{res}")
+                lines.append("")
+            lines.append("### Assistant")
+            lines.append(tr.assistant_response)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+        target_path.write_text("\n".join(lines), encoding="utf-8")
+        return target_path
+
+    async def _handle_slash_command(self, raw_cmd: str, agent: Agent, cfg: Any) -> bool:
         """Handles `/...` commands. Returns True if session should exit or restart."""
         parts = raw_cmd.strip().split()
         cmd = parts[0].lower()
@@ -450,24 +796,30 @@ class AgyRichTUI:
             return True
 
         if cmd == "/help":
-            tbl = Table(title="Interactive Commands & Shortcuts", border_style="bright_blue", show_lines=False)
-            tbl.add_column("Command", style="bold cyan", no_wrap=True)
+            tbl = Table(title="Interactive Commands, Context Mentions & Keybindings", border_style="bright_blue")
+            tbl.add_column("Shortcut / Command", style="bold cyan", no_wrap=True)
             tbl.add_column("Description", style="white")
             for k, desc in SLASH_COMMANDS.items():
                 tbl.add_row(k, desc)
-            tbl.add_row("@path/to/file", "Inline a workspace file directly into your prompt (Tab-completable)")
+            tbl.add_row("@path/to/file[:start-end]", "Inline a workspace file or line slice into your prompt")
+            tbl.add_row("@git:diff / @git:status", "Inline live uncommitted git diff or status into your prompt")
             tbl.add_row("!<shell command>", "Execute a local shell command immediately without calling the model")
+            tbl.add_row("Alt+T / Alt+P", "Keybindings: toggle thinking display (Alt+T) or cycle policy (Alt+P)")
             self.console.print(tbl)
             return False
 
         if cmd == "/status":
             model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
             usage = agent.conversation.total_usage
-            p_tok = (usage.prompt_token_count or 0) if usage else self.total_prompt_tokens
-            c_tok = (usage.candidates_token_count or 0) if usage else self.total_output_tokens
+            p_tok = (usage.prompt_token_count or 0) if usage and usage.prompt_token_count else self.total_prompt_tokens
+            c_tok = (
+                (usage.candidates_token_count or 0)
+                if usage and usage.candidates_token_count
+                else self.total_output_tokens
+            )
             t_tok = (usage.thoughts_token_count or 0) if usage else 0
-            tot_tok = (usage.total_token_count or 0) if usage else (p_tok + c_tok)
-            pct = min(100.0, (tot_tok / max(1, ctx_limit)) * 100.0)
+            tot_tok = (usage.total_token_count or 0) if usage and usage.total_token_count else (p_tok + c_tok)
+            gauge = render_context_gauge(tot_tok, ctx_limit)
 
             tbl = Table(title="Session Telemetry & Harness Status", border_style="cyan")
             tbl.add_column("Metric", style="bold dim")
@@ -477,13 +829,22 @@ class AgyRichTUI:
             tbl.add_row("Completed Turns", str(self.session_turns))
             tbl.add_row("Executed Tool Calls", str(self.session_tool_calls))
             tbl.add_row("Prompt / Output / Thought Tokens", f"{p_tok:,} in · {c_tok:,} out · {t_tok:,} thought")
-            tbl.add_row("Context Window Utilization", f"{tot_tok:,} / {ctx_limit:,} tokens ({pct:.1f}%)")
-            tbl.add_row("Compaction Events", str(len(agent.conversation.compaction_indices)))
+            tbl.add_row("Context Window Utilization", f"{gauge}  ({tot_tok:,} / {ctx_limit:,} tok)")
+            tbl.add_row(
+                "Compaction Events",
+                str(max(len(agent.conversation.compaction_indices), self.compaction_notifications)),
+            )
+            tbl.add_row("Workspace Checkpoints", f"{len(self.checkpoints)} saved (use /checkpoint or /rewind)")
+            tbl.add_row(
+                "Autonomous Ralph Loop",
+                f"[green]{self.ralph_verify_cmd}[/green]" if self.ralph_verify_cmd else "[dim]disabled (/ralph <cmd>)[/dim]",
+            )
             self.console.print(tbl)
             return False
 
         if cmd == "/clear":
             agent.conversation.clear_history()
+            self.transcripts.clear()
             self.console.clear()
             self.console.print(self.render_welcome_banner(cfg))
             self.console.print("[green]✓ Cleared conversation history.[/green]")
@@ -493,6 +854,153 @@ class AgyRichTUI:
             self.show_thoughts = not self.show_thoughts
             state = "ENABLED" if self.show_thoughts else "HIDDEN"
             self.console.print(f"[cyan]✓ Reasoning trace display: {state}[/cyan]")
+            return False
+
+        if cmd == "/ralph":
+            if not args:
+                state = self.ralph_verify_cmd or "disabled"
+                self.console.print(
+                    f"[cyan]Autonomous Ralph verification command:[/cyan] [bold]{state}[/bold]\n"
+                    "[dim]Usage: /ralph <shell_command> (e.g., `/ralph pytest -q`) or `/ralph off`[/dim]"
+                )
+                return False
+            if args[0].lower() in ("off", "none", "disable"):
+                self.ralph_verify_cmd = None
+                self.last_ralph_status = None
+                self.console.print("[yellow]✓ Disabled autonomous Ralph verification loop.[/yellow]")
+                return False
+            self.ralph_verify_cmd = " ".join(args)
+            self.console.print(
+                f"[green]✓ Enabled autonomous Ralph verification loop:[/green] [bold cyan]{self.ralph_verify_cmd}[/bold cyan] "
+                f"(max {self.ralph_max_iterations} auto-repair iterations per turn)"
+            )
+            return False
+
+        if cmd == "/checkpoint":
+            sub = args[0].lower() if args else "list"
+            if sub == "create":
+                label = " ".join(args[1:]) if len(args) > 1 else f"manual-turn-{self.session_turns}"
+                cp = create_git_checkpoint(workspace, len(self.checkpoints) + 1, self.session_turns, label)
+                if cp:
+                    self.checkpoints.append(cp)
+                    self.console.print(
+                        f"[green]✓ Created checkpoint #{cp.index}[/green] ([cyan]{cp.commit_oid[:8]}[/cyan]) — {cp.label}"
+                    )
+                else:
+                    self.console.print("[yellow]⚠ Could not create git checkpoint (not a git repository?).[/yellow]")
+                return False
+
+            if not self.checkpoints:
+                self.console.print("[dim]No checkpoints recorded yet. Use `/checkpoint create [label]` or run a turn.[/dim]")
+                return False
+            tbl = Table(title="Workspace Git Checkpoints", border_style="cyan")
+            tbl.add_column("#", style="bold cyan", justify="right")
+            tbl.add_column("Turn", justify="right")
+            tbl.add_column("Time", style="dim")
+            tbl.add_column("Git OID", style="magenta")
+            tbl.add_column("Label")
+            for cp in self.checkpoints:
+                tbl.add_row(str(cp.index), str(cp.turn), cp.timestamp, cp.commit_oid[:10], cp.label)
+            self.console.print(tbl)
+            return False
+
+        if cmd == "/rewind":
+            if not args:
+                self.console.print("[yellow]Usage: /rewind <checkpoint_number> (type /checkpoint to list)[/yellow]")
+                return False
+            try:
+                target_idx = int(args[0])
+            except ValueError:
+                self.console.print("[red]Checkpoint number must be an integer.[/red]")
+                return False
+            matched = next((cp for cp in self.checkpoints if cp.index == target_idx), None)
+            if not matched:
+                self.console.print(f"[red]Checkpoint #{target_idx} not found. Type /checkpoint to list.[/red]")
+                return False
+            if restore_git_checkpoint(workspace, matched):
+                self.console.print(
+                    f"[green]✓ Rewound workspace files to checkpoint #{matched.index} "
+                    f"({matched.commit_oid[:8]} · {matched.label}).[/green]"
+                )
+            else:
+                self.console.print("[red]✗ Failed to restore git checkpoint.[/red]")
+            return False
+
+        if cmd == "/compact":
+            if not self.transcripts:
+                self.console.print("[dim]Nothing to compact yet.[/dim]")
+                return False
+            summary_bullets = []
+            for tr in self.transcripts[-8:]:
+                short_u = tr.user_prompt.splitlines()[0][:100]
+                short_a = tr.assistant_response.splitlines()[0][:140] if tr.assistant_response else "(tool actions)"
+                summary_bullets.append(f"- Turn {tr.turn_index}: User asked `{short_u}` -> Assistant: `{short_a}`")
+            compact_seed = (
+                "Here is a concise summary of our earlier conversation turns prior to manual compaction:\n"
+                + "\n".join(summary_bullets)
+            )
+            agent.conversation.clear_history()
+            self.total_prompt_tokens = len(compact_seed) // 4
+            self.total_output_tokens = 0
+            self.compaction_notifications += 1
+            await agent.conversation.send(
+                f"{compact_seed}\n\nAcknowledge compaction in one short line and await my next instruction."
+            )
+            async for _ in agent.conversation.receive_steps():
+                pass
+            self.console.print(
+                f"[green]✓ Compacted {len(self.transcripts)} turn(s) into a concise context summary.[/green]"
+            )
+            return False
+
+        if cmd == "/save":
+            name = args[0] if args else time.strftime("session-%Y%m%d-%H%M%S")
+            if not name.endswith(".json"):
+                name += ".json"
+            out_file = self._sessions_dir() / name
+            payload = {
+                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "preset": self.options.preset,
+                "backend": self.options.backend,
+                "model": self.options.model,
+                "turns": [tr.__dict__ for tr in self.transcripts],
+            }
+            out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            self.console.print(f"[green]✓ Saved session ({len(self.transcripts)} turns) to {out_file}[/green]")
+            return False
+
+        if cmd == "/load":
+            if not args:
+                files = sorted(self._sessions_dir().glob("*.json"))
+                if not files:
+                    self.console.print("[dim]No saved sessions found in ~/.local/share/agy-local/sessions/[/dim]")
+                    return False
+                tbl = Table(title="Saved Sessions", border_style="cyan")
+                tbl.add_column("Session File", style="bold cyan")
+                tbl.add_column("Size", justify="right", style="dim")
+                for f in files:
+                    tbl.add_row(f.name, f"{f.stat().st_size:,} B")
+                self.console.print(tbl)
+                return False
+            name = args[0] if args[0].endswith(".json") else f"{args[0]}.json"
+            in_file = self._sessions_dir() / name
+            if not in_file.is_file():
+                self.console.print(f"[red]Saved session '{in_file}' not found.[/red]")
+                return False
+            data = json.loads(in_file.read_text(encoding="utf-8"))
+            loaded_turns = data.get("turns", [])
+            self.transcripts = [TurnTranscript(**t) for t in loaded_turns]
+            self.session_turns = len(self.transcripts)
+            self.console.print(
+                f"[green]✓ Loaded {len(self.transcripts)} turn(s) from {in_file.name}.[/green]"
+            )
+            return False
+
+        if cmd == "/export":
+            out_name = args[0] if args else f"agy-session-{int(time.time())}.md"
+            target = Path(workspace) / out_name if not os.path.isabs(out_name) else Path(out_name)
+            self.export_markdown(target, cfg)
+            self.console.print(f"[green]✓ Exported Markdown session report to {target}[/green]")
             return False
 
         if cmd == "/policy":
@@ -583,7 +1091,8 @@ class AgyRichTUI:
             return False
 
         if cmd == "/diff":
-            proc = subprocess.run(
+            proc = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "-C", workspace, "diff"],
                 capture_output=True,
                 text=True,
@@ -603,7 +1112,8 @@ class AgyRichTUI:
             return False
 
         if cmd == "/undo":
-            proc = subprocess.run(
+            proc = await asyncio.to_thread(
+                subprocess.run,
                 ["git", "-C", workspace, "status", "--short"],
                 capture_output=True,
                 text=True,
@@ -613,9 +1123,9 @@ class AgyRichTUI:
                 self.console.print("[dim]Working tree is already clean.[/dim]")
                 return False
             self.console.print(Panel(proc.stdout.strip(), title="[yellow]Modified Files[/yellow]", border_style="yellow"))
-            ans = input("  Discard unstaged modifications via `git checkout -- .`? [y/N]: ").strip().lower()
+            ans = (await _nonblocking_input("  Discard unstaged modifications via `git checkout -- .`? [y/N]: ")).strip().lower()
             if ans in ("y", "yes"):
-                subprocess.run(["git", "-C", workspace, "checkout", "--", "."], check=False)
+                await asyncio.to_thread(subprocess.run, ["git", "-C", workspace, "checkout", "--", "."], check=False)
                 self.console.print("[green]✓ Reverted unstaged changes.[/green]")
             return False
 
@@ -630,11 +1140,22 @@ class AgyRichTUI:
                 f"  [dim]📎 Attached {', '.join(f'[cyan]{f}[/cyan]' for f in attached)}[/dim]"
             )
 
+        # Auto-snapshot git state before the turn in case the agent edits files
+        cp = create_git_checkpoint(
+            workspace,
+            len(self.checkpoints) + 1,
+            self.session_turns + 1,
+            f"pre-turn-{self.session_turns + 1}: {user_text[:36]}",
+        )
+        if cp:
+            self.checkpoints.append(cp)
+
         t0 = time.perf_counter()
         thought_buf: list[str] = []
         text_buf: list[str] = []
-        tool_events: list[tuple[str, str, str | None]] = []
+        self._active_turn_tools = []
         seen_tool_ids: set[str] = set()
+        self.last_ralph_status = None
 
         def _render_live_frame() -> Group:
             renderables: list[Any] = []
@@ -642,7 +1163,6 @@ class AgyRichTUI:
 
             if thought_buf and self.show_thoughts:
                 full_thought = "".join(thought_buf).strip()
-                # Show last 6 lines during live streaming to keep screen compact
                 t_lines = full_thought.splitlines()
                 clipped = "\n".join(t_lines[-6:]) if len(t_lines) > 6 else full_thought
                 renderables.append(
@@ -654,20 +1174,36 @@ class AgyRichTUI:
                     )
                 )
 
-            for badge, summary, diff_preview in tool_events:
+            for rec in self._active_turn_tools:
                 line = Text()
-                line.append("  ⏺ ", style="bold cyan")
-                line.append(f"{badge}", style="bold bright_cyan")
-                line.append(f"({summary})", style="white")
+                icon = "✗" if rec.is_error else ("⏺" if rec.completed_at else "⠋")
+                icon_style = "bold red" if rec.is_error else ("bold cyan" if rec.completed_at else "bold yellow")
+                line.append(f"  {icon} ", style=icon_style)
+                line.append(f"{rec.badge}", style="bold bright_cyan")
+                line.append(f"({rec.summary})", style="white")
+                if rec.duration_ms is not None:
+                    line.append(f"  [{rec.duration_ms:.0f}ms]", style="dim")
                 renderables.append(line)
-                if diff_preview:
+
+                if rec.result_preview:
+                    res_line = Text()
+                    res_style = "red" if rec.is_error else "dim green"
+                    res_line.append(f"    ⎿  {rec.result_preview}", style=res_style)
+                    renderables.append(res_line)
+
+                if rec.diff_preview:
                     renderables.append(
                         Panel(
-                            Syntax(diff_preview, "diff", theme="monokai", word_wrap=True),
+                            Syntax(rec.diff_preview, "diff", theme="monokai", word_wrap=True),
                             border_style="dim",
                             padding=(0, 1),
                         )
                     )
+
+            if self.last_ralph_status:
+                ralph_line = Text()
+                ralph_line.append(f"  🔁 Ralph Verify: {self.last_ralph_status}", style="bold yellow")
+                renderables.append(ralph_line)
 
             if text_buf:
                 md_text = "".join(text_buf)
@@ -709,7 +1245,16 @@ class AgyRichTUI:
                             if tc_key not in seen_tool_ids:
                                 seen_tool_ids.add(tc_key)
                                 self.session_tool_calls += 1
-                                tool_events.append(format_tool_badge(tc))
+                                badge, summary, diff_preview = format_tool_badge(tc)
+                                self._active_turn_tools.append(
+                                    ToolEventRecord(
+                                        call_id=tc_key,
+                                        name=str(tc.name),
+                                        badge=badge,
+                                        summary=summary,
+                                        diff_preview=diff_preview,
+                                    )
+                                )
 
                     live.update(_render_live_frame())
             except KeyboardInterrupt:
@@ -735,20 +1280,71 @@ class AgyRichTUI:
         self.total_output_tokens += out_tok
         tok_per_s = out_tok / dt if out_tok > 0 else 0.0
 
+        self.transcripts.append(
+            TurnTranscript(
+                turn_index=self.session_turns,
+                user_prompt=user_text,
+                thinking="".join(thought_buf).strip(),
+                assistant_response="".join(text_buf).strip(),
+                tools=[
+                    {
+                        "badge": r.badge,
+                        "summary": r.summary,
+                        "duration_ms": r.duration_ms,
+                        "result_preview": r.result_preview,
+                        "is_error": r.is_error,
+                    }
+                    for r in self._active_turn_tools
+                ],
+                duration_s=dt,
+                prompt_tokens=in_tok,
+                output_tokens=out_tok,
+            )
+        )
+
         _, _, ctx_limit = self._active_model_summary(cfg)
+        tot_ctx = self.total_prompt_tokens + self.total_output_tokens
+        pct = min(100.0, (tot_ctx / max(1, ctx_limit)) * 100.0)
         footer = Text()
         footer.append(f"  ⏱ {dt:.2f}s", style="dim")
         if tok_per_s > 0:
             footer.append(f" · ⚡ {tok_per_s:.1f} tok/s", style="dim cyan")
         footer.append(f" · 📊 ~{out_tok:,} out tok", style="dim")
-        if tool_events:
-            footer.append(f" · 🛠 {len(tool_events)} tool call(s)", style="dim yellow")
-        footer.append(f" · ctx {(self.total_prompt_tokens + self.total_output_tokens):,}/{ctx_limit:,}", style="dim")
+        if self._active_turn_tools:
+            footer.append(f" · 🛠 {len(self._active_turn_tools)} tool(s)", style="dim yellow")
+        footer.append(f" · ctx {tot_ctx:,}/{ctx_limit:,} ({pct:.1f}%)", style="dim")
+        if self.compaction_notifications:
+            footer.append(f" · 🗜 {self.compaction_notifications} compacted", style="dim magenta")
         self.console.print(footer)
         self.console.print()
 
+    def _build_key_bindings(self) -> KeyBindings:
+        kb = KeyBindings()
+
+        @kb.add("escape", "t")
+        def _toggle_thoughts(event: Any) -> None:
+            self.show_thoughts = not self.show_thoughts
+            event.app.invalidate()
+
+        @kb.add("escape", "p")
+        def _cycle_policy(event: Any) -> None:
+            order = [PolicyMode.ALLOW_ALL, PolicyMode.SANDBOX, PolicyMode.ASK]
+            cur = (
+                self.options.policy_mode
+                if isinstance(self.options.policy_mode, PolicyMode)
+                else PolicyMode(str(self.options.policy_mode))
+            )
+            nxt = order[(order.index(cur) + 1) % len(order)]
+            self.options.policy_mode = nxt
+            event.app.invalidate()
+
+        return kb
+
     async def run(self) -> int:
         """Main loop supporting hot-reloading presets/models/policies via `/preset`, `/model`, `/policy`."""
+        global _ACTIVE_TUI
+        _ACTIVE_TUI = self
+
         history_path = Path.home() / ".cache" / "agy-local" / "prompt_history.txt"
         history_path.parent.mkdir(parents=True, exist_ok=True)
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
@@ -765,79 +1361,89 @@ class AgyRichTUI:
             prompt_session = PromptSession(
                 history=FileHistory(str(history_path)),
                 completer=AgyCompleter(workspace),
+                key_bindings=self._build_key_bindings(),
                 style=pt_style,
                 complete_while_typing=False,
             )
 
-        while True:
-            self._restart_requested = False
-            base_cfg = build_agent_config(self.options)
-            cfg = self._upgrade_interactive_config(base_cfg)
-            model_label, backend_label, _ = self._active_model_summary(cfg)
+        try:
+            while True:
+                self._restart_requested = False
+                base_cfg = build_agent_config(self.options)
+                cfg = self._upgrade_interactive_config(base_cfg)
+                model_label, _backend_label, ctx_limit = self._active_model_summary(cfg)
 
-            self.console.print(self.render_welcome_banner(cfg))
+                self.console.print(self.render_welcome_banner(cfg))
 
-            async with Agent(cfg) as agent:
-                while True:
-                    try:
-                        branch, dirty = _git_branch_and_dirty(workspace)
-                        git_info = f" | git:{branch}{'*' if dirty else ''}" if branch else ""
-                        pol = (
-                            self.options.policy_mode.value
-                            if isinstance(self.options.policy_mode, PolicyMode)
-                            else str(self.options.policy_mode)
-                        )
-                        toolbar_html = HTML(
-                            f" <b>{model_label}</b> ({backend_label}) | policy:<b>{pol}</b>{git_info} | "
-                            f"Tab: complete · <b>/help</b> commands · <b>@file</b> attach · <b>!cmd</b> shell "
-                        )
-                        prompt_html = HTML(f"<model_tag>[{model_label}]</model_tag> <prompt>❯ </prompt>")
-
-                        if prompt_session is not None:
-                            user_input = await prompt_session.prompt_async(
-                                prompt_html,
-                                bottom_toolbar=toolbar_html,
+                async with Agent(cfg) as agent:
+                    while True:
+                        try:
+                            branch, dirty = _git_branch_and_dirty(workspace)
+                            git_info = f" | git:{branch}{'*' if dirty else ''}" if branch else ""
+                            pol = (
+                                self.options.policy_mode.value
+                                if isinstance(self.options.policy_mode, PolicyMode)
+                                else str(self.options.policy_mode)
                             )
-                        else:
-                            user_input = await _nonblocking_input("❯ ")
-                    except (EOFError, KeyboardInterrupt):
-                        self.console.print("\n[dim]Session closed.[/dim]")
-                        return 0
-
-                    text = user_input.strip()
-                    if not text:
-                        continue
-
-                    if text.lower() in ("exit", "quit"):
-                        self.console.print("[dim]Session closed.[/dim]")
-                        return 0
-
-                    # Direct !shell shortcut (like Claude Code / Codex CLI)
-                    if text.startswith("!"):
-                        shell_cmd = text[1:].strip()
-                        if shell_cmd:
-                            self.console.print(Rule(f"[bold yellow]$ {shell_cmd}[/bold yellow]", style="yellow"))
-                            proc = await asyncio.to_thread(
-                                subprocess.run,
-                                shell_cmd,
-                                shell=True,
-                                cwd=workspace,
-                                check=False,
+                            tot_ctx = self.total_prompt_tokens + self.total_output_tokens
+                            ctx_pct = min(100.0, (tot_ctx / max(1, ctx_limit)) * 100.0)
+                            thoughts_flag = "on" if self.show_thoughts else "off"
+                            ralph_flag = f" | ralph:{self.ralph_verify_cmd}" if self.ralph_verify_cmd else ""
+                            toolbar_html = HTML(
+                                f" <b>{model_label}</b> | policy:<b>{pol}</b> | ctx:<b>{ctx_pct:.0f}%</b> | "
+                                f"thoughts:<b>{thoughts_flag}</b>{git_info}{ralph_flag} | "
+                                f"<b>/help</b> · <b>@file:1-20</b> · <b>@git:diff</b> · <b>!cmd</b> · <b>Alt+T</b>/<b>Alt+P</b> "
                             )
-                            status_color = "green" if proc.returncode == 0 else "red"
-                            self.console.print(f"[{status_color}]↳ exit code {proc.returncode}[/{status_color}]\n")
-                        continue
+                            prompt_html = HTML(f"<model_tag>[{model_label}]</model_tag> <prompt>❯ </prompt>")
 
-                    # Slash commands
-                    if text.startswith("/"):
-                        should_break = self._handle_slash_command(text, agent, cfg)
-                        if should_break:
-                            break
-                        continue
+                            if prompt_session is not None:
+                                user_input = await prompt_session.prompt_async(
+                                    prompt_html,
+                                    bottom_toolbar=toolbar_html,
+                                )
+                            else:
+                                user_input = await _nonblocking_input("❯ ")
+                        except (EOFError, KeyboardInterrupt):
+                            self.console.print("\n[dim]Session closed.[/dim]")
+                            return 0
 
-                    await self._run_turn(agent, text, cfg)
+                        text = user_input.strip()
+                        if not text:
+                            continue
 
-            if not self._restart_requested:
-                break
+                        if text.lower() in ("exit", "quit"):
+                            self.console.print("[dim]Session closed.[/dim]")
+                            return 0
+
+                        # Direct !shell shortcut (like Claude Code / Codex CLI)
+                        if text.startswith("!"):
+                            shell_cmd = text[1:].strip()
+                            if shell_cmd:
+                                self.console.print(Rule(f"[bold yellow]$ {shell_cmd}[/bold yellow]", style="yellow"))
+                                proc = await asyncio.to_thread(
+                                    subprocess.run,
+                                    shell_cmd,
+                                    shell=True,
+                                    cwd=workspace,
+                                    check=False,
+                                )
+                                status_color = "green" if proc.returncode == 0 else "red"
+                                self.console.print(f"[{status_color}]↳ exit code {proc.returncode}[/{status_color}]\n")
+                            continue
+
+                        # Slash commands
+                        if text.startswith("/"):
+                            should_break = await self._handle_slash_command(text, agent, cfg)
+                            if should_break:
+                                break
+                            continue
+
+                        await self._run_turn(agent, text, cfg)
+
+                if not self._restart_requested:
+                    break
+        finally:
+            if _ACTIVE_TUI is self:
+                _ACTIVE_TUI = None
 
         return 0

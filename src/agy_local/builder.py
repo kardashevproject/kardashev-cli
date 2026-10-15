@@ -50,6 +50,7 @@ class HarnessOptions:
     system_instructions: str | None = None
     skills_paths: list[str] | None = None
     with_chronosml_mcp: bool = False
+    with_opencommons_mcp: bool = False
     extra_mcp_stdio: list[tuple[str, str, list[str]]] = field(default_factory=list)
     custom_tools: list[Callable[..., Any]] = field(default_factory=list)
 
@@ -73,6 +74,15 @@ def _build_mcp_servers(options: HarnessOptions) -> list[types.McpServerConfig]:
             types.McpStdioServer(
                 name="chronosml",
                 command=chronos_bin,
+                args=[],
+            )
+        )
+    if options.with_opencommons_mcp:
+        opencommons_bin = shutil.which("opencommons-mcp") or "opencommons-mcp"
+        servers.append(
+            types.McpStdioServer(
+                name="opencommons",
+                command=opencommons_bin,
                 args=[],
             )
         )

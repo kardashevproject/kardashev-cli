@@ -42,6 +42,80 @@
       "wave": 1
     },
     {
+      "block_id": "bbox_iou_2d@fefbd4b3",
+      "cid": "cid:57a48ed47be1a478",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705243.7793,
+      "dependencies": [],
+      "dimensional_units": "box_a: list[float], box_b: list[float] -> float",
+      "domain": "geodesy_and_spatial",
+      "fp": "fp:57a48ed47be1a478",
+      "invariants": [
+        "0.0 <= IoU <= 1.0",
+        "symmetric IoU(A, B) == IoU(B, A)"
+      ],
+      "name": "bbox_iou_2d",
+      "param_types": [
+        "list[float]",
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([0.0, 0.0, 1.0, 1.0], [2.0, 2.0, 3.0, 3.0])",
+          "failure_mechanism": "When boxes are disjoint in both X and Y, two negative widths multiply to a positive false intersection!",
+          "naive_pattern": "(min(x2a, x2b) - max(x1a, x1b)) * (min(y2a, y2b) - max(y1a, y1b))",
+          "pitfall_id": "iou_negative_intersection_product",
+          "verified_fix": "Clamp both inter_w = max(0.0, ...) and inter_h = max(0.0, ...) before multiplying"
+        }
+      ],
+      "pseudocode": "1. inter_w = max(0, min(x2a, x2b) - max(x1a, x1b)); 2. inter_h = max(0, min(y2a, y2b) - max(y1a, y1b)); 3. inter / (area_a + area_b - inter)",
+      "return_type": "float",
+      "sid": "sid:fefbd4b30df57738",
+      "source_code": "\ndef bbox_iou_2d(box_a: list[float], box_b: list[float]) -> float:\n    if len(box_a) < 4 or len(box_b) < 4:\n        return 0.0\n    ax1, ay1, ax2, ay2 = min(box_a[0], box_a[2]), min(box_a[1], box_a[3]), max(box_a[0], box_a[2]), max(box_a[1], box_a[3])\n    bx1, by1, bx2, by2 = min(box_b[0], box_b[2]), min(box_b[1], box_b[3]), max(box_b[0], box_b[2]), max(box_b[1], box_b[3])\n    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))\n    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))\n    inter = inter_w * inter_h\n    area_a = (ax2 - ax1) * (ay2 - ay1)\n    area_b = (bx2 - bx1) * (by2 - by1)\n    union = area_a + area_b - inter\n    if union <= 1e-12:\n        return 0.0\n    return min(1.0, max(0.0, inter / union))\n",
+      "summary": "2D Axis-Aligned Bounding Box (AABB) Intersection-over-Union (IoU) with degenerate box protection",
+      "teleological_intent": "Scale-invariant spatial overlap metric for object detection and layout geometry",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "bias_corrected_ema_step@6691cd2b",
+      "cid": "cid:8055804e2d6c0fdf",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705238.9104,
+      "dependencies": [],
+      "dimensional_units": "prev_ema: U, sample: U, alpha: float, step: int -> U",
+      "domain": "signal_processing",
+      "fp": "fp:8055804e2d6c0fdf",
+      "invariants": [
+        "step == 1 and prev == 0.0 -> returns exact x",
+        "converges to standard EMA as step -> inf"
+      ],
+      "name": "bias_corrected_ema_step",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.0, 100.0, 0.01, 1)",
+          "failure_mechanism": "When initialized at 0.0 with alpha = 0.01, first sample is underestimated by 100x",
+          "naive_pattern": "alpha * sample + (1.0 - alpha) * prev_ema",
+          "pitfall_id": "uncorrected_zero_init_ema_bias",
+          "verified_fix": "Divide by bias correction factor 1.0 - ((1.0 - alpha) ** max(1, step))"
+        }
+      ],
+      "pseudocode": "1. raw = alpha * x + (1 - alpha) * prev; 2. return raw / (1 - (1 - alpha)^step)",
+      "return_type": "float",
+      "sid": "sid:6691cd2b346c919a",
+      "source_code": "\ndef bias_corrected_ema_step(prev_ema: float, sample: float, alpha: float, step: int) -> float:\n    a = min(0.9999, max(1e-6, abs(alpha)))\n    t = max(1, abs(step))\n    raw = a * sample + (1.0 - a) * prev_ema\n    correction = 1.0 - ((1.0 - a) ** min(t, 10000))\n    return raw / max(1e-12, correction)\n",
+      "summary": "Exponential Moving Average (EMA) step with bias correction (1 - (1 - alpha)^t) for cold-start streams",
+      "teleological_intent": "Eliminate zero-initialization cold-start lag in telemetry and optimizer moment tracking",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
       "block_id": "black_scholes_d1@af3518f0",
       "cid": "cid:8c6675c34017a677",
       "contributor_agent": "agy-local",
@@ -77,6 +151,114 @@
       "source_code": "\ndef black_scholes_d1(spot: float, strike: float, rate: float, vol: float, maturity: float) -> float:\n    s = max(1e-8, abs(spot))\n    k = max(1e-8, abs(strike))\n    sigma = max(1e-6, abs(vol))\n    t = max(1e-6, abs(maturity))\n    return (math.log(s / k) + (rate + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))\n",
       "summary": "Black-Scholes log-moneyness d1 term with volatility and maturity guards",
       "teleological_intent": "Standardized log-normal drift-adjusted moneyness under risk-neutral measure",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "bloom_optimal_k_and_fpr@0a3ad575",
+      "cid": "cid:9361e366fc0d54f5",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705233.501,
+      "dependencies": [],
+      "dimensional_units": "m_bits: int, n_items: int -> tuple[int, float]",
+      "domain": "distributed_systems",
+      "fp": "fp:9361e366fc0d54f5",
+      "invariants": [
+        "k >= 1",
+        "0.0 <= fpr <= 1.0"
+      ],
+      "name": "bloom_optimal_k_and_fpr",
+      "param_types": [
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1000, 100)",
+          "failure_mechanism": "Over-hashes each element by 1.44x, saturating the bit array prematurely and inflating FPR",
+          "naive_pattern": "k = m_bits // n_items",
+          "pitfall_id": "bloom_omitting_ln2_factor",
+          "verified_fix": "Multiply bits-per-item (m / n) by math.log(2.0) ~= 0.693147"
+        }
+      ],
+      "pseudocode": "1. k = max(1, round((m_bits / n_items) * ln(2))); 2. fpr = (1 - exp(-k * n_items / m_bits)) ** k",
+      "return_type": "tuple[int, float]",
+      "sid": "sid:0a3ad575b0f38963",
+      "source_code": "\ndef bloom_optimal_k_and_fpr(m_bits: int, n_items: int) -> tuple[int, float]:\n    m = max(8, abs(m_bits))\n    n = max(1, abs(n_items))\n    k = max(1, round((m / n) * 0.6931471805599453))\n    fpr = (1.0 - math.exp(-(k * n) / m)) ** k\n    return (k, min(1.0, max(0.0, fpr)))\n",
+      "summary": "Optimal Bloom filter hash count k = round((m / n) * ln(2)) and false positive rate (1 - exp(-k*n/m))^k",
+      "teleological_intent": "Minimize bit-array collision probability at 50% bit fill density",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "box_muller_normal_pair@969fb739",
+      "cid": "cid:05ccfa1b82b640ea",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705213.0261,
+      "dependencies": [],
+      "dimensional_units": "u1: float, u2: float -> tuple[float, float]",
+      "domain": "statistics_and_information",
+      "fp": "fp:05ccfa1b82b640ea",
+      "invariants": [
+        "z0^2 + z1^2 == -2 * log(u1)",
+        "orthogonal Gaussian marginals"
+      ],
+      "name": "box_muller_normal_pair",
+      "param_types": [
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.0, 0.5)",
+          "failure_mechanism": "PRNG emitting u1 == 0.0 triggers ValueError: math domain error in math.log(0.0)",
+          "naive_pattern": "math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)",
+          "pitfall_id": "box_muller_u1_zero_log_singularity",
+          "verified_fix": "Clamp u1 into [1e-15, 1.0] before taking -2.0 * math.log(u1)"
+        }
+      ],
+      "pseudocode": "1. Clamp u1 >= 1e-15; 2. r = sqrt(-2 * log(u1)); 3. theta = 2 * pi * u2; 4. return (r * cos(theta), r * sin(theta))",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:969fb7396b690c50",
+      "source_code": "\ndef box_muller_normal_pair(u1: float, u2: float) -> tuple[float, float]:\n    safe_u1 = min(1.0, max(1e-15, abs(u1) if abs(u1) <= 1.0 else (1.0 / (1.0 + abs(u1)))))\n    r = math.sqrt(max(0.0, -2.0 * math.log(safe_u1)))\n    theta = 2.0 * math.pi * u2\n    return (r * math.cos(theta), r * math.sin(theta))\n",
+      "summary": "Box-Muller polar transformation mapping uniform (u1, u2) in (0, 1) to independent standard normal (z0, z1)",
+      "teleological_intent": "Exact inverse-CDF radial transformation from 2D uniform box to 2D isotropic Gaussian",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "clip_grad_l2_norm@1754970b",
+      "cid": "cid:a7c340b8bf904d80",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705227.2756,
+      "dependencies": [],
+      "dimensional_units": "grads: list[float], max_norm: float -> list[float]",
+      "domain": "machine_learning",
+      "fp": "fp:a7c340b8bf904d80",
+      "invariants": [
+        "||clipped_grads||_2 <= max_norm",
+        "preserves exact gradient direction"
+      ],
+      "name": "clip_grad_l2_norm",
+      "param_types": [
+        "list[float]",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([100.0, 1.0], 5.0)",
+          "failure_mechanism": "Element-wise clamping rotates the gradient vector toward the hypercube diagonal",
+          "naive_pattern": "[min(max_norm, max(-max_norm, g)) for g in grads]",
+          "pitfall_id": "elementwise_clamp_distorts_direction",
+          "verified_fix": "Scale all coordinates uniformly by min(1.0, max_norm / global_l2_norm)"
+        }
+      ],
+      "pseudocode": "1. g_norm = sqrt(sum(g^2)); 2. clip_coef = max_norm / (g_norm + 1e-6); 3. scale by min(1.0, clip_coef)",
+      "return_type": "list[float]",
+      "sid": "sid:1754970bcd9fd7df",
+      "source_code": "\ndef clip_grad_l2_norm(grads: list[float], max_norm: float) -> list[float]:\n    if not grads:\n        return []\n    cap = max(1e-6, abs(max_norm))\n    total_norm = math.sqrt(sum(g * g for g in grads))\n    clip_coef = min(1.0, cap / (total_norm + 1e-12))\n    return [g * clip_coef for g in grads]\n",
+      "summary": "Global L2 gradient norm clipping multiplier min(1.0, max_norm / (grad_norm + eps))",
+      "teleological_intent": "Prevent exploding gradients across steep loss cliffs while preserving direction vector",
       "trust_tier": "peer_reviewed",
       "wave": 1
     },
@@ -334,6 +516,42 @@
       "wave": 1
     },
     {
+      "block_id": "hamming_window_weight@a86e64cb",
+      "cid": "cid:0c39b8cc1944d7bc",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705237.62,
+      "dependencies": [],
+      "dimensional_units": "index: int, length: int -> float",
+      "domain": "signal_processing",
+      "fp": "fp:0c39b8cc1944d7bc",
+      "invariants": [
+        "0.08 <= w(n) <= 1.0",
+        "symmetric w(n) == w(N - 1 - n)"
+      ],
+      "name": "hamming_window_weight",
+      "param_types": [
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0, 1)",
+          "failure_mechanism": "Raises ZeroDivisionError when window length == 1",
+          "naive_pattern": "0.54 - 0.46 * math.cos(2.0 * math.pi * index / (length - 1))",
+          "pitfall_id": "window_n_minus_1_div_zero",
+          "verified_fix": "Guard length <= 1 and return 1.0 before dividing by length - 1"
+        }
+      ],
+      "pseudocode": "1. if N <= 1: return 1.0; 2. return 0.54 - 0.46 * cos(2 * pi * n / (N - 1))",
+      "return_type": "float",
+      "sid": "sid:a86e64cb62b5372a",
+      "source_code": "\ndef hamming_window_weight(index: int, length: int) -> float:\n    n_len = max(1, abs(length))\n    if n_len == 1:\n        return 1.0\n    idx = min(n_len - 1, max(0, abs(index)))\n    return 0.54 - 0.46 * math.cos((2.0 * math.pi * idx) / (n_len - 1))\n",
+      "summary": "Hamming raised-cosine window weight w(n) = 0.54 - 0.46 * cos(2 * pi * n / (N - 1)) with N=1 guard",
+      "teleological_intent": "Suppress first sidelobe spectral leakage (-43 dB) in short-time Fourier analysis",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
       "block_id": "haversine_distance_km@51001b30",
       "cid": "cid:6dfcda71d358311f",
       "contributor_agent": "agy-local",
@@ -368,6 +586,82 @@
       "source_code": "\ndef haversine_distance_km(lat1_deg: float, lon1_deg: float, lat2_deg: float, lon2_deg: float) -> float:\n    r_earth_km = 6371.0088\n    lat1 = math.radians(lat1_deg)\n    lon1 = math.radians(lon1_deg)\n    lat2 = math.radians(lat2_deg)\n    lon2 = math.radians(lon2_deg)\n    dlat = lat2 - lat1\n    dlon = lon2 - lon1\n    a = (math.sin(dlat * 0.5) ** 2) + math.cos(lat1) * math.cos(lat2) * (math.sin(dlon * 0.5) ** 2)\n    c = 2.0 * math.asin(min(1.0, math.sqrt(max(0.0, a))))\n    return r_earth_km * c\n",
       "summary": "Haversine great-circle geodesic distance on a sphere with antipodal asin clamping",
       "teleological_intent": "Well-conditioned spherical distance for both sub-meter and antipodal coordinates",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "hlc_local_tick@0a693bb8",
+      "cid": "cid:0d7d0da3b2327c45",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705234.5164,
+      "dependencies": [],
+      "dimensional_units": "l_prev: int, c_prev: int, phys_ms: int -> tuple[int, int]",
+      "domain": "distributed_systems",
+      "fp": "fp:0d7d0da3b2327c45",
+      "invariants": [
+        "(l_new, c_new) > (l_prev, c_prev)",
+        "l_new >= phys_ms"
+      ],
+      "name": "hlc_local_tick",
+      "param_types": [
+        "int",
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1000, 5, 1005)",
+          "failure_mechanism": "Failing to reset c_new = 0 when physical clock advances causes unbounded counter drift",
+          "naive_pattern": "return (max(l_prev, phys_ms), c_prev + 1)",
+          "pitfall_id": "hlc_unreset_logical_counter",
+          "verified_fix": "Reset c_new = 0 whenever phys_ms > l_prev, and increment c_prev + 1 only on tie"
+        }
+      ],
+      "pseudocode": "1. l_new = max(l_prev, phys_ms); 2. c_new = (c_prev + 1) if l_new == l_prev else 0",
+      "return_type": "tuple[int, int]",
+      "sid": "sid:0a693bb87ad8843f",
+      "source_code": "\ndef hlc_local_tick(l_prev: int, c_prev: int, phys_ms: int) -> tuple[int, int]:\n    lp = max(0, l_prev)\n    cp = max(0, c_prev)\n    pt = max(0, phys_ms)\n    if pt > lp:\n        return (pt, 0)\n    return (lp, cp + 1)\n",
+      "summary": "Hybrid Logical Clock (HLC) send/local event transition (l_new, c_new) preserving causal happens-before",
+      "teleological_intent": "Monotonic causal timestamping resilient to NTP physical clock backward jumps (Kulkarni et al.)",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "hlc_receive_merge@9385323f",
+      "cid": "cid:fe655db78b94dc87",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705236.3718,
+      "dependencies": [],
+      "dimensional_units": "l_loc: int, c_loc: int, l_msg: int, c_msg: int, phys_ms: int -> tuple[int, int]",
+      "domain": "distributed_systems",
+      "fp": "fp:fe655db78b94dc87",
+      "invariants": [
+        "(l_new, c_new) > (l_local, c_local)",
+        "(l_new, c_new) > (l_msg, c_msg)"
+      ],
+      "name": "hlc_receive_merge",
+      "param_types": [
+        "int",
+        "int",
+        "int",
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(100, 50, 200, 1, 150)",
+          "failure_mechanism": "Uses stale counter from a smaller wall-clock component when l_loc != l_msg",
+          "naive_pattern": "c_new = max(c_loc, c_msg) + 1 regardless of which l won",
+          "pitfall_id": "hlc_receive_tie_break_bug",
+          "verified_fix": "Check all 4 tie cases: l_new == l_loc == l_msg, l_new == l_loc, l_new == l_msg, else 0"
+        }
+      ],
+      "pseudocode": "1. l_new = max(l_local, l_msg, phys_ms); 2. Update c_new by tie-breaking across (l_local, l_msg, phys_ms)",
+      "return_type": "tuple[int, int]",
+      "sid": "sid:9385323f3845c64c",
+      "source_code": "\ndef hlc_receive_merge(l_loc: int, c_loc: int, l_msg: int, c_msg: int, phys_ms: int) -> tuple[int, int]:\n    ll = max(0, l_loc)\n    cl = max(0, c_loc)\n    lm = max(0, l_msg)\n    cm = max(0, c_msg)\n    pt = max(0, phys_ms)\n    l_new = max(ll, lm, pt)\n    if l_new == ll and l_new == lm:\n        c_new = max(cl, cm) + 1\n    elif l_new == ll:\n        c_new = cl + 1\n    elif l_new == lm:\n        c_new = cm + 1\n    else:\n        c_new = 0\n    return (l_new, c_new)\n",
+      "summary": "Hybrid Logical Clock (HLC) receive-message merge transition across local, remote, and physical clocks",
+      "teleological_intent": "Strictly advance causal clock past both local history and incoming network message",
       "trust_tier": "peer_reviewed",
       "wave": 1
     },
@@ -408,6 +702,296 @@
       "wave": 1
     },
     {
+      "block_id": "huber_robust_loss@80fce3fd",
+      "cid": "cid:52fad944b8c516dd",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705223.9844,
+      "dependencies": [],
+      "dimensional_units": "y_pred: U, y_true: U, delta: U -> U^2",
+      "domain": "machine_learning",
+      "fp": "fp:52fad944b8c516dd",
+      "invariants": [
+        "loss >= 0.0",
+        "continuous value and derivative at |err| == delta"
+      ],
+      "name": "huber_robust_loss",
+      "param_types": [
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(2.0, 0.0, 1.0)",
+          "failure_mechanism": "Omitting -0.5 * delta^2 creates a jump discontinuity of 0.5 * delta^2 at err == delta",
+          "naive_pattern": "0.5 * err**2 if err <= delta else delta * err",
+          "pitfall_id": "huber_discontinuous_linear_branch",
+          "verified_fix": "Use delta * (err - 0.5 * delta) in the outer linear branch"
+        }
+      ],
+      "pseudocode": "1. err = |y_pred - y_true|; 2. if err <= delta: 0.5 * err^2; 3. else: delta * (err - 0.5 * delta)",
+      "return_type": "float",
+      "sid": "sid:80fce3fd4149c321",
+      "source_code": "\ndef huber_robust_loss(y_pred: float, y_true: float, delta: float) -> float:\n    d = max(1e-8, abs(delta))\n    err = abs(y_pred - y_true)\n    if err <= d:\n        return 0.5 * err * err\n    return d * (err - 0.5 * d)\n",
+      "summary": "Huber robust regression loss transitioning smoothly from C^1 quadratic L2 to linear L1 at delta",
+      "teleological_intent": "Bound gradient magnitude to [-delta, +delta] against heavy-tailed outliers",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "is_prime_miller_rabin_64@81e4319f",
+      "cid": "cid:7167e3ba8456715b",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705231.0576,
+      "dependencies": [],
+      "dimensional_units": "n: int -> bool",
+      "domain": "number_theory_and_algebra",
+      "fp": "fp:7167e3ba8456715b",
+      "invariants": [
+        "exact for all n < 2^64",
+        "O(k * log^3 n) complexity"
+      ],
+      "name": "is_prime_miller_rabin_64",
+      "param_types": [
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "561",
+          "failure_mechanism": "Carmichael numbers (e.g. 561 = 3 * 11 * 17) fool Fermat test for all coprime bases",
+          "naive_pattern": "pow(2, n - 1, n) == 1",
+          "pitfall_id": "fermat_carmichael_pseudoprime",
+          "verified_fix": "Factor out 2^s from n-1 and check repeated squaring roots of unity != +-1"
+        }
+      ],
+      "pseudocode": "1. Factor n - 1 = d * 2^s; 2. Test witnesses [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]",
+      "return_type": "bool",
+      "sid": "sid:81e4319fed7c5163",
+      "source_code": "\ndef is_prime_miller_rabin_64(n: int) -> bool:\n    if n < 2:\n        return False\n    for p in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):\n        if n == p:\n            return True\n        if n % p == 0:\n            return False\n    d = n - 1\n    s = 0\n    while (d & 1) == 0:\n        d >>= 1\n        s += 1\n    for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):\n        if a >= n:\n            continue\n        x = pow(a, d, n)\n        if x == 1 or x == n - 1:\n            continue\n        composite = True\n        for _ in range(s - 1):\n            x = (x * x) % n\n            if x == n - 1:\n                composite = False\n                break\n        if composite:\n            return False\n    return True\n",
+      "summary": "Deterministic Miller-Rabin strong probable prime test for 64-bit integers using fixed witness bases",
+      "teleological_intent": "Zero-false-positive primality verification on 64-bit integers without O(sqrt(n)) trial division",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "jensen_shannon_divergence@4332202b",
+      "cid": "cid:49775df8f826cf8e",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705218.5625,
+      "dependencies": [],
+      "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
+      "domain": "statistics_and_information",
+      "fp": "fp:49775df8f826cf8e",
+      "invariants": [
+        "0.0 <= JSD(P, Q) <= math.log(2.0)",
+        "JSD(P, Q) == JSD(Q, P)"
+      ],
+      "name": "jensen_shannon_divergence",
+      "param_types": [
+        "list[float]",
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([1.0, 0.0], [0.0, 1.0])",
+          "failure_mechanism": "KL divergence is asymmetric and diverges to +inf when Q has zeros on P's support",
+          "naive_pattern": "kl_divergence(P, Q)",
+          "pitfall_id": "asymmetric_kl_as_distance",
+          "verified_fix": "Evaluate KL against the midpoint mixture M = 0.5 * (P + Q)"
+        }
+      ],
+      "pseudocode": "1. Normalize P, Q; 2. M = 0.5 * (P + Q); 3. return 0.5 * D_KL(P || M) + 0.5 * D_KL(Q || M)",
+      "return_type": "float",
+      "sid": "sid:4332202b54621487",
+      "source_code": "\ndef jensen_shannon_divergence(p_weights: list[float], q_weights: list[float]) -> float:\n    n = min(len(p_weights), len(q_weights))\n    if n == 0:\n        return 0.0\n    p_raw = [max(0.0, abs(p_weights[i])) for i in range(n)]\n    q_raw = [max(0.0, abs(q_weights[i])) for i in range(n)]\n    sp = sum(p_raw)\n    sq = sum(q_raw)\n    if sp <= 0.0 or sq <= 0.0:\n        return 0.0\n    jsd = 0.0\n    for i in range(n):\n        p = p_raw[i] / sp\n        q = q_raw[i] / sq\n        m = 0.5 * (p + q)\n        if p > 0.0 and m > 0.0:\n            jsd += 0.5 * p * math.log(p / m)\n        if q > 0.0 and m > 0.0:\n            jsd += 0.5 * q * math.log(q / m)\n    return min(math.log(2.0), max(0.0, jsd))\n",
+      "summary": "Symmetric Jensen-Shannon divergence JSD(P || Q) bounded in [0, log(2)] nats",
+      "teleological_intent": "Bounded, symmetric, finite metric-square divergence even on disjoint supports",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "kelly_optimal_fraction@f2e0c7b8",
+      "cid": "cid:d8674563b73088ab",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705245.2866,
+      "dependencies": [],
+      "dimensional_units": "win_prob: float, net_odds: float, max_fraction: float -> float",
+      "domain": "quantitative_finance",
+      "fp": "fp:d8674563b73088ab",
+      "invariants": [
+        "0.0 <= f* <= max_fraction",
+        "f* == 0.0 whenever expected edge p * b - (1 - p) <= 0"
+      ],
+      "name": "kelly_optimal_fraction",
+      "param_types": [
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.3, 1.0, 0.5)",
+          "failure_mechanism": "Returns negative bet fraction on negative-EV bets or raises ZeroDivisionError when net_odds == 0",
+          "naive_pattern": "(win_prob * net_odds - (1.0 - win_prob)) / net_odds",
+          "pitfall_id": "kelly_negative_edge_or_zero_odds",
+          "verified_fix": "Guard net_odds > 0 and clamp negative edge to 0.0"
+        }
+      ],
+      "pseudocode": "1. p = clamp(win_prob, 0, 1); 2. f = (p * odds - (1 - p)) / odds; 3. return clamp(f, 0, max_frac)",
+      "return_type": "float",
+      "sid": "sid:f2e0c7b842c8663b",
+      "source_code": "\ndef kelly_optimal_fraction(win_prob: float, net_odds: float, max_fraction: float) -> float:\n    p = min(1.0, max(0.0, win_prob))\n    b = max(1e-6, abs(net_odds))\n    cap = min(1.0, max(0.0, abs(max_fraction)))\n    edge = p * b - (1.0 - p)\n    if edge <= 0.0:\n        return 0.0\n    return min(cap, edge / b)\n",
+      "summary": "Kelly criterion optimal fractional bet size f* = (p * b - q) / b clamped to non-negative leverage cap",
+      "teleological_intent": "Maximize expected logarithmic capital growth rate E[log(1 + f * R)] without ruin",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "kl_divergence_smoothed@855b9f45",
+      "cid": "cid:1103f39f3787822b",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705215.3733,
+      "dependencies": [],
+      "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
+      "domain": "statistics_and_information",
+      "fp": "fp:1103f39f3787822b",
+      "invariants": [
+        "D_KL(P || Q) >= 0.0 (Gibbs inequality)",
+        "D_KL(P || P) == 0.0"
+      ],
+      "name": "kl_divergence_smoothed",
+      "param_types": [
+        "list[float]",
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([0.5, 0.5], [1.0, 0.0])",
+          "failure_mechanism": "ZeroDivisionError when q_i == 0 or negative result when inputs are unnormalized",
+          "naive_pattern": "sum(p * math.log(p / q) for p, q in zip(P, Q))",
+          "pitfall_id": "kl_zero_support_div_zero",
+          "verified_fix": "Normalize both distributions with an epsilon floor 1e-12 before summing p * log(p / q)"
+        }
+      ],
+      "pseudocode": "1. Normalize P and Q with eps floor; 2. return sum(p_i * log(p_i / q_i))",
+      "return_type": "float",
+      "sid": "sid:855b9f457e854299",
+      "source_code": "\ndef kl_divergence_smoothed(p_weights: list[float], q_weights: list[float]) -> float:\n    n = min(len(p_weights), len(q_weights))\n    if n == 0:\n        return 0.0\n    p_raw = [max(1e-12, abs(p_weights[i])) for i in range(n)]\n    q_raw = [max(1e-12, abs(q_weights[i])) for i in range(n)]\n    sp = sum(p_raw)\n    sq = sum(q_raw)\n    kl = 0.0\n    for i in range(n):\n        p = p_raw[i] / sp\n        q = q_raw[i] / sq\n        kl += p * math.log(p / q)\n    return max(0.0, kl)\n",
+      "summary": "Kullback-Leibler divergence D_KL(P || Q) in nats with Laplace smoothing and probability normalization",
+      "teleological_intent": "Relative entropy information gain without zero-support division by zero",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "lora_adapter_scale@c7ba6241",
+      "cid": "cid:cba05ca491828e92",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705225.9922,
+      "dependencies": [],
+      "dimensional_units": "alpha: float, rank: int, use_rslora: bool -> float",
+      "domain": "machine_learning",
+      "fp": "fp:cba05ca491828e92",
+      "invariants": [
+        "scale > 0 for alpha > 0",
+        "rsLoRA preserves O(1) activation variance as rank -> inf"
+      ],
+      "name": "lora_adapter_scale",
+      "param_types": [
+        "float",
+        "int",
+        "bool"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(16.0, 64, True)",
+          "failure_mechanism": "Standard 1/r scaling shrinks gradient norm as rank increases; rank=0 raises ZeroDivisionError",
+          "naive_pattern": "alpha / rank",
+          "pitfall_id": "lora_zero_rank_div_or_high_rank_collapse",
+          "verified_fix": "Guard safe_r = max(1, abs(rank)) and divide by math.sqrt(safe_r) when use_rslora is True"
+        }
+      ],
+      "pseudocode": "1. safe_r = max(1, rank); 2. return alpha / sqrt(safe_r) if use_rslora else alpha / safe_r",
+      "return_type": "float",
+      "sid": "sid:c7ba6241962df89e",
+      "source_code": "\ndef lora_adapter_scale(alpha: float, rank: int, use_rslora: bool) -> float:\n    r = max(1, abs(rank))\n    a = abs(alpha) if alpha != 0.0 else 1.0\n    if use_rslora:\n        return a / math.sqrt(r)\n    return a / r\n",
+      "summary": "LoRA (Low-Rank Adaptation) effective scaling factor alpha / rank with rank-stabilized rsLoRA option",
+      "teleological_intent": "Prevent adapter update collapse at high rank (Kalajdzievski rsLoRA 1/sqrt(r) scaling)",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "maechler_log1mexp@8a98a7be",
+      "cid": "cid:0493c5b6ef37f57e",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705220.8093,
+      "dependencies": [],
+      "dimensional_units": "x: nats -> nats",
+      "domain": "numerical_analysis",
+      "fp": "fp:0493c5b6ef37f57e",
+      "invariants": [
+        "finite for all x != 0",
+        "eliminates catastrophic cancellation in both x -> 0 and x -> inf limits"
+      ],
+      "name": "maechler_log1mexp",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "1e-12",
+          "failure_mechanism": "Loses precision for small |x| << 1 (exp(-a) ~= 1) or underflows to log(1.0) = 0",
+          "naive_pattern": "math.log(1.0 - math.exp(-abs(x)))",
+          "pitfall_id": "log1mexp_single_branch_cancellation",
+          "verified_fix": "Switch at ln(2) between math.log(-math.expm1(-a)) and math.log1p(-math.exp(-a))"
+        }
+      ],
+      "pseudocode": "1. For a = |x| > 0: if a <= log(2), use log(-expm1(-a)); else use log1p(-exp(-a))",
+      "return_type": "float",
+      "sid": "sid:8a98a7be3b35121a",
+      "source_code": "\ndef maechler_log1mexp(x: float) -> float:\n    a = max(1e-15, abs(x))\n    if a <= 0.6931471805599453:\n        return math.log(-math.expm1(-a))\n    return math.log1p(-math.exp(-min(a, 709.0)))\n",
+      "summary": "Log1pexp log(1 + exp(x)) and Log1mexp log(1 - exp(-|x|)) accurate across all float64 regimes (Maechler 2012)",
+      "teleological_intent": "Two-regime branch split at ln(2) = 0.693147 for complementary log-probability",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "modular_pow_fast@a73c35af",
+      "cid": "cid:eaa6637456c87724",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705228.6555,
+      "dependencies": [],
+      "dimensional_units": "base: int, exp: int, mod: int -> int",
+      "domain": "number_theory_and_algebra",
+      "fp": "fp:eaa6637456c87724",
+      "invariants": [
+        "0 <= result < |m|",
+        "O(log exp) time and O(1) memory"
+      ],
+      "name": "modular_pow_fast",
+      "param_types": [
+        "int",
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(7, 10000000, 1000000007)",
+          "failure_mechanism": "Materializes huge integer base**exp in memory before reducing modulo m",
+          "naive_pattern": "(base ** exp) % mod",
+          "pitfall_id": "naive_power_before_modulo_oom",
+          "verified_fix": "Reduce modulo m at every square-and-multiply step"
+        }
+      ],
+      "pseudocode": "1. base = a % m; 2. while e > 0: if e & 1: res = (res * base) % m; base = (base * base) % m; e >>= 1",
+      "return_type": "int",
+      "sid": "sid:a73c35af877c0914",
+      "source_code": "\ndef modular_pow_fast(base: int, exp: int, mod: int) -> int:\n    m = max(2, abs(mod))\n    b = base % m\n    e = max(0, exp)\n    result = 1 % m\n    while e > 0:\n        if e & 1:\n            result = (result * b) % m\n        b = (b * b) % m\n        e >>= 1\n    return result\n",
+      "summary": "Binary exponentiation (a^exp) mod m in O(log exp) multiplications with negative-base normalization",
+      "teleological_intent": "Prevent multi-megabyte intermediate integer allocation in modular exponentiation",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
       "block_id": "neumaier_compensated_sum@54e1b257",
       "cid": "cid:bd315a144fc1082e",
       "contributor_agent": "agy-local",
@@ -439,6 +1023,41 @@
       "source_code": "\ndef neumaier_compensated_sum(xs: list[float]) -> float:\n    total = 0.0\n    comp = 0.0\n    for x in xs:\n        t = total + x\n        if abs(total) >= abs(x):\n            comp += (total - t) + x\n        else:\n            comp += (x - t) + total\n        total = t\n    return total + comp\n",
       "summary": "Kahan-Babushka-Neumaier compensated summation eliminating O(N * eps) floating-point drift",
       "teleological_intent": "Preserve low-order mantissa bits when summing large and small magnitudes",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "normalized_sinc@a7ac926a",
+      "cid": "cid:113f38976537e494",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705221.7214,
+      "dependencies": [],
+      "dimensional_units": "x: cycles -> dimensionless",
+      "domain": "numerical_analysis",
+      "fp": "fp:113f38976537e494",
+      "invariants": [
+        "normalized_sinc(0.0) == 1.0",
+        "normalized_sinc(n) == 0.0 for non-zero integer n"
+      ],
+      "name": "normalized_sinc",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "0.0",
+          "failure_mechanism": "Raises ZeroDivisionError at x == 0.0",
+          "naive_pattern": "math.sin(math.pi * x) / (math.pi * x)",
+          "pitfall_id": "sinc_origin_zero_division",
+          "verified_fix": "Use 4th-order Taylor polynomial 1 - u^2/6 + u^4/120 when |x| < 1e-4"
+        }
+      ],
+      "pseudocode": "1. if |x| < 1e-4: return 1 - (pi*x)^2 / 6 + (pi*x)^4 / 120; 2. else: sin(pi*x) / (pi*x)",
+      "return_type": "float",
+      "sid": "sid:a7ac926aa1ee4f1e",
+      "source_code": "\ndef normalized_sinc(x: float) -> float:\n    u = math.pi * x\n    if abs(u) < 1e-4:\n        u2 = u * u\n        return 1.0 - (u2 / 6.0) + (u2 * u2 / 120.0)\n    return math.sin(u) / u\n",
+      "summary": "Sinc function sin(pi * x) / (pi * x) with Taylor series expansion near x = 0 avoiding 0/0 division",
+      "teleological_intent": "Ideal brick-wall low-pass reconstruction kernel free of removable singularity NaN",
       "trust_tier": "peer_reviewed",
       "wave": 1
     },
@@ -476,6 +1095,44 @@
       "source_code": "\ndef online_softmax_update(m_old: float, d_old: float, x: float) -> tuple[float, float]:\n    m_new = x if x > m_old else m_old\n    d_new = d_old * math.exp(max(-700.0, m_old - m_new)) + math.exp(max(-700.0, x - m_new))\n    return (m_new, d_new)\n",
       "summary": "FlashAttention / Milakov-Gimelshein single-pass online softmax rescaling update step",
       "teleological_intent": "Streaming softmax partition normalization in SRAM without materializing N x N attention matrix",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "pchip_monotone_slope@c119caad",
+      "cid": "cid:8f593f80c1585fc7",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705223.0005,
+      "dependencies": [],
+      "dimensional_units": "d0: dy/dx, d1: dy/dx, h0: dx, h1: dx -> dy/dx",
+      "domain": "numerical_analysis",
+      "fp": "fp:8f593f80c1585fc7",
+      "invariants": [
+        "tangent == 0 at local extrema (sign change)",
+        "zero overshoot between monotone knots"
+      ],
+      "name": "pchip_monotone_slope",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.0, 10.0, 1.0, 1.0)",
+          "failure_mechanism": "Arithmetic average of secant slopes causes cubic spline ringing/overshoot across step jumps",
+          "naive_pattern": "0.5 * (d0 + d1)",
+          "pitfall_id": "catmull_rom_spline_overshoot",
+          "verified_fix": "Return 0.0 when d0 * d1 <= 0 and use Fritsch-Carlson weighted harmonic mean"
+        }
+      ],
+      "pseudocode": "1. If d0 * d1 <= 0: return 0.0; 2. Harmonic weighted mean 3*(h0 + h1) / ((2*h1 + h0)/d0 + (h1 + 2*h0)/d1)",
+      "return_type": "float",
+      "sid": "sid:c119caadc353a559",
+      "source_code": "\ndef pchip_monotone_slope(d0: float, d1: float, h0: float, h1: float) -> float:\n    if d0 * d1 <= 0.0:\n        return 0.0\n    s0 = max(1e-12, abs(h0))\n    s1 = max(1e-12, abs(h1))\n    w0 = 2.0 * s1 + s0\n    w1 = s1 + 2.0 * s0\n    return (w0 + w1) / ((w0 / d0) + (w1 / d1))\n",
+      "summary": "Fritsch-Carlson monotonic cubic Hermite (PCHIP) tangent slope preserving data monotonicity",
+      "teleological_intent": "Enforce positivity and monotonicity in interpolated EOS/CDF lookup tables",
       "trust_tier": "peer_reviewed",
       "wave": 1
     },
@@ -694,6 +1351,78 @@
       "source_code": "\ndef safe_logit(p: float) -> float:\n    clamped = min(1.0 - 1e-15, max(1e-15, abs(p) if abs(p) <= 1.0 else (1.0 / (1.0 + abs(p)))))\n    return math.log(clamped) - math.log1p(-clamped)\n",
       "summary": "Logit-log-odds transformation log(p / (1 - p)) with symmetric boundary clamping",
       "teleological_intent": "Bijective mapping from probability simplex (0, 1) to real line R",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "safe_silu_swish@ebe12812",
+      "cid": "cid:3b7107030990d9eb",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705225.0757,
+      "dependencies": [],
+      "dimensional_units": "x: float, beta: float -> float",
+      "domain": "machine_learning",
+      "fp": "fp:3b7107030990d9eb",
+      "invariants": [
+        "silu(0.0) == 0.0",
+        "bounded below by ~ -0.27846 / beta"
+      ],
+      "name": "safe_silu_swish",
+      "param_types": [
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(-1000.0, 1.0)",
+          "failure_mechanism": "Raises OverflowError when beta * x <= -710.0",
+          "naive_pattern": "x / (1.0 + math.exp(-beta * x))",
+          "pitfall_id": "silu_negative_exp_overflow",
+          "verified_fix": "Branch on z = beta * x >= 0 to keep math.exp argument <= 0"
+        }
+      ],
+      "pseudocode": "1. Compute stable_sigmoid(beta * x); 2. return x * sig",
+      "return_type": "float",
+      "sid": "sid:ebe128128599c953",
+      "source_code": "\ndef safe_silu_swish(x: float, beta: float) -> float:\n    z = beta * x\n    if z >= 0.0:\n        sig = 1.0 / (1.0 + math.exp(-min(z, 709.0)))\n    else:\n        ez = math.exp(max(z, -709.0))\n        sig = ez / (1.0 + ez)\n    return x * sig\n",
+      "summary": "Swish / SiLU activation x * sigmoid(beta * x) with overflow-safe negative branch",
+      "teleological_intent": "Self-gated smooth non-monotonic activation used in SwiGLU MLP blocks",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "scaled_hypot_2d@216335d8",
+      "cid": "cid:073629d392cdf32d",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705219.9136,
+      "dependencies": [],
+      "dimensional_units": "x: U, y: U -> U",
+      "domain": "numerical_analysis",
+      "fp": "fp:073629d392cdf32d",
+      "invariants": [
+        "hypot(x, y) >= max(|x|, |y|)",
+        "no overflow for x, y up to 1e300"
+      ],
+      "name": "scaled_hypot_2d",
+      "param_types": [
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1e200, 1e200)",
+          "failure_mechanism": "x * x overflows to +inf when |x| >= 1.34e154 even though sqrt(x^2 + y^2) is representable",
+          "naive_pattern": "math.sqrt(x * x + y * y)",
+          "pitfall_id": "naive_pythagorean_overflow",
+          "verified_fix": "Factor out m = max(abs(x), abs(y)) and compute m * sqrt(1 + (min/m)^2)"
+        }
+      ],
+      "pseudocode": "1. m = max(|x|, |y|); 2. if m == 0: return 0; 3. r = min(|x|, |y|) / m; 4. return m * sqrt(1 + r^2)",
+      "return_type": "float",
+      "sid": "sid:216335d86a3feacf",
+      "source_code": "\ndef scaled_hypot_2d(x: float, y: float) -> float:\n    ax = abs(x)\n    ay = abs(y)\n    m = ax if ax >= ay else ay\n    if m == 0.0:\n        return 0.0\n    r = (ay if ax >= ay else ax) / m\n    return m * math.sqrt(1.0 + r * r)\n",
+      "summary": "2D Euclidean hypot norm sqrt(x^2 + y^2) rescaled by max(|x|, |y|) to prevent intermediate overflow/underflow",
+      "teleological_intent": "Factor out dominant scale before squaring to preserve IEEE-754 exponent range",
       "trust_tier": "peer_reviewed",
       "wave": 1
     },
@@ -1199,10 +1928,117 @@
       "teleological_intent": "Orthogonal running residual accumulation preserving mantissa bits on shifted streams",
       "trust_tier": "peer_reviewed",
       "wave": 1
+    },
+    {
+      "block_id": "wilson_score_interval@e349f562",
+      "cid": "cid:f40495f99bfece9e",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705211.3772,
+      "dependencies": [],
+      "dimensional_units": "successes: int, trials: int, z: float -> tuple[float, float]",
+      "domain": "statistics_and_information",
+      "fp": "fp:f40495f99bfece9e",
+      "invariants": [
+        "0.0 <= lower <= upper <= 1.0",
+        "non-zero interval width even when successes == 0 or successes == trials"
+      ],
+      "name": "wilson_score_interval",
+      "param_types": [
+        "int",
+        "int",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(0, 10, 1.96)",
+          "failure_mechanism": "Wald interval collapses to [0.0, 0.0] when successes == 0 or overshoots < 0 / > 1 near boundaries",
+          "naive_pattern": "p_hat +- z * math.sqrt(p_hat * (1.0 - p_hat) / n)",
+          "pitfall_id": "wald_binomial_ci_zero_collapse",
+          "verified_fix": "Use Wilson score quadratic inversion with 1 + z^2/n denominator"
+        }
+      ],
+      "pseudocode": "1. denom = 1 + z^2/n; 2. center = (p_hat + z^2/(2n)) / denom; 3. half = z * sqrt(p_hat*(1-p_hat)/n + z^2/(4n^2)) / denom",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:e349f56207473fa5",
+      "source_code": "\ndef wilson_score_interval(successes: int, trials: int, z: float) -> tuple[float, float]:\n    n = max(1, abs(trials))\n    k = min(n, max(0, abs(successes)))\n    z_abs = abs(z)\n    p_hat = k / n\n    z2_n = (z_abs * z_abs) / n\n    denom = 1.0 + z2_n\n    center = (p_hat + 0.5 * z2_n) / denom\n    rad = math.sqrt(max(0.0, (p_hat * (1.0 - p_hat) / n) + (z2_n / (4.0 * n))))\n    half = (z_abs * rad) / denom\n    return (max(0.0, center - half), min(1.0, center + half))\n",
+      "summary": "Wilson score binomial confidence interval (lower, upper) avoiding Wald zero-width collapse at p=0 or p=1",
+      "teleological_intent": "Invert exact binomial test statistic without normal-approximation boundary degeneracy",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "zigzag_decode_int@a5855e58",
+      "cid": "cid:f11283686558ed94",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705232.2585,
+      "dependencies": [],
+      "dimensional_units": "u: int -> int",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:f11283686558ed94",
+      "invariants": [
+        "zigzag_decode_int(zigzag_encode_int(n)) == n",
+        "exact bijection on Z"
+      ],
+      "name": "zigzag_decode_int",
+      "param_types": [
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "2",
+          "failure_mechanism": "Using ~(u & 1) instead of -(u & 1) inverts all bits even when LSB == 0",
+          "naive_pattern": "u >> 1 ^ -(u & 1) with wrong sign mask",
+          "pitfall_id": "operator_precedence_shift_xor",
+          "verified_fix": "Use (v >> 1) ^ -(v & 1)"
+        }
+      ],
+      "pseudocode": "1. v = abs(u); 2. return (v >> 1) ^ -(v & 1)",
+      "return_type": "int",
+      "sid": "sid:a5855e585b78b749",
+      "source_code": "\ndef zigzag_decode_int(u: int) -> int:\n    v = abs(u)\n    return (v >> 1) ^ -(v & 1)\n",
+      "summary": "ZigZag unsigned-to-signed integer inverse decoder (u >> 1) ^ -(u & 1)",
+      "teleological_intent": "Branchless reconstruction of signed integers from ZigZag varint wire format",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "zigzag_encode_int@31be7929",
+      "cid": "cid:72b3586df29d1032",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792064705231.7698,
+      "dependencies": [],
+      "dimensional_units": "n: int -> int",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:72b3586df29d1032",
+      "invariants": [
+        "zigzag_encode(n) >= 0",
+        "small magnitude negative ints map to small unsigned ints"
+      ],
+      "name": "zigzag_encode_int",
+      "param_types": [
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "-1",
+          "failure_mechanism": "In Python arbitrary-precision ints, (n << 1) ^ (n >> 63) fails when |n| >= 2^63",
+          "naive_pattern": "(n << 1) ^ (n >> 63)",
+          "pitfall_id": "python_infinite_width_arithmetic_shift",
+          "verified_fix": "Use explicit algebraic bijection: 2 * n if n >= 0 else -2 * n - 1"
+        }
+      ],
+      "pseudocode": "1. return (n << 1) ^ (n >> 63) for 64-bit signed integers (or abs*2 - 1 for negative)",
+      "return_type": "int",
+      "sid": "sid:31be7929154cba78",
+      "source_code": "\ndef zigzag_encode_int(n: int) -> int:\n    if n >= 0:\n        return 2 * n\n    return -2 * n - 1\n",
+      "summary": "ZigZag signed-to-unsigned integer bijection mapping (0, -1, 1, -2, 2) -> (0, 1, 2, 3, 4) for varint framing",
+      "teleological_intent": "Prevent small negative integers (-1) from consuming 10 bytes in two's-complement varint encoding",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
     }
   ],
-  "peer_review_executions": 33,
+  "peer_review_executions": 56,
   "quarantined_ids": [],
   "schema_version": "1.0.0",
-  "sid_dedup_hits": 0
+  "sid_dedup_hits": 29
 }

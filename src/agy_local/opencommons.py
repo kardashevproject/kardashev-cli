@@ -195,6 +195,40 @@ def verify_ast_safety_static(source_code: str) -> ast.Module:
 
 _TOKEN_RE = re.compile(r"[a-zA-Z]+|\d+")
 _ALPHANUM_CONCEPT_RE = re.compile(r"([a-zA-Z]+)(\d+)")
+_STOPWORD_TOKENS = frozenset(
+    {
+        "to",
+        "in",
+        "on",
+        "at",
+        "by",
+        "of",
+        "or",
+        "is",
+        "as",
+        "an",
+        "be",
+        "if",
+        "it",
+        "no",
+        "so",
+        "up",
+        "we",
+        "do",
+        "for",
+        "the",
+        "and",
+        "with",
+        "from",
+        "into",
+        "over",
+        "that",
+        "this",
+        "when",
+        "where",
+        "change",
+    }
+)
 COMMUTATIVE_OPS = (ast.Add, ast.Mult, ast.BitAnd, ast.BitOr, ast.BitXor)
 COMMUTATIVE_CMP = (ast.Eq, ast.NotEq)
 
@@ -214,11 +248,11 @@ def tokenize_concept_query(text: str) -> tuple[set[str], dict[str, set[str]]]:
     raw_parts = re.split(r"[^a-z0-9]+", lowered)
     tokens: set[str] = set()
     for p in raw_parts:
-        if not p:
+        if not p or p in _STOPWORD_TOKENS:
             continue
         tokens.add(p)
         for sub in _TOKEN_RE.findall(p):
-            if len(sub) >= 2 or sub.isdigit():
+            if (len(sub) >= 2 or sub.isdigit()) and sub not in _STOPWORD_TOKENS:
                 tokens.add(sub)
     return tokens, numbered_stems
 
@@ -2147,6 +2181,656 @@ def exact_gelu(x: float) -> float:
 def safe_logit(p: float) -> float:
     clamped = min(1.0 - 1e-15, max(1e-15, abs(p) if abs(p) <= 1.0 else (1.0 / (1.0 + abs(p)))))
     return math.log(clamped) - math.log1p(-clamped)
+""",
+    },
+    {
+        "domain": "statistics_and_information",
+        "summary": "Wilson score binomial confidence interval (lower, upper) avoiding Wald zero-width collapse at p=0 or p=1",
+        "pseudocode": "1. denom = 1 + z^2/n; 2. center = (p_hat + z^2/(2n)) / denom; 3. half = z * sqrt(p_hat*(1-p_hat)/n + z^2/(4n^2)) / denom",
+        "invariants": ("0.0 <= lower <= upper <= 1.0", "non-zero interval width even when successes == 0 or successes == trials"),
+        "teleological_intent": "Invert exact binomial test statistic without normal-approximation boundary degeneracy",
+        "dimensional_units": "successes: int, trials: int, z: float -> tuple[float, float]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="wald_binomial_ci_zero_collapse",
+                naive_pattern="p_hat +- z * math.sqrt(p_hat * (1.0 - p_hat) / n)",
+                failure_mechanism="Wald interval collapses to [0.0, 0.0] when successes == 0 or overshoots < 0 / > 1 near boundaries",
+                counterexample_input="(0, 10, 1.96)",
+                verified_fix="Use Wilson score quadratic inversion with 1 + z^2/n denominator",
+            ),
+        ),
+        "source_code": """
+def wilson_score_interval(successes: int, trials: int, z: float) -> tuple[float, float]:
+    n = max(1, abs(trials))
+    k = min(n, max(0, abs(successes)))
+    z_abs = abs(z)
+    p_hat = k / n
+    z2_n = (z_abs * z_abs) / n
+    denom = 1.0 + z2_n
+    center = (p_hat + 0.5 * z2_n) / denom
+    rad = math.sqrt(max(0.0, (p_hat * (1.0 - p_hat) / n) + (z2_n / (4.0 * n))))
+    half = (z_abs * rad) / denom
+    return (max(0.0, center - half), min(1.0, center + half))
+""",
+    },
+    {
+        "domain": "statistics_and_information",
+        "summary": "Box-Muller polar transformation mapping uniform (u1, u2) in (0, 1) to independent standard normal (z0, z1)",
+        "pseudocode": "1. Clamp u1 >= 1e-15; 2. r = sqrt(-2 * log(u1)); 3. theta = 2 * pi * u2; 4. return (r * cos(theta), r * sin(theta))",
+        "invariants": ("z0^2 + z1^2 == -2 * log(u1)", "orthogonal Gaussian marginals"),
+        "teleological_intent": "Exact inverse-CDF radial transformation from 2D uniform box to 2D isotropic Gaussian",
+        "dimensional_units": "u1: float, u2: float -> tuple[float, float]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="box_muller_u1_zero_log_singularity",
+                naive_pattern="math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)",
+                failure_mechanism="PRNG emitting u1 == 0.0 triggers ValueError: math domain error in math.log(0.0)",
+                counterexample_input="(0.0, 0.5)",
+                verified_fix="Clamp u1 into [1e-15, 1.0] before taking -2.0 * math.log(u1)",
+            ),
+        ),
+        "source_code": """
+def box_muller_normal_pair(u1: float, u2: float) -> tuple[float, float]:
+    safe_u1 = min(1.0, max(1e-15, abs(u1) if abs(u1) <= 1.0 else (1.0 / (1.0 + abs(u1)))))
+    r = math.sqrt(max(0.0, -2.0 * math.log(safe_u1)))
+    theta = 2.0 * math.pi * u2
+    return (r * math.cos(theta), r * math.sin(theta))
+""",
+    },
+    {
+        "domain": "statistics_and_information",
+        "summary": "Kullback-Leibler divergence D_KL(P || Q) in nats with Laplace smoothing and probability normalization",
+        "pseudocode": "1. Normalize P and Q with eps floor; 2. return sum(p_i * log(p_i / q_i))",
+        "invariants": ("D_KL(P || Q) >= 0.0 (Gibbs inequality)", "D_KL(P || P) == 0.0"),
+        "teleological_intent": "Relative entropy information gain without zero-support division by zero",
+        "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="kl_zero_support_div_zero",
+                naive_pattern="sum(p * math.log(p / q) for p, q in zip(P, Q))",
+                failure_mechanism="ZeroDivisionError when q_i == 0 or negative result when inputs are unnormalized",
+                counterexample_input="([0.5, 0.5], [1.0, 0.0])",
+                verified_fix="Normalize both distributions with an epsilon floor 1e-12 before summing p * log(p / q)",
+            ),
+        ),
+        "source_code": """
+def kl_divergence_smoothed(p_weights: list[float], q_weights: list[float]) -> float:
+    n = min(len(p_weights), len(q_weights))
+    if n == 0:
+        return 0.0
+    p_raw = [max(1e-12, abs(p_weights[i])) for i in range(n)]
+    q_raw = [max(1e-12, abs(q_weights[i])) for i in range(n)]
+    sp = sum(p_raw)
+    sq = sum(q_raw)
+    kl = 0.0
+    for i in range(n):
+        p = p_raw[i] / sp
+        q = q_raw[i] / sq
+        kl += p * math.log(p / q)
+    return max(0.0, kl)
+""",
+    },
+    {
+        "domain": "statistics_and_information",
+        "summary": "Symmetric Jensen-Shannon divergence JSD(P || Q) bounded in [0, log(2)] nats",
+        "pseudocode": "1. Normalize P, Q; 2. M = 0.5 * (P + Q); 3. return 0.5 * D_KL(P || M) + 0.5 * D_KL(Q || M)",
+        "invariants": ("0.0 <= JSD(P, Q) <= math.log(2.0)", "JSD(P, Q) == JSD(Q, P)"),
+        "teleological_intent": "Bounded, symmetric, finite metric-square divergence even on disjoint supports",
+        "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="asymmetric_kl_as_distance",
+                naive_pattern="kl_divergence(P, Q)",
+                failure_mechanism="KL divergence is asymmetric and diverges to +inf when Q has zeros on P's support",
+                counterexample_input="([1.0, 0.0], [0.0, 1.0])",
+                verified_fix="Evaluate KL against the midpoint mixture M = 0.5 * (P + Q)",
+            ),
+        ),
+        "source_code": """
+def jensen_shannon_divergence(p_weights: list[float], q_weights: list[float]) -> float:
+    n = min(len(p_weights), len(q_weights))
+    if n == 0:
+        return 0.0
+    p_raw = [max(0.0, abs(p_weights[i])) for i in range(n)]
+    q_raw = [max(0.0, abs(q_weights[i])) for i in range(n)]
+    sp = sum(p_raw)
+    sq = sum(q_raw)
+    if sp <= 0.0 or sq <= 0.0:
+        return 0.0
+    jsd = 0.0
+    for i in range(n):
+        p = p_raw[i] / sp
+        q = q_raw[i] / sq
+        m = 0.5 * (p + q)
+        if p > 0.0 and m > 0.0:
+            jsd += 0.5 * p * math.log(p / m)
+        if q > 0.0 and m > 0.0:
+            jsd += 0.5 * q * math.log(q / m)
+    return min(math.log(2.0), max(0.0, jsd))
+""",
+    },
+    {
+        "domain": "numerical_analysis",
+        "summary": "2D Euclidean hypot norm sqrt(x^2 + y^2) rescaled by max(|x|, |y|) to prevent intermediate overflow/underflow",
+        "pseudocode": "1. m = max(|x|, |y|); 2. if m == 0: return 0; 3. r = min(|x|, |y|) / m; 4. return m * sqrt(1 + r^2)",
+        "invariants": ("hypot(x, y) >= max(|x|, |y|)", "no overflow for x, y up to 1e300"),
+        "teleological_intent": "Factor out dominant scale before squaring to preserve IEEE-754 exponent range",
+        "dimensional_units": "x: U, y: U -> U",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="naive_pythagorean_overflow",
+                naive_pattern="math.sqrt(x * x + y * y)",
+                failure_mechanism="x * x overflows to +inf when |x| >= 1.34e154 even though sqrt(x^2 + y^2) is representable",
+                counterexample_input="(1e200, 1e200)",
+                verified_fix="Factor out m = max(abs(x), abs(y)) and compute m * sqrt(1 + (min/m)^2)",
+            ),
+        ),
+        "source_code": """
+def scaled_hypot_2d(x: float, y: float) -> float:
+    ax = abs(x)
+    ay = abs(y)
+    m = ax if ax >= ay else ay
+    if m == 0.0:
+        return 0.0
+    r = (ay if ax >= ay else ax) / m
+    return m * math.sqrt(1.0 + r * r)
+""",
+    },
+    {
+        "domain": "numerical_analysis",
+        "summary": "Log1pexp log(1 + exp(x)) and Log1mexp log(1 - exp(-|x|)) accurate across all float64 regimes (Maechler 2012)",
+        "pseudocode": "1. For a = |x| > 0: if a <= log(2), use log(-expm1(-a)); else use log1p(-exp(-a))",
+        "invariants": ("finite for all x != 0", "eliminates catastrophic cancellation in both x -> 0 and x -> inf limits"),
+        "teleological_intent": "Two-regime branch split at ln(2) = 0.693147 for complementary log-probability",
+        "dimensional_units": "x: nats -> nats",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="log1mexp_single_branch_cancellation",
+                naive_pattern="math.log(1.0 - math.exp(-abs(x)))",
+                failure_mechanism="Loses precision for small |x| << 1 (exp(-a) ~= 1) or underflows to log(1.0) = 0",
+                counterexample_input="1e-12",
+                verified_fix="Switch at ln(2) between math.log(-math.expm1(-a)) and math.log1p(-math.exp(-a))",
+            ),
+        ),
+        "source_code": """
+def maechler_log1mexp(x: float) -> float:
+    a = max(1e-15, abs(x))
+    if a <= 0.6931471805599453:
+        return math.log(-math.expm1(-a))
+    return math.log1p(-math.exp(-min(a, 709.0)))
+""",
+    },
+    {
+        "domain": "numerical_analysis",
+        "summary": "Sinc function sin(pi * x) / (pi * x) with Taylor series expansion near x = 0 avoiding 0/0 division",
+        "pseudocode": "1. if |x| < 1e-4: return 1 - (pi*x)^2 / 6 + (pi*x)^4 / 120; 2. else: sin(pi*x) / (pi*x)",
+        "invariants": ("normalized_sinc(0.0) == 1.0", "normalized_sinc(n) == 0.0 for non-zero integer n"),
+        "teleological_intent": "Ideal brick-wall low-pass reconstruction kernel free of removable singularity NaN",
+        "dimensional_units": "x: cycles -> dimensionless",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="sinc_origin_zero_division",
+                naive_pattern="math.sin(math.pi * x) / (math.pi * x)",
+                failure_mechanism="Raises ZeroDivisionError at x == 0.0",
+                counterexample_input="0.0",
+                verified_fix="Use 4th-order Taylor polynomial 1 - u^2/6 + u^4/120 when |x| < 1e-4",
+            ),
+        ),
+        "source_code": """
+def normalized_sinc(x: float) -> float:
+    u = math.pi * x
+    if abs(u) < 1e-4:
+        u2 = u * u
+        return 1.0 - (u2 / 6.0) + (u2 * u2 / 120.0)
+    return math.sin(u) / u
+""",
+    },
+    {
+        "domain": "numerical_analysis",
+        "summary": "Fritsch-Carlson monotonic cubic Hermite (PCHIP) tangent slope preserving data monotonicity",
+        "pseudocode": "1. If d0 * d1 <= 0: return 0.0; 2. Harmonic weighted mean 3*(h0 + h1) / ((2*h1 + h0)/d0 + (h1 + 2*h0)/d1)",
+        "invariants": ("tangent == 0 at local extrema (sign change)", "zero overshoot between monotone knots"),
+        "teleological_intent": "Enforce positivity and monotonicity in interpolated EOS/CDF lookup tables",
+        "dimensional_units": "d0: dy/dx, d1: dy/dx, h0: dx, h1: dx -> dy/dx",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="catmull_rom_spline_overshoot",
+                naive_pattern="0.5 * (d0 + d1)",
+                failure_mechanism="Arithmetic average of secant slopes causes cubic spline ringing/overshoot across step jumps",
+                counterexample_input="(0.0, 10.0, 1.0, 1.0)",
+                verified_fix="Return 0.0 when d0 * d1 <= 0 and use Fritsch-Carlson weighted harmonic mean",
+            ),
+        ),
+        "source_code": """
+def pchip_monotone_slope(d0: float, d1: float, h0: float, h1: float) -> float:
+    if d0 * d1 <= 0.0:
+        return 0.0
+    s0 = max(1e-12, abs(h0))
+    s1 = max(1e-12, abs(h1))
+    w0 = 2.0 * s1 + s0
+    w1 = s1 + 2.0 * s0
+    return (w0 + w1) / ((w0 / d0) + (w1 / d1))
+""",
+    },
+    {
+        "domain": "machine_learning",
+        "summary": "Huber robust regression loss transitioning smoothly from C^1 quadratic L2 to linear L1 at delta",
+        "pseudocode": "1. err = |y_pred - y_true|; 2. if err <= delta: 0.5 * err^2; 3. else: delta * (err - 0.5 * delta)",
+        "invariants": ("loss >= 0.0", "continuous value and derivative at |err| == delta"),
+        "teleological_intent": "Bound gradient magnitude to [-delta, +delta] against heavy-tailed outliers",
+        "dimensional_units": "y_pred: U, y_true: U, delta: U -> U^2",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="huber_discontinuous_linear_branch",
+                naive_pattern="0.5 * err**2 if err <= delta else delta * err",
+                failure_mechanism="Omitting -0.5 * delta^2 creates a jump discontinuity of 0.5 * delta^2 at err == delta",
+                counterexample_input="(2.0, 0.0, 1.0)",
+                verified_fix="Use delta * (err - 0.5 * delta) in the outer linear branch",
+            ),
+        ),
+        "source_code": """
+def huber_robust_loss(y_pred: float, y_true: float, delta: float) -> float:
+    d = max(1e-8, abs(delta))
+    err = abs(y_pred - y_true)
+    if err <= d:
+        return 0.5 * err * err
+    return d * (err - 0.5 * d)
+""",
+    },
+    {
+        "domain": "machine_learning",
+        "summary": "Swish / SiLU activation x * sigmoid(beta * x) with overflow-safe negative branch",
+        "pseudocode": "1. Compute stable_sigmoid(beta * x); 2. return x * sig",
+        "invariants": ("silu(0.0) == 0.0", "bounded below by ~ -0.27846 / beta"),
+        "teleological_intent": "Self-gated smooth non-monotonic activation used in SwiGLU MLP blocks",
+        "dimensional_units": "x: float, beta: float -> float",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="silu_negative_exp_overflow",
+                naive_pattern="x / (1.0 + math.exp(-beta * x))",
+                failure_mechanism="Raises OverflowError when beta * x <= -710.0",
+                counterexample_input="(-1000.0, 1.0)",
+                verified_fix="Branch on z = beta * x >= 0 to keep math.exp argument <= 0",
+            ),
+        ),
+        "source_code": """
+def safe_silu_swish(x: float, beta: float) -> float:
+    z = beta * x
+    if z >= 0.0:
+        sig = 1.0 / (1.0 + math.exp(-min(z, 709.0)))
+    else:
+        ez = math.exp(max(z, -709.0))
+        sig = ez / (1.0 + ez)
+    return x * sig
+""",
+    },
+    {
+        "domain": "machine_learning",
+        "summary": "LoRA (Low-Rank Adaptation) effective scaling factor alpha / rank with rank-stabilized rsLoRA option",
+        "pseudocode": "1. safe_r = max(1, rank); 2. return alpha / sqrt(safe_r) if use_rslora else alpha / safe_r",
+        "invariants": ("scale > 0 for alpha > 0", "rsLoRA preserves O(1) activation variance as rank -> inf"),
+        "teleological_intent": "Prevent adapter update collapse at high rank (Kalajdzievski rsLoRA 1/sqrt(r) scaling)",
+        "dimensional_units": "alpha: float, rank: int, use_rslora: bool -> float",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="lora_zero_rank_div_or_high_rank_collapse",
+                naive_pattern="alpha / rank",
+                failure_mechanism="Standard 1/r scaling shrinks gradient norm as rank increases; rank=0 raises ZeroDivisionError",
+                counterexample_input="(16.0, 64, True)",
+                verified_fix="Guard safe_r = max(1, abs(rank)) and divide by math.sqrt(safe_r) when use_rslora is True",
+            ),
+        ),
+        "source_code": """
+def lora_adapter_scale(alpha: float, rank: int, use_rslora: bool) -> float:
+    r = max(1, abs(rank))
+    a = abs(alpha) if alpha != 0.0 else 1.0
+    if use_rslora:
+        return a / math.sqrt(r)
+    return a / r
+""",
+    },
+    {
+        "domain": "machine_learning",
+        "summary": "Global L2 gradient norm clipping multiplier min(1.0, max_norm / (grad_norm + eps))",
+        "pseudocode": "1. g_norm = sqrt(sum(g^2)); 2. clip_coef = max_norm / (g_norm + 1e-6); 3. scale by min(1.0, clip_coef)",
+        "invariants": ("||clipped_grads||_2 <= max_norm", "preserves exact gradient direction"),
+        "teleological_intent": "Prevent exploding gradients across steep loss cliffs while preserving direction vector",
+        "dimensional_units": "grads: list[float], max_norm: float -> list[float]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="elementwise_clamp_distorts_direction",
+                naive_pattern="[min(max_norm, max(-max_norm, g)) for g in grads]",
+                failure_mechanism="Element-wise clamping rotates the gradient vector toward the hypercube diagonal",
+                counterexample_input="([100.0, 1.0], 5.0)",
+                verified_fix="Scale all coordinates uniformly by min(1.0, max_norm / global_l2_norm)",
+            ),
+        ),
+        "source_code": """
+def clip_grad_l2_norm(grads: list[float], max_norm: float) -> list[float]:
+    if not grads:
+        return []
+    cap = max(1e-6, abs(max_norm))
+    total_norm = math.sqrt(sum(g * g for g in grads))
+    clip_coef = min(1.0, cap / (total_norm + 1e-12))
+    return [g * clip_coef for g in grads]
+""",
+    },
+    {
+        "domain": "number_theory_and_algebra",
+        "summary": "Binary exponentiation (a^exp) mod m in O(log exp) multiplications with negative-base normalization",
+        "pseudocode": "1. base = a % m; 2. while e > 0: if e & 1: res = (res * base) % m; base = (base * base) % m; e >>= 1",
+        "invariants": ("0 <= result < |m|", "O(log exp) time and O(1) memory"),
+        "teleological_intent": "Prevent multi-megabyte intermediate integer allocation in modular exponentiation",
+        "dimensional_units": "base: int, exp: int, mod: int -> int",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="naive_power_before_modulo_oom",
+                naive_pattern="(base ** exp) % mod",
+                failure_mechanism="Materializes huge integer base**exp in memory before reducing modulo m",
+                counterexample_input="(7, 10000000, 1000000007)",
+                verified_fix="Reduce modulo m at every square-and-multiply step",
+            ),
+        ),
+        "source_code": """
+def modular_pow_fast(base: int, exp: int, mod: int) -> int:
+    m = max(2, abs(mod))
+    b = base % m
+    e = max(0, exp)
+    result = 1 % m
+    while e > 0:
+        if e & 1:
+            result = (result * b) % m
+        b = (b * b) % m
+        e >>= 1
+    return result
+""",
+    },
+    {
+        "domain": "number_theory_and_algebra",
+        "summary": "Deterministic Miller-Rabin strong probable prime test for 64-bit integers using fixed witness bases",
+        "pseudocode": "1. Factor n - 1 = d * 2^s; 2. Test witnesses [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37]",
+        "invariants": ("exact for all n < 2^64", "O(k * log^3 n) complexity"),
+        "teleological_intent": "Zero-false-positive primality verification on 64-bit integers without O(sqrt(n)) trial division",
+        "dimensional_units": "n: int -> bool",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="fermat_carmichael_pseudoprime",
+                naive_pattern="pow(2, n - 1, n) == 1",
+                failure_mechanism="Carmichael numbers (e.g. 561 = 3 * 11 * 17) fool Fermat test for all coprime bases",
+                counterexample_input="561",
+                verified_fix="Factor out 2^s from n-1 and check repeated squaring roots of unity != +-1",
+            ),
+        ),
+        "source_code": """
+def is_prime_miller_rabin_64(n: int) -> bool:
+    if n < 2:
+        return False
+    for p in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+        if n == p:
+            return True
+        if n % p == 0:
+            return False
+    d = n - 1
+    s = 0
+    while (d & 1) == 0:
+        d >>= 1
+        s += 1
+    for a in (2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37):
+        if a >= n:
+            continue
+        x = pow(a, d, n)
+        if x == 1 or x == n - 1:
+            continue
+        composite = True
+        for _ in range(s - 1):
+            x = (x * x) % n
+            if x == n - 1:
+                composite = False
+                break
+        if composite:
+            return False
+    return True
+""",
+    },
+    {
+        "domain": "cryptography_and_framing",
+        "summary": "ZigZag signed-to-unsigned integer bijection mapping (0, -1, 1, -2, 2) -> (0, 1, 2, 3, 4) for varint framing",
+        "pseudocode": "1. return (n << 1) ^ (n >> 63) for 64-bit signed integers (or abs*2 - 1 for negative)",
+        "invariants": ("zigzag_encode(n) >= 0", "small magnitude negative ints map to small unsigned ints"),
+        "teleological_intent": "Prevent small negative integers (-1) from consuming 10 bytes in two's-complement varint encoding",
+        "dimensional_units": "n: int -> int",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="python_infinite_width_arithmetic_shift",
+                naive_pattern="(n << 1) ^ (n >> 63)",
+                failure_mechanism="In Python arbitrary-precision ints, (n << 1) ^ (n >> 63) fails when |n| >= 2^63",
+                counterexample_input="-1",
+                verified_fix="Use explicit algebraic bijection: 2 * n if n >= 0 else -2 * n - 1",
+            ),
+        ),
+        "source_code": """
+def zigzag_encode_int(n: int) -> int:
+    if n >= 0:
+        return 2 * n
+    return -2 * n - 1
+""",
+    },
+    {
+        "domain": "cryptography_and_framing",
+        "summary": "ZigZag unsigned-to-signed integer inverse decoder (u >> 1) ^ -(u & 1)",
+        "pseudocode": "1. v = abs(u); 2. return (v >> 1) ^ -(v & 1)",
+        "invariants": ("zigzag_decode_int(zigzag_encode_int(n)) == n", "exact bijection on Z"),
+        "teleological_intent": "Branchless reconstruction of signed integers from ZigZag varint wire format",
+        "dimensional_units": "u: int -> int",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="operator_precedence_shift_xor",
+                naive_pattern="u >> 1 ^ -(u & 1) with wrong sign mask",
+                failure_mechanism="Using ~(u & 1) instead of -(u & 1) inverts all bits even when LSB == 0",
+                counterexample_input="2",
+                verified_fix="Use (v >> 1) ^ -(v & 1)",
+            ),
+        ),
+        "source_code": """
+def zigzag_decode_int(u: int) -> int:
+    v = abs(u)
+    return (v >> 1) ^ -(v & 1)
+""",
+    },
+    {
+        "domain": "distributed_systems",
+        "summary": "Optimal Bloom filter hash count k = round((m / n) * ln(2)) and false positive rate (1 - exp(-k*n/m))^k",
+        "pseudocode": "1. k = max(1, round((m_bits / n_items) * ln(2))); 2. fpr = (1 - exp(-k * n_items / m_bits)) ** k",
+        "invariants": ("k >= 1", "0.0 <= fpr <= 1.0"),
+        "teleological_intent": "Minimize bit-array collision probability at 50% bit fill density",
+        "dimensional_units": "m_bits: int, n_items: int -> tuple[int, float]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="bloom_omitting_ln2_factor",
+                naive_pattern="k = m_bits // n_items",
+                failure_mechanism="Over-hashes each element by 1.44x, saturating the bit array prematurely and inflating FPR",
+                counterexample_input="(1000, 100)",
+                verified_fix="Multiply bits-per-item (m / n) by math.log(2.0) ~= 0.693147",
+            ),
+        ),
+        "source_code": """
+def bloom_optimal_k_and_fpr(m_bits: int, n_items: int) -> tuple[int, float]:
+    m = max(8, abs(m_bits))
+    n = max(1, abs(n_items))
+    k = max(1, round((m / n) * 0.6931471805599453))
+    fpr = (1.0 - math.exp(-(k * n) / m)) ** k
+    return (k, min(1.0, max(0.0, fpr)))
+""",
+    },
+    {
+        "domain": "distributed_systems",
+        "summary": "Hybrid Logical Clock (HLC) send/local event transition (l_new, c_new) preserving causal happens-before",
+        "pseudocode": "1. l_new = max(l_prev, phys_ms); 2. c_new = (c_prev + 1) if l_new == l_prev else 0",
+        "invariants": ("(l_new, c_new) > (l_prev, c_prev)", "l_new >= phys_ms"),
+        "teleological_intent": "Monotonic causal timestamping resilient to NTP physical clock backward jumps (Kulkarni et al.)",
+        "dimensional_units": "l_prev: int, c_prev: int, phys_ms: int -> tuple[int, int]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="hlc_unreset_logical_counter",
+                naive_pattern="return (max(l_prev, phys_ms), c_prev + 1)",
+                failure_mechanism="Failing to reset c_new = 0 when physical clock advances causes unbounded counter drift",
+                counterexample_input="(1000, 5, 1005)",
+                verified_fix="Reset c_new = 0 whenever phys_ms > l_prev, and increment c_prev + 1 only on tie",
+            ),
+        ),
+        "source_code": """
+def hlc_local_tick(l_prev: int, c_prev: int, phys_ms: int) -> tuple[int, int]:
+    lp = max(0, l_prev)
+    cp = max(0, c_prev)
+    pt = max(0, phys_ms)
+    if pt > lp:
+        return (pt, 0)
+    return (lp, cp + 1)
+""",
+    },
+    {
+        "domain": "distributed_systems",
+        "summary": "Hybrid Logical Clock (HLC) receive-message merge transition across local, remote, and physical clocks",
+        "pseudocode": "1. l_new = max(l_local, l_msg, phys_ms); 2. Update c_new by tie-breaking across (l_local, l_msg, phys_ms)",
+        "invariants": ("(l_new, c_new) > (l_local, c_local)", "(l_new, c_new) > (l_msg, c_msg)"),
+        "teleological_intent": "Strictly advance causal clock past both local history and incoming network message",
+        "dimensional_units": "l_loc: int, c_loc: int, l_msg: int, c_msg: int, phys_ms: int -> tuple[int, int]",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="hlc_receive_tie_break_bug",
+                naive_pattern="c_new = max(c_loc, c_msg) + 1 regardless of which l won",
+                failure_mechanism="Uses stale counter from a smaller wall-clock component when l_loc != l_msg",
+                counterexample_input="(100, 50, 200, 1, 150)",
+                verified_fix="Check all 4 tie cases: l_new == l_loc == l_msg, l_new == l_loc, l_new == l_msg, else 0",
+            ),
+        ),
+        "source_code": """
+def hlc_receive_merge(l_loc: int, c_loc: int, l_msg: int, c_msg: int, phys_ms: int) -> tuple[int, int]:
+    ll = max(0, l_loc)
+    cl = max(0, c_loc)
+    lm = max(0, l_msg)
+    cm = max(0, c_msg)
+    pt = max(0, phys_ms)
+    l_new = max(ll, lm, pt)
+    if l_new == ll and l_new == lm:
+        c_new = max(cl, cm) + 1
+    elif l_new == ll:
+        c_new = cl + 1
+    elif l_new == lm:
+        c_new = cm + 1
+    else:
+        c_new = 0
+    return (l_new, c_new)
+""",
+    },
+    {
+        "domain": "signal_processing",
+        "summary": "Hamming raised-cosine window weight w(n) = 0.54 - 0.46 * cos(2 * pi * n / (N - 1)) with N=1 guard",
+        "pseudocode": "1. if N <= 1: return 1.0; 2. return 0.54 - 0.46 * cos(2 * pi * n / (N - 1))",
+        "invariants": ("0.08 <= w(n) <= 1.0", "symmetric w(n) == w(N - 1 - n)"),
+        "teleological_intent": "Suppress first sidelobe spectral leakage (-43 dB) in short-time Fourier analysis",
+        "dimensional_units": "index: int, length: int -> float",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="window_n_minus_1_div_zero",
+                naive_pattern="0.54 - 0.46 * math.cos(2.0 * math.pi * index / (length - 1))",
+                failure_mechanism="Raises ZeroDivisionError when window length == 1",
+                counterexample_input="(0, 1)",
+                verified_fix="Guard length <= 1 and return 1.0 before dividing by length - 1",
+            ),
+        ),
+        "source_code": """
+def hamming_window_weight(index: int, length: int) -> float:
+    n_len = max(1, abs(length))
+    if n_len == 1:
+        return 1.0
+    idx = min(n_len - 1, max(0, abs(index)))
+    return 0.54 - 0.46 * math.cos((2.0 * math.pi * idx) / (n_len - 1))
+""",
+    },
+    {
+        "domain": "signal_processing",
+        "summary": "Exponential Moving Average (EMA) step with bias correction (1 - (1 - alpha)^t) for cold-start streams",
+        "pseudocode": "1. raw = alpha * x + (1 - alpha) * prev; 2. return raw / (1 - (1 - alpha)^step)",
+        "invariants": ("step == 1 and prev == 0.0 -> returns exact x", "converges to standard EMA as step -> inf"),
+        "teleological_intent": "Eliminate zero-initialization cold-start lag in telemetry and optimizer moment tracking",
+        "dimensional_units": "prev_ema: U, sample: U, alpha: float, step: int -> U",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="uncorrected_zero_init_ema_bias",
+                naive_pattern="alpha * sample + (1.0 - alpha) * prev_ema",
+                failure_mechanism="When initialized at 0.0 with alpha = 0.01, first sample is underestimated by 100x",
+                counterexample_input="(0.0, 100.0, 0.01, 1)",
+                verified_fix="Divide by bias correction factor 1.0 - ((1.0 - alpha) ** max(1, step))",
+            ),
+        ),
+        "source_code": """
+def bias_corrected_ema_step(prev_ema: float, sample: float, alpha: float, step: int) -> float:
+    a = min(0.9999, max(1e-6, abs(alpha)))
+    t = max(1, abs(step))
+    raw = a * sample + (1.0 - a) * prev_ema
+    correction = 1.0 - ((1.0 - a) ** min(t, 10000))
+    return raw / max(1e-12, correction)
+""",
+    },
+    {
+        "domain": "geodesy_and_spatial",
+        "summary": "2D Axis-Aligned Bounding Box (AABB) Intersection-over-Union (IoU) with degenerate box protection",
+        "pseudocode": "1. inter_w = max(0, min(x2a, x2b) - max(x1a, x1b)); 2. inter_h = max(0, min(y2a, y2b) - max(y1a, y1b)); 3. inter / (area_a + area_b - inter)",
+        "invariants": ("0.0 <= IoU <= 1.0", "symmetric IoU(A, B) == IoU(B, A)"),
+        "teleological_intent": "Scale-invariant spatial overlap metric for object detection and layout geometry",
+        "dimensional_units": "box_a: list[float], box_b: list[float] -> float",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="iou_negative_intersection_product",
+                naive_pattern="(min(x2a, x2b) - max(x1a, x1b)) * (min(y2a, y2b) - max(y1a, y1b))",
+                failure_mechanism="When boxes are disjoint in both X and Y, two negative widths multiply to a positive false intersection!",
+                counterexample_input="([0.0, 0.0, 1.0, 1.0], [2.0, 2.0, 3.0, 3.0])",
+                verified_fix="Clamp both inter_w = max(0.0, ...) and inter_h = max(0.0, ...) before multiplying",
+            ),
+        ),
+        "source_code": """
+def bbox_iou_2d(box_a: list[float], box_b: list[float]) -> float:
+    if len(box_a) < 4 or len(box_b) < 4:
+        return 0.0
+    ax1, ay1, ax2, ay2 = min(box_a[0], box_a[2]), min(box_a[1], box_a[3]), max(box_a[0], box_a[2]), max(box_a[1], box_a[3])
+    bx1, by1, bx2, by2 = min(box_b[0], box_b[2]), min(box_b[1], box_b[3]), max(box_b[0], box_b[2]), max(box_b[1], box_b[3])
+    inter_w = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+    inter_h = max(0.0, min(ay2, by2) - max(ay1, by1))
+    inter = inter_w * inter_h
+    area_a = (ax2 - ax1) * (ay2 - ay1)
+    area_b = (bx2 - bx1) * (by2 - by1)
+    union = area_a + area_b - inter
+    if union <= 1e-12:
+        return 0.0
+    return min(1.0, max(0.0, inter / union))
+""",
+    },
+    {
+        "domain": "quantitative_finance",
+        "summary": "Kelly criterion optimal fractional bet size f* = (p * b - q) / b clamped to non-negative leverage cap",
+        "pseudocode": "1. p = clamp(win_prob, 0, 1); 2. f = (p * odds - (1 - p)) / odds; 3. return clamp(f, 0, max_frac)",
+        "invariants": ("0.0 <= f* <= max_fraction", "f* == 0.0 whenever expected edge p * b - (1 - p) <= 0"),
+        "teleological_intent": "Maximize expected logarithmic capital growth rate E[log(1 + f * R)] without ruin",
+        "dimensional_units": "win_prob: float, net_odds: float, max_fraction: float -> float",
+        "pitfalls": (
+            PitfallWarning(
+                pitfall_id="kelly_negative_edge_or_zero_odds",
+                naive_pattern="(win_prob * net_odds - (1.0 - win_prob)) / net_odds",
+                failure_mechanism="Returns negative bet fraction on negative-EV bets or raises ZeroDivisionError when net_odds == 0",
+                counterexample_input="(0.3, 1.0, 0.5)",
+                verified_fix="Guard net_odds > 0 and clamp negative edge to 0.0",
+            ),
+        ),
+        "source_code": """
+def kelly_optimal_fraction(win_prob: float, net_odds: float, max_fraction: float) -> float:
+    p = min(1.0, max(0.0, win_prob))
+    b = max(1e-6, abs(net_odds))
+    cap = min(1.0, max(0.0, abs(max_fraction)))
+    edge = p * b - (1.0 - p)
+    if edge <= 0.0:
+        return 0.0
+    return min(cap, edge / b)
 """,
     },
 ]

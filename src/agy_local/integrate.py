@@ -44,6 +44,9 @@ When the `agy-local` MCP server is connected, use its high-speed local tools to 
    - If `auto_repair=true` is passed, the local on-device model (`Gemma 4 26B` / `Qwen 3.6`) will automatically diagnose and repair trivial lint/import/test failures locally before returning the final green status.
 4. **Subagent Task Delegation (`run_local_agent_task`)**:
    - Offload routine unit-test generation, docstring writing, or multi-file boilerplate refactors to the local GPU model at zero cloud API cost.
+5. **OpenCommons Research Retrieval & Contribution (`commons_find`, `commons_record`)**:
+   - Call `commons_find(query)` when implementing numerical, scientific, cryptographic, or algorithmic functions to retrieve verified Dual Concept Cards, invariants, and Refuted Pitfalls in `<5ms`.
+   - Call `commons_record(source_code, domain, summary, invariants)` when you synthesize a reusable, verified Python function (or report a `(K+1)`-th counterexample via `counterexample_block_id` + `counterexample_args`) to participate in the OpenCommons research loop.
 """
 
 

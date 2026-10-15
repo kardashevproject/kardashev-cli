@@ -136,6 +136,8 @@ def test_mcp_server_jsonrpc(tmp_path: Path) -> None:
         "verify_and_repair",
         "run_local_agent_task",
         "list_local_models",
+        "commons_find",
+        "commons_record",
     }
 
     call_resp = handle_mcp_request(
@@ -560,6 +562,173 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
             2,
             b"Warning: maxDynamicUniformBuffersPerPipelineLayout artificially reduced from 500000 to 16\n",
         )
+
+
+def test_opencommons_research_engine_and_agent_participation(tmp_path: Path) -> None:
+    from agy_local.cli import main as cli_main
+    from agy_local.harness_hooks import get_harness_telemetry, reset_harness_telemetry
+    from agy_local.mcp_server import handle_mcp_request
+    from agy_local.opencommons import (
+        approve_pending_proposal,
+        build_turn_zero_commons_context,
+        execute_commons_find,
+        execute_commons_record,
+        extract_candidate_functions_from_source,
+        fingerprint_function,
+        handle_opencommons_mcp_request,
+        load_pending_proposals,
+        load_persistent_store,
+        reject_pending_proposal,
+    )
+
+    reset_harness_telemetry()
+    store_file = tmp_path / "store.json"
+    pending_file = tmp_path / "pending.json"
+
+    # 1. Behavioral fingerprint merges iterative vs recursive GCD into the same equivalence class
+    src_iter = """
+def gcd_iter(a: int, b: int) -> int:
+    x, y = abs(a), abs(b)
+    while y != 0:
+        x, y = y, x % y
+    return x
+"""
+    src_rec = """
+def gcd_rec(u: int, v: int) -> int:
+    u, v = abs(u), abs(v)
+    if v == 0:
+        return u
+    return gcd_rec(v, u % v)
+"""
+    fp1 = fingerprint_function(src_iter)
+    fp2 = fingerprint_function(src_rec)
+    assert fp1.sid != fp2.sid
+    assert fp1.fp == fp2.fp
+
+    # 2. Tiered recording: clean pure function auto-commits via 5-gate peer review
+    rec_clean = execute_commons_record(
+        {
+            "source_code": "def cube_int(n: int) -> int:\n    return n * n * n\n",
+            "domain": "math",
+            "summary": "Compute exact integer cube",
+            "invariants": ["cube_int(-n) == -cube_int(n)"],
+            "teleological_intent": "Isotropic 3D volume scaling",
+            "dimensional_units": "m -> m^3",
+        },
+        store_path=store_file,
+        pending_path=pending_file,
+    )
+    assert rec_clean["status"] == "accepted"
+    assert rec_clean["trust_tier"] == "peer_reviewed"
+    assert get_harness_telemetry().commons_concepts_recorded == 1
+
+    # 3. Degenerate constant stub is quarantined by Gate 2
+    rec_stub = execute_commons_record(
+        {
+            "source_code": "def fake_hash(data: bytes) -> int:\n    return 0\n",
+            "domain": "crypto",
+        },
+        store_path=store_file,
+        pending_path=pending_file,
+    )
+    assert rec_stub["status"] == "quarantined"
+
+    # 4. Pending Review Queue: explicit review request or domain-specific inputs stage in pending_queue.json
+    rec_queued = execute_commons_record(
+        {
+            "source_code": "def custom_energy_scale(x: float) -> float:\n    return x * 2.5 + 1.0\n",
+            "domain": "physics",
+            "summary": "Linear affine energy calibration",
+            "require_human_review": True,
+        },
+        store_path=store_file,
+        pending_path=pending_file,
+    )
+    assert rec_queued["status"] == "queued_for_review"
+    prop_id = rec_queued["proposal_id"]
+    pending_list = load_pending_proposals(pending_file)
+    assert len(pending_list) == 1
+    assert pending_list[0].func_name == "custom_energy_scale"
+
+    # Approve the pending proposal -> moves into persistent store
+    app_res = approve_pending_proposal(prop_id, store_path=store_file, pending_path=pending_file)
+    assert app_res["approved"] is True
+    assert len(load_pending_proposals(pending_file)) == 0
+    find_after = execute_commons_find({"query": "custom_energy_scale"}, store_path=store_file)
+    assert find_after["hit_count"] >= 1
+
+    # Test reject_pending_proposal as well
+    rec_to_reject = execute_commons_record(
+        {
+            "source_code": "def draft_fn(x: int) -> int:\n    return x + 99\n",
+            "require_human_review": True,
+        },
+        store_path=store_file,
+        pending_path=pending_file,
+    )
+    rej_res = reject_pending_proposal(rec_to_reject["proposal_id"], pending_path=pending_file)
+    assert rej_res["rejected"] is True
+
+    # 5. Turn-0 Commons Context Injection (`<opencommons_knowledge>`)
+    ctx_xml, hits = build_turn_zero_commons_context(
+        "implement numerically stable logsumexp and welford variance",
+        store_path=store_file,
+    )
+    assert hits >= 1
+    assert "<opencommons_knowledge" in ctx_xml
+    assert "stable_logsumexp" in ctx_xml
+
+    # Unrelated query incurs zero token overhead
+    empty_xml, empty_hits = build_turn_zero_commons_context(
+        "change css button color to blue",
+        store_path=store_file,
+    )
+    assert empty_hits == 0
+    assert empty_xml == ""
+
+    # 6. Autonomous Post-Edit Function Extraction
+    sample_module = """
+def harmonic_mean_pair(a: float, b: float) -> float:
+    \"\"\"Compute harmonic mean of two positive numbers.\"\"\"
+    if a + b == 0.0:
+        return 0.0
+    return (2.0 * a * b) / (a + b)
+"""
+    extracted = extract_candidate_functions_from_source(
+        sample_module,
+        store_path=store_file,
+        pending_path=pending_file,
+    )
+    assert len(extracted) == 1
+    assert extracted[0]["status"] == "accepted"
+
+    # 7. Monotonic Counterexample Ratchet
+    store = load_persistent_store(store_file)
+    trojan_code = """
+def trojan_cube(n: int) -> int:
+    if n == 1337:
+        raise RuntimeError("hidden trap")
+    return n * n * n
+"""
+    b_trojan, _, _ = store.ingest(trojan_code, domain="math")
+    quarantined = store.report_counterexample(b_trojan.block_id, (1337,))
+    assert quarantined is True
+    assert b_trojan.block_id in store.quarantined_ids
+
+    # 8. Test both `opencommons-mcp` and `agy-local-mcp` JSON-RPC 2.0 tool calls
+    oc_init = handle_opencommons_mcp_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, store_path=store_file)
+    assert oc_init is not None and oc_init["result"]["serverInfo"]["name"] == "opencommons-mcp"
+
+    agy_tools = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert agy_tools is not None
+    t_names = [t["name"] for t in agy_tools["result"]["tools"]]
+    assert "commons_find" in t_names
+    assert "commons_record" in t_names
+
+    # 9. Test `agy-local commons` CLI subcommands
+    assert cli_main(["commons", "status", "--store", str(store_file), "--json"]) == 0
+    assert cli_main(["commons", "find", "logsumexp", "--store", str(store_file), "--json"]) == 0
+
 
 
 

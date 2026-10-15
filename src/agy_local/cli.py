@@ -21,6 +21,7 @@ from agy_local.discovery import discover_local_models, probe_local_endpoints
 from agy_local.harness_hooks import get_harness_telemetry
 from agy_local.integrate import integrate_frontier_agent
 from agy_local.mcp_server import serve_stdio
+from agy_local.opencommons import load_pending_proposals, load_persistent_store
 from agy_local.presets import BackendKind, get_preset, list_presets
 from agy_local.serve import compute_serve_plan
 from agy_local.tui import AgyRichTUI
@@ -324,6 +325,26 @@ def _build_parser() -> argparse.ArgumentParser:
     scout_p.add_argument("--max-slices", type=int, default=5, help="Max code slices to extract.")
     scout_p.add_argument("--json", action="store_true", help="Output full ScoutResult as JSON.")
 
+    # 14. commons (OpenCommons Research Store & Pending Review Queue CLI)
+    com_p = sub.add_parser(
+        "commons",
+        help="Manage the OpenCommons Concept Commons store, search Dual Concept Cards, or review agent proposals.",
+    )
+    com_p.add_argument(
+        "action",
+        nargs="?",
+        choices=["status", "find", "record", "review", "approve", "reject", "seed", "sync", "mcp"],
+        default="status",
+        help="Action to perform (default: status).",
+    )
+    com_p.add_argument("target", nargs="*", help="Search query, file path, proposal ID, or replica JSON path.")
+    com_p.add_argument("--domain", default="general", help="Domain when recording a Python file.")
+    com_p.add_argument("--summary", default="", help="Summary when recording a Python file.")
+    com_p.add_argument("--modality", default="dual_card_with_pitfalls", help="Rendering modality for find.")
+    com_p.add_argument("--top-k", type=int, default=3, help="Max hits for find.")
+    com_p.add_argument("--store", default=None, help="Override path to store.json.")
+    com_p.add_argument("--json", action="store_true", help="Output as JSON.")
+
     return parser
 
 
@@ -424,6 +445,14 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
                 f"{ctx_block}\n\n"
                 f"[User Task]:\n{args.prompt}"
             )
+
+    if opts.enable_opencommons:
+        from agy_local.opencommons import build_turn_zero_commons_context
+
+        oc_block, oc_hits = build_turn_zero_commons_context(args.prompt)
+        if oc_block and oc_hits > 0:
+            get_harness_telemetry().commons_cards_injected += oc_hits
+            effective_prompt = f"{oc_block}\n\n{effective_prompt}"
 
     from agy_local.tui import suppress_noisy_cpp_stderr
 
@@ -550,16 +579,23 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         if os.path.exists(os.path.join(os.path.dirname(sys.executable), "litert-lm"))
         else None
     )
+    ensure_bin_symlinks()
     nvidia_smi = shutil.which("nvidia-smi")
     chronos_mcp = shutil.which("chronosml-mcp")
+    opencommons_mcp = shutil.which("opencommons-mcp")
     models = discover_local_models()
     endpoints = probe_local_endpoints()
+    oc_store = load_persistent_store()
+    oc_pending = load_pending_proposals()
 
     report = {
         "python": sys.executable,
         "litert_lm_cli": litert_bin,
         "nvidia_gpu_detected": bool(nvidia_smi),
         "chronosml_mcp_detected": bool(chronos_mcp),
+        "opencommons_mcp_detected": bool(opencommons_mcp),
+        "opencommons_active_concepts": len(oc_store.canonical_block_by_cid),
+        "opencommons_pending_proposals": len(oc_pending),
         "discovered_models_count": len(models),
         "online_endpoints": [e.base_url for e in endpoints if e.reachable],
     }
@@ -573,6 +609,10 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print(f"  litert-lm CLI        : {report['litert_lm_cli'] or 'MISSING (pip install litert-lm)'}")
     print(f"  NVIDIA GPU (CUDA)    : {'DETECTED' if report['nvidia_gpu_detected'] else 'Not found'}")
     print(f"  ChronosML MCP        : {chronos_mcp or 'Not in PATH'}")
+    print(
+        f"  OpenCommons Engine   : {len(oc_store.canonical_block_by_cid)} active concept(s), "
+        f"{len(oc_pending)} pending review ({opencommons_mcp or 'in-process'})"
+    )
     print(f"  Cached Local Models  : {len(models)} found")
     print(f"  Live Local Servers   : {len(report['online_endpoints'])} online")
     return 0
@@ -728,6 +768,151 @@ def _cmd_scout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_commons(args: argparse.Namespace) -> int:
+    from pathlib import Path as _Path
+
+    from agy_local.opencommons import (
+        DEFAULT_PENDING_PATH,
+        DEFAULT_STORE_PATH,
+        approve_pending_proposal,
+        execute_commons_record,
+        load_pending_proposals,
+        load_persistent_store,
+        reject_pending_proposal,
+        run_opencommons_stdio_server,
+        save_persistent_store,
+        seed_default_scientific_primitives,
+    )
+
+    action = getattr(args, "action", "status") or "status"
+    targets = list(getattr(args, "target", []) or [])
+    store_path = getattr(args, "store", None)
+
+    if action == "mcp":
+        return run_opencommons_stdio_server(store_path=store_path)
+
+    if action == "seed":
+        store = load_persistent_store(store_path)
+        added = seed_default_scientific_primitives(store)
+        merged = save_persistent_store(store, store_path)
+        payload = {
+            "seeded": added,
+            "total_active_concepts": len(merged.canonical_block_by_cid),
+            "store_path": str(_Path(store_path or DEFAULT_STORE_PATH).expanduser()),
+        }
+        print(json.dumps(payload, indent=2))
+        return 0
+
+    if action == "find":
+        query = " ".join(targets).strip()
+        if not query:
+            print("Usage: agy-local commons find <query>", file=sys.stderr)
+            return 1
+        store = load_persistent_store(store_path)
+        hits = store.find(query=query, top_k=int(getattr(args, "top_k", 3)))
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    [
+                        {
+                            "block_id": h.block.block_id,
+                            "cid": h.block.cid,
+                            "score": h.score,
+                            "latency_ms": h.latency_ms,
+                            "card": h.block.render_for_agent(getattr(args, "modality", "dual_card_with_pitfalls")),
+                        }
+                        for h in hits
+                    ],
+                    indent=2,
+                )
+            )
+            return 0
+        for h in hits:
+            print(h.block.render_for_agent(mode=getattr(args, "modality", "dual_card_with_pitfalls")))
+            print("-" * 60)
+        return 0
+
+    if action == "record":
+        if not targets:
+            print("Usage: agy-local commons record <file.py_or_code>", file=sys.stderr)
+            return 1
+        raw_arg = targets[0]
+        src = _Path(raw_arg).read_text(encoding="utf-8") if _Path(raw_arg).is_file() else " ".join(targets)
+        res = execute_commons_record(
+            {
+                "source_code": src,
+                "domain": getattr(args, "domain", "general"),
+                "summary": getattr(args, "summary", ""),
+            },
+            store_path=store_path,
+        )
+        print(json.dumps(res, indent=2))
+        return 0
+
+    if action == "review":
+        pending = load_pending_proposals()
+        if getattr(args, "json", False):
+            print(json.dumps([p.to_dict() for p in pending], indent=2))
+            return 0
+        if not pending:
+            print("✓ OpenCommons pending review queue is empty.")
+            return 0
+        print(f"=== Pending OpenCommons Agent Proposals ({len(pending)}) ===")
+        for p in pending:
+            print(f"  [{p.proposal_id}] {p.func_name} ({p.domain}) — {p.summary} [{p.stage_reason}]")
+        return 0
+
+    if action == "approve":
+        if not targets:
+            print("Usage: agy-local commons approve <proposal_id_or_func_name>", file=sys.stderr)
+            return 1
+        res = approve_pending_proposal(targets[0], store_path=store_path)
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("approved") else 1
+
+    if action == "reject":
+        if not targets:
+            print("Usage: agy-local commons reject <proposal_id_or_func_name>", file=sys.stderr)
+            return 1
+        res = reject_pending_proposal(targets[0])
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("rejected") else 1
+
+    if action == "sync":
+        if not targets:
+            print("Usage: agy-local commons sync <other_replica.json>", file=sys.stderr)
+            return 1
+        other = load_persistent_store(targets[0], auto_seed_if_empty=False)
+        merged = save_persistent_store(other, path=store_path, crdt_merge_existing=True)
+        print(
+            json.dumps(
+                {
+                    "status": "crdt_merged",
+                    "active_concepts": len(merged.canonical_block_by_cid),
+                    "quarantined_blocks": len(merged.quarantined_ids),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    # Default: status
+    store = load_persistent_store(store_path)
+    pending = load_pending_proposals()
+    payload = {
+        "store_path": str(_Path(store_path or DEFAULT_STORE_PATH).expanduser()),
+        "pending_queue_path": str(DEFAULT_PENDING_PATH),
+        "total_blocks": len(store.blocks_by_id),
+        "active_equivalence_classes_cid": len(store.canonical_block_by_cid),
+        "quarantined_blocks": len(store.quarantined_ids),
+        "pending_proposals_count": len(pending),
+        "peer_review_executions": store.peer_review_executions,
+        "sid_dedup_hits": store.sid_dedup_hits,
+    }
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args_list = list(argv) if argv is not None else sys.argv[1:]
@@ -763,6 +948,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_integrate(args)
         if args.command == "scout":
             return _cmd_scout(args)
+        if args.command == "commons":
+            return _cmd_commons(args)
         if args.command == "presets":
             return _cmd_presets(args)
         if args.command == "models":

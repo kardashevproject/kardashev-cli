@@ -57,6 +57,7 @@ class HarnessOptions:
     enable_cot_harness: bool = True
     enable_self_healing_edits: bool = True
     enable_ast_repo_map: bool = True
+    enable_opencommons: bool = True
     skills_paths: list[str] | None = None
     with_chronosml_mcp: bool = False
     with_opencommons_mcp: bool = False
@@ -75,7 +76,55 @@ def _resolve_policies_and_sandbox(
     return [policy.confirm_run_command()], False
 
 
+def commons_find(
+    query: str,
+    modality: str = "dual_card_with_pitfalls",
+    top_k: int = 3,
+) -> str:
+    """Search the OpenCommons Concept Commons for verified scientific/algorithmic building blocks and refuted pitfalls."""
+    import json as _json
+
+    from agy_local.opencommons import execute_commons_find
+
+    res = execute_commons_find({"query": query, "modality": modality, "top_k": top_k})
+    return _json.dumps(res, indent=2)
+
+
+def commons_record(
+    source_code: str = "",
+    domain: str = "general",
+    summary: str = "",
+    pseudocode: str = "",
+    teleological_intent: str = "",
+    dimensional_units: str = "",
+    require_human_review: bool = False,
+    counterexample_block_id: str = "",
+    counterexample_args: str = "",
+) -> str:
+    """Contribute a verified Python function to OpenCommons (runs 16-probe behavioral fingerprinting & 5-gate peer review; auto-commits if all gates pass or stages in the pending review queue) or report a counterexample."""
+    import json as _json
+
+    from agy_local.opencommons import execute_commons_record
+
+    args: dict[str, Any] = {
+        "source_code": source_code,
+        "domain": domain,
+        "summary": summary,
+        "pseudocode": pseudocode,
+        "teleological_intent": teleological_intent,
+        "dimensional_units": dimensional_units,
+        "require_human_review": require_human_review,
+    }
+    if counterexample_block_id and counterexample_args:
+        args["counterexample_block_id"] = counterexample_block_id
+        args["counterexample_args"] = counterexample_args
+    res = execute_commons_record(args)
+    return _json.dumps(res, indent=2)
+
+
 def _build_mcp_servers(options: HarnessOptions) -> list[types.McpServerConfig]:
+    import sys as _sys
+
     servers: list[types.McpServerConfig] = []
     if options.with_chronosml_mcp:
         chronos_bin = shutil.which("chronosml-mcp") or "chronosml-mcp"
@@ -87,14 +136,23 @@ def _build_mcp_servers(options: HarnessOptions) -> list[types.McpServerConfig]:
             )
         )
     if options.with_opencommons_mcp:
-        opencommons_bin = shutil.which("opencommons-mcp") or "opencommons-mcp"
-        servers.append(
-            types.McpStdioServer(
-                name="opencommons",
-                command=opencommons_bin,
-                args=[],
+        opencommons_bin = shutil.which("opencommons-mcp")
+        if opencommons_bin:
+            servers.append(
+                types.McpStdioServer(
+                    name="opencommons",
+                    command=opencommons_bin,
+                    args=[],
+                )
             )
-        )
+        else:
+            servers.append(
+                types.McpStdioServer(
+                    name="opencommons",
+                    command=_sys.executable,
+                    args=["-m", "agy_local.opencommons"],
+                )
+            )
     for name, command, args in options.extra_mcp_stdio:
         servers.append(
             types.McpStdioServer(
@@ -158,7 +216,7 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         hooks_list.extend(
             [
                 SelfHealingEditHook(workspace=primary_ws),
-                SyntaxGatePostToolHook(),
+                SyntaxGatePostToolHook(auto_harvest_commons=options.enable_opencommons),
                 ActionableToolErrorHook(),
             ]
         )
@@ -187,8 +245,14 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         ]
     if mcp_servers:
         common_kwargs["mcp_servers"] = mcp_servers
-    if options.custom_tools:
-        common_kwargs["tools"] = list(options.custom_tools)
+
+    tools_list: list[Callable[..., Any]] = list(options.custom_tools)
+    if options.enable_opencommons and not options.with_opencommons_mcp:
+        for oc_fn in (commons_find, commons_record):
+            if oc_fn not in tools_list:
+                tools_list.append(oc_fn)
+    if tools_list:
+        common_kwargs["tools"] = tools_list
     if compaction_cfg is not None:
         common_kwargs["compaction_config"] = compaction_cfg
 

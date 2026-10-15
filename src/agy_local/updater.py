@@ -223,7 +223,7 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
 
 
 def ensure_bin_symlinks() -> list[str]:
-    """Ensures `~/.local/bin/{agy,agy-local,agy-local-mcp}` point to the active venv scripts."""
+    """Ensures `~/.local/bin/{agy,agy-local,agy-local-mcp,opencommons-mcp}` point to the active venv scripts."""
     bin_dir = Path(sys.executable).parent
     user_bin = Path.home() / ".local" / "bin"
     user_bin.mkdir(parents=True, exist_ok=True)
@@ -233,6 +233,7 @@ def ensure_bin_symlinks() -> list[str]:
         "agy-local": bin_dir / "agy-local",
         "agy": bin_dir / "agy-local",
         "agy-local-mcp": bin_dir / "agy-local-mcp",
+        "opencommons-mcp": bin_dir / "opencommons-mcp",
     }
     for name, src in targets.items():
         if not src.exists():
@@ -310,7 +311,7 @@ def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
 
 def generate_shell_completion(shell: str) -> str:
     """Returns shell tab-completion script for `bash`, `zsh`, or `fish`."""
-    subcommands = "chat exec serve mcp presets models doctor import-litert update config completions uninstall"
+    subcommands = "chat exec serve mcp commons scout integrate presets models doctor import-litert update config completions"
     presets = "gemma4-26b glm4-9b-ollama glm4-vllm glm-zhipu-api qwen3.6-35b-vllm qwen3.8-27b-vllm qwen3-vl-8b-vllm gpt-oss-20b-vllm lm-studio"
     flags = "--preset --backend --model --model-path --base-url --workspace --policy --litert-device --speculative --with-chronosml --with-opencommons --ralph --plain --dry-run --json --help --version"
 

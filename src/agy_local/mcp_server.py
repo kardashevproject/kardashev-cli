@@ -163,6 +163,101 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
             "properties": {},
         },
     },
+    {
+        "name": "commons_find",
+        "description": (
+            "Search the OpenCommons Concept Commons for verified scientific/algorithmic building "
+            "blocks, invariants, and refuted pitfalls in <5ms (with live I/O probe assertions)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Algorithm name, domain keywords, or numbered concept (e.g. 'rk4', 'stable_logsumexp', 'welford_variance').",
+                },
+                "param_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional parameter type hints, e.g. ['list[float]'] or ['int', 'int'].",
+                },
+                "return_type": {
+                    "type": "string",
+                    "description": "Optional return type hint, e.g. 'float' or 'int'.",
+                },
+                "io_examples": {
+                    "type": "string",
+                    "description": "Optional Python literal list of ((arg1, ...), expected_output) pairs for live I/O probe filtering.",
+                },
+                "modality": {
+                    "type": "string",
+                    "enum": ["dual_card_with_pitfalls", "dual_card", "pseudocode", "raw_code"],
+                    "default": "dual_card_with_pitfalls",
+                },
+                "top_k": {
+                    "type": "integer",
+                    "default": 3,
+                },
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": "commons_record",
+        "description": (
+            "Contribute a verified Python function to the OpenCommons research store (runs AST Merkle "
+            "sid dedup, 16-probe behavioral fp/cid, and 5-gate peer review; auto-commits if all 5 gates "
+            "pass or stages in the pending review queue) or report a (K+1)-th input counterexample."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "source_code": {
+                    "type": "string",
+                    "description": "Complete Python def function source code.",
+                },
+                "domain": {
+                    "type": "string",
+                    "default": "general",
+                    "description": "Scientific or engineering domain.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Concise 1-line summary of what the function computes.",
+                },
+                "pseudocode": {
+                    "type": "string",
+                    "description": "Step-by-step algorithmic skeleton.",
+                },
+                "invariants": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Mathematical or system invariants.",
+                },
+                "teleological_intent": {
+                    "type": "string",
+                    "description": "Physical conservation law or scientific rationale.",
+                },
+                "dimensional_units": {
+                    "type": "string",
+                    "description": "Dimensional unit signature.",
+                },
+                "require_human_review": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, stage in ~/.opencommons/pending_queue.json for human `/commons review`.",
+                },
+                "counterexample_block_id": {
+                    "type": "string",
+                    "description": "Optional block_id to quarantine if reporting an unprobed (K+1)-th input failure.",
+                },
+                "counterexample_args": {
+                    "type": "string",
+                    "description": "Optional Python tuple literal of failing arguments for counterexample ratcheting.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -435,6 +530,14 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
                 res = run_local_agent_task(**args)
             elif tool_name == "list_local_models":
                 res = list_local_models()
+            elif tool_name in ("commons_find", "find"):
+                from agy_local.opencommons import execute_commons_find
+
+                res = execute_commons_find(args)
+            elif tool_name in ("commons_record", "record"):
+                from agy_local.opencommons import execute_commons_record
+
+                res = execute_commons_record(args)
             else:
                 return {
                     "jsonrpc": "2.0",

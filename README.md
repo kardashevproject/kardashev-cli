@@ -11,9 +11,13 @@
 - **Curated Open-Weight Presets**: Built-in presets for `gemma4-26b`, `glm4-9b-ollama`, `glm4-vllm`, `glm-zhipu-api`, `qwen3.6-35b-vllm`, `qwen3.8-27b-vllm`, `qwen3-vl-8b-vllm`, `gpt-oss-20b-vllm`, and `lm-studio`.
 - **Zero-Config Local Discovery (`agy-local models` & `agy-local doctor`)**: Automatically scans `~/.litert-lm/models`, `~/.cache/huggingface/hub`, and `~/models`, and probes local ports (`8000`, `11434`, `1234`, `30000`) to detect ready-to-run checkpoints and live servers.
 
-- **4-Phase Super-Intelligence Cognitive Harness (`SUPER_INTELLIGENCE_COT_PROMPT`)**: Replaces generic tool prompts with a strict 4-phase engineering protocol (`[1. LOCATE & GROUND]` $\rightarrow$ `[2. HYPOTHESIZE & INVARIANTS]` $\rightarrow$ `[3. SURGICAL EDIT]` $\rightarrow$ `[4. EMPIRICAL VERIFICATION]`) plus automatic Turn-0 AST Repo-Map injection.
+- **4-Phase Super-Intelligence Cognitive Harness (`SUPER_INTELLIGENCE_COT_PROMPT`)**: Replaces generic tool prompts with a strict 4-phase engineering protocol (`[1. LOCATE & GROUND]` $\rightarrow$ `[2. HYPOTHESIZE & INVARIANTS]` $\rightarrow$ `[3. SURGICAL EDIT]` $\rightarrow$ `[4. EMPIRICAL VERIFICATION & COMMONS CONTRIBUTION]`) plus automatic Turn-0 AST Repo-Map and `<opencommons_knowledge>` injection.
+- **Built-in OpenCommons Research Engine (`src/agy_local/opencommons.py` & `opencommons-mcp`)**:
+  - **Fast Structural & Behavioral Fingerprinting (`<5ms`)**: Alpha-normalized De Bruijn AST Merkle hash (`sid`) for $O(1)$ structural deduplication plus 16-probe canonical execution fingerprinting (`fp -> cid`) that merges distinct algorithms computing the same mathematical function into a single Canonical Equivalence Class.
+  - **5-Gate Adversarial Peer Review & Tiered Commit Policy**: Automatically commits agent-contributed Python functions into `~/.opencommons/store.json` (via atomic `fcntl`-locked G-Set join-semilattice CRDT merge $\sqcup$) when all 5 adversarial gates pass, and stages domain-specific or human-review proposals into `~/.opencommons/pending_queue.json` for `/commons review`.
+  - **Monotonic Counterexample Ratchet & Autonomous Post-Edit Harvesting**: Agents can report $(K+1)$-th input counterexamples to quarantine flawed blocks and attach `PitfallWarning`s, while `SyntaxGatePostToolHook` automatically harvests newly written, type-annotated pure helper functions after verified file edits.
 - **3-Stage Self-Healing Fuzzy Edit Engine (`SelfHealingEditHook` + `SyntaxGatePostToolHook`)**: Automatically heals hallucinated `StartLine`/`EndLine` coordinates (Stage A), class-method indentation drift (Stage B), and minor whitespace/typo divergence $\ge 88\%$ (Stage C) before `replace_file_content` executes, backed by an AST syntax gate and per-turn SHA-256 infinite-loop breaker.
-- **One-Command Frontier Agent Co-Processor (`agy-local integrate`)**: Connects `agy-local-mcp` and installs the `agy-local-coprocessor` skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase` and `apply_smart_patch`.
+- **One-Command Frontier Agent Co-Processor (`agy-local integrate`)**: Connects `agy-local-mcp` and installs the `agy-local-coprocessor` skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase`, `apply_smart_patch`, `commons_find`, and `commons_record`.
 
 ---
 
@@ -33,11 +37,11 @@ git clone https://github.com/kardashevproject/agy-local.git
 cd agy-local && pip install -e ".[litert]"
 ```
 
-This installs **`agy-local`**, the short alias **`agy`**, and **`agy-local-mcp`** into `~/.local/bin`.
+This installs **`agy-local`**, the short alias **`agy`**, **`agy-local-mcp`**, and **`opencommons-mcp`** into `~/.local/bin`.
 
 ### 2. Integrate with Frontier Coding Agents (`Antigravity`, `Claude Code`, `Cursor`, `Codex`)
 
-Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, and Verification Co-Processor for frontier coding agents in one command:
+Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, OpenCommons Knowledge Base, and Verification Co-Processor for frontier coding agents in one command:
 
 ```bash
 agy-local integrate antigravity   # Or: claude, cursor, codex, all
@@ -91,9 +95,10 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | Shortcut / Command | Description |
 |---|---|
 | `/help` | Display all interactive slash commands, keybindings, `@file` mentions, and `!shell` shortcuts. |
-| `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), self-healing edit stats, checkpoints, and compactions. |
+| `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), self-healing edit stats, OpenCommons stats, checkpoints, and compactions. |
 | `/ast [query]` | Render the ranked Aider-style AST Repository Map (`classes`, `methods`, `functions`, `[start-end]` lines). |
 | `/scout <query>` | Run the Surgical Context Scout to extract ranked AST symbols and exact code slices (`<2,000 tokens`). |
+| `/commons [action]` | Manage the OpenCommons research engine (`status`, `find <query>`, `review`, `approve <id>`, `reject <id>`, `seed`). |
 | `/integrate [target]` | Auto-configure `agy-local-mcp` and co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
 | `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
 | `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session. |
@@ -107,7 +112,7 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `/config [show\|save]` | Inspect or save current session settings as persistent user defaults in `~/.config/agy-local/config.json`. |
 | `/update` | Self-update `agy-local` in-place from GitHub `main` and refresh CLI symlinks. |
 | `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
-| `/doctor` | Run hardware, GPU, LiteRT, and MCP diagnostics inside the session. |
+| `/doctor` | Run hardware, GPU, LiteRT, OpenCommons, and MCP diagnostics inside the session. |
 | `/diff` | Render a syntax-highlighted `git diff` of uncommitted workspace changes. |
 | `/undo` | Revert unstaged modifications in the workspace (with interactive confirmation). |
 | `/thoughts` | Toggle visibility of live reasoning/thinking traces (or press `Alt+T`). |
@@ -127,6 +132,7 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `agy` / `agy-local [chat]` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
 | `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
 | `agy-local scout "<query>"` | Run the AST Repo-Map & Surgical Context Scout on a workspace (`--json` and `--max-slices` supported). |
+| `agy-local commons [action]` | Query and manage the OpenCommons research engine (`status`, `find`, `record`, `review`, `approve`, `reject`, `seed`, `sync`, `mcp`). |
 | `agy-local integrate [target]` | Auto-register `agy-local-mcp` & co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
 | `agy-local update` (`--upgrade`) | Self-update `agy-local` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
 | `agy-local config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
@@ -135,20 +141,22 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | `agy-local mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`agy-local-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
 | `agy-local presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |
 | `agy-local models` | Scan local disk (`~/.litert-lm`, `~/.cache/huggingface`, `~/models`) and probe local inference ports (`8000`, `11434`, `1234`, `30000`). |
-| `agy-local doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, and active local model endpoints. |
+| `agy-local doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, `opencommons-mcp`, and active local model endpoints. |
 | `agy-local import-litert` | Download and register a LiteRT checkpoint from HuggingFace. |
 
 ---
 
 ## Frontier Agent Co-Processor MCP Server (`agy-local-mcp`)
 
-Run `agy-local integrate all` (or configure `agy-local-mcp` manually) to expose 5 zero-cost local tools to **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex**:
+Run `agy-local integrate all` (or configure `agy-local-mcp` manually) to expose 7 zero-cost local tools to **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex**:
 
 | MCP Tool | Purpose for Frontier Agents |
 |---|---|
 | `scout_codebase` | Builds a ranked AST Repository Map + surgical code slices (`<2,000 tokens`) for a natural-language or symbol query, saving 60–80% of frontier input tokens. |
 | `apply_smart_patch` | Applies a code replacement using the 3-stage self-healing fuzzy matcher (exact line-shift, indentation alignment, or $\ge 88\%$ fuzzy block match) with automatic Python AST syntax rollback. |
 | `verify_and_repair` | Runs a test/linter command (`pytest`, `ruff`, `mypy`) and returns structured failure diagnostics or invokes the local agent to repair failures. |
+| `commons_find` | Queries the persistent OpenCommons knowledge base (`~/.opencommons/store.json`) in `<5ms` by natural-language query, parameter/return types, and live `<2ms` I/O probe assertions, returning Dual Concept Cards + Refuted Pitfalls. |
+| `commons_record` | Contributes a verified Python function to OpenCommons (computing AST Merkle `sid`, 16-probe behavioral `fp/cid`, and 5-gate adversarial peer review; auto-commits if all 5 gates pass or stages in `~/.opencommons/pending_queue.json`) or reports a $(K+1)$-th input counterexample. |
 | `run_local_agent_task` | Delegates boilerplate generation, docstrings, or sub-tasks to an on-device model (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama`) at zero API cost. |
 | `list_local_models` | Lists all built-in presets, discovered local checkpoints, and active localhost OpenAI inference servers. |
 

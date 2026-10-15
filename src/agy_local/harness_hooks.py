@@ -47,26 +47,30 @@ from agy_local.ast_map import parse_python_symbols
 SUPER_INTELLIGENCE_COT_PROMPT = """\
 <kardashev_cognitive_harness>
 You are operating inside the Kardashev Project's engineered Antigravity harness with AST Repo-Map
-awareness and Self-Healing Edit verification. For every coding or debugging task, follow this strict
-4-phase cognitive protocol inside your reasoning trace before invoking tools:
+awareness, Self-Healing Edit verification, and the OpenCommons Concept Commons research engine.
+For every coding, debugging, or scientific task, follow this strict 4-phase cognitive protocol
+inside your reasoning trace before invoking tools:
 
-1. [LOCATE & GROUND]: Consult the `<ast_repo_map workspace="...">` first to identify exact file paths,
-   symbol signatures, and `[Lstart-end]` line spans without wasting turns on `find`, `ls`, or `grep`
-   when the symbol is already in the map. Always pass FULL ABSOLUTE PATHS (`<workspace>/<rel_path>`)
-   to `view_file`, `replace_file_content`, and `write_to_file`, and use 1-indexed line numbers.
-2. [HYPOTHESIZE & INVARIANTS]: State the root cause or design invariant in 1-2 sentences. Check edge
-   cases, type contracts, and imports that could break.
+1. [LOCATE & GROUND]: Consult `<ast_repo_map workspace="...">` and `<opencommons_knowledge>` first
+   to identify exact file paths, symbol signatures, `[Lstart-end]` line spans, and verified
+   scientific/algorithmic building blocks without wasting turns on `find`, `ls`, or `grep`.
+   Always pass FULL ABSOLUTE PATHS (`<workspace>/<rel_path>`) to `view_file`, `replace_file_content`,
+   and `write_to_file`, and use 1-indexed line numbers.
+2. [HYPOTHESIZE & INVARIANTS]: State the root cause or mathematical/system invariant in 1-2 sentences.
+   Check edge cases, type contracts, and any Refuted Pitfalls documented in OpenCommons.
 3. [SURGICAL EDIT]: Apply minimal, atomic changes via `replace_file_content`. Preserve surrounding
    indentation and existing comments.
-4. [EMPIRICAL VERIFICATION]: Always verify non-trivial edits by running the relevant test or linter
-   command (`pytest`, `ruff check`, etc.) via `run_command` before declaring completion.
+4. [VERIFY & CONTRIBUTE TO OPENCOMMONS]: Always verify non-trivial edits by running the relevant test
+   or linter command (`pytest`, `ruff check`, etc.) via `run_command`. When you synthesize a reusable,
+   verified algorithmic or scientific function (or discover a boundary counterexample), contribute it
+   to the research commons via `commons_record` (or `record`).
 </kardashev_cognitive_harness>
 """
 
 
 @dataclass
 class HarnessTelemetry:
-    """Tracks self-healing interventions, loop-breaker blocks, and syntax checks across a session."""
+    """Tracks self-healing interventions, loop-breaker blocks, syntax checks, and OpenCommons research telemetry."""
 
     healed_edits_count: int = 0
     healed_edit_events: list[dict[str, Any]] = field(default_factory=list)
@@ -74,6 +78,11 @@ class HarnessTelemetry:
     syntax_checks_run: int = 0
     syntax_errors_caught: int = 0
     ast_maps_injected: int = 0
+    commons_cards_injected: int = 0
+    commons_concepts_recorded: int = 0
+    commons_proposals_queued: int = 0
+    commons_counterexamples_reported: int = 0
+    last_edited_files: list[str] = field(default_factory=list)
     tool_call_counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -325,16 +334,27 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
 
         # 2. Self-healing fuzzy edit for `replace_file_content`
         if name in ("replace_file_content", "BuiltinTools.REPLACE_FILE_CONTENT"):
+            target_f = str(args.get("TargetFile", "")).strip()
+            if target_f and target_f not in _GLOBAL_TELEMETRY.last_edited_files:
+                _GLOBAL_TELEMETRY.last_edited_files.append(target_f)
             healed_args, reason = heal_replace_file_args(args, workspace=self.workspace)
             if healed_args is not None and reason is not None:
+                healed_f = str(healed_args.get("TargetFile", target_f))
+                if healed_f and healed_f not in _GLOBAL_TELEMETRY.last_edited_files:
+                    _GLOBAL_TELEMETRY.last_edited_files.append(healed_f)
                 _GLOBAL_TELEMETRY.healed_edits_count += 1
                 _GLOBAL_TELEMETRY.healed_edit_events.append(
                     {
-                        "file": str(healed_args.get("TargetFile", args.get("TargetFile", ""))),
+                        "file": healed_f,
                         "reason": reason,
                     }
                 )
                 return types.HookResult(allow=True, modified_args=healed_args)
+
+        if name in ("write_to_file", "BuiltinTools.WRITE_TO_FILE"):
+            target_f = str(args.get("TargetFile", "")).strip()
+            if target_f and target_f not in _GLOBAL_TELEMETRY.last_edited_files:
+                _GLOBAL_TELEMETRY.last_edited_files.append(target_f)
 
         # 3. Auto-normalize relative file/directory paths in `view_file`, `write_to_file`, `list_dir`, `grep`
         if self.workspace:
@@ -354,6 +374,8 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
                 if isinstance(raw_val, str) and raw_val.strip() and not os.path.isabs(raw_val):
                     resolved_str = str((ws_path / raw_val.strip()).resolve())
                     new_args[pk] = resolved_str
+                    if pk == "TargetFile" and resolved_str not in _GLOBAL_TELEMETRY.last_edited_files:
+                        _GLOBAL_TELEMETRY.last_edited_files.append(resolved_str)
                     modified = True
             if modified:
                 _GLOBAL_TELEMETRY.healed_edits_count += 1
@@ -363,7 +385,11 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
 
 
 class SyntaxGatePostToolHook(hooks_mod.PostToolCallHook):
-    """Runs fast Python AST syntax verification after any file edit or creation."""
+    """Runs fast Python AST syntax verification and OpenCommons candidate harvesting after file edits."""
+
+    def __init__(self, auto_harvest_commons: bool = True) -> None:
+        super().__init__()
+        self.auto_harvest_commons = auto_harvest_commons
 
     async def run(self, context: hooks_mod.HookContext, data: types.ToolResult) -> None:
         name = str(data.name)
@@ -375,6 +401,17 @@ class SyntaxGatePostToolHook(hooks_mod.PostToolCallHook):
         ):
             return
         _GLOBAL_TELEMETRY.syntax_checks_run += 1
+        if not self.auto_harvest_commons or not _GLOBAL_TELEMETRY.last_edited_files:
+            return
+        last_file = _GLOBAL_TELEMETRY.last_edited_files[-1]
+        if last_file.endswith(".py") and Path(last_file).is_file():
+            import contextlib
+
+            with contextlib.suppress(Exception):
+                from agy_local.opencommons import extract_candidate_functions_from_source
+
+                src = Path(last_file).read_text(encoding="utf-8")
+                extract_candidate_functions_from_source(src, contributor_agent="agy-local-hook")
 
 
 class ActionableToolErrorHook(hooks_mod.OnToolErrorHook):

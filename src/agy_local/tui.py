@@ -123,6 +123,7 @@ def suppress_noisy_cpp_stderr() -> Iterator[None]:
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
     "/status": "Show session token usage, context window utilization bar, turn count, and telemetry",
+    "/commons": "Inspect, search, review, or approve OpenCommons research concepts (/commons \\[status|find|review|approve|reject|seed])",
     "/ast": "Render or toggle automatic AST Repo-Map context injection (/ast \\[show|on|off])",
     "/scout": "Run the AST Context Scout on a query to extract surgical code slices (/scout <query>)",
     "/integrate": "Install agy-local Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
@@ -472,6 +473,11 @@ class AgyCompleter(Completer):
                     if opt.startswith(cur_arg):
                         yield Completion(opt, start_position=-len(cur_arg), display=opt)
                 return
+            if cmd_name == "/commons":
+                for opt in ("status", "find", "review", "approve", "reject", "seed"):
+                    if opt.startswith(cur_arg):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
 
         # 2. @file and @git: completion
         if word.startswith("@"):
@@ -752,13 +758,14 @@ class AgyRichTUI:
             f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [dim]· compaction ceiling:[/dim] {ctx_limit:,} tok  [dim]· MCP:[/dim] {mcp_str}{ralph_badge}",
         )
         ast_state = "ON" if self.auto_inject_ast_map else "OFF"
+        oc_state = "ON" if self.options.enable_opencommons else "OFF"
         grid.add_row(
             "Cognitive Engine",
-            f"[bold green]4-Phase CoT[/bold green] · [bold cyan]AST Repo-Map ({ast_state})[/bold cyan] · [bold yellow]Self-Healing Fuzzy Edits[/bold yellow] · [bold magenta]Loop-Breaker[/bold magenta]",
+            f"[bold green]4-Phase CoT[/bold green] · [bold cyan]AST Repo-Map ({ast_state})[/bold cyan] · [bold yellow]Self-Healing Fuzzy Edits[/bold yellow] · [bold bright_magenta]OpenCommons ({oc_state})[/bold bright_magenta]",
         )
         grid.add_row(
             "Shortcuts",
-            "[dim][bold]/help[/bold] commands · [bold]/scout[/bold] AST search · [bold]/integrate[/bold] frontier agents · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] · [bold]!cmd[/bold] shell[/dim]",
+            "[dim][bold]/help[/bold] commands · [bold]/commons[/bold] research · [bold]/scout[/bold] AST search · [bold]/integrate[/bold] frontier agents · [bold]@file:1-50[/bold] · [bold]!cmd[/bold][/dim]",
         )
         upd = check_for_updates(force=False)
         if upd.update_available:
@@ -770,7 +777,7 @@ class AgyRichTUI:
         return Panel(
             grid,
             title="[bold bright_white]✦ Antigravity Local Studio[/bold bright_white] [dim](agy-local v0.1.0)[/dim]",
-            subtitle="[dim]The Kardashev Project · Engineered AST, CoT & Self-Healing Agent Harness[/dim]",
+            subtitle="[dim]The Kardashev Project · Engineered AST, CoT, OpenCommons & Self-Healing Harness[/dim]",
             border_style="bright_blue",
             padding=(0, 1),
         )
@@ -914,6 +921,13 @@ class AgyRichTUI:
                 f"[bold green]{htel.healed_edits_count} healed[/bold green] · "
                 f"[bold yellow]{htel.loop_blocks_count} loop(s) blocked[/bold yellow] · "
                 f"[cyan]{htel.ast_maps_injected} AST map(s)[/cyan]",
+            )
+            tbl.add_row(
+                "OpenCommons Research Activity",
+                f"[bold magenta]{htel.commons_cards_injected} card(s) injected[/bold magenta] · "
+                f"[bold green]{htel.commons_concepts_recorded} recorded[/bold green] · "
+                f"[yellow]{htel.commons_proposals_queued} queued for review[/yellow] · "
+                f"[red]{htel.commons_counterexamples_reported} counterexample(s)[/red]",
             )
             tbl.add_row(
                 "Compaction Events",
@@ -1292,6 +1306,115 @@ class AgyRichTUI:
             self.console.print(tbl)
             return False
 
+        if cmd == "/commons":
+            from agy_local.opencommons import (
+                DEFAULT_PENDING_PATH,
+                DEFAULT_STORE_PATH,
+                approve_pending_proposal,
+                load_pending_proposals,
+                load_persistent_store,
+                reject_pending_proposal,
+                save_persistent_store,
+                seed_default_scientific_primitives,
+            )
+
+            sub = args[0].lower() if args else "status"
+            if sub == "seed":
+                store = await asyncio.to_thread(load_persistent_store)
+                added = await asyncio.to_thread(seed_default_scientific_primitives, store)
+                merged = await asyncio.to_thread(save_persistent_store, store)
+                self.console.print(
+                    f"[green]✓ Seeded {added} foundational primitives ({len(merged.canonical_block_by_cid)} active concepts in {DEFAULT_STORE_PATH}).[/green]"
+                )
+                return False
+
+            if sub == "find":
+                q = " ".join(args[1:]).strip()
+                if not q:
+                    self.console.print("[yellow]Usage: /commons find <query>[/yellow]")
+                    return False
+                store = await asyncio.to_thread(load_persistent_store)
+                hits = store.find(query=q, top_k=3)
+                if not hits:
+                    self.console.print(f"[dim]No OpenCommons concepts matched '{q}'.[/dim]")
+                    return False
+                for h in hits:
+                    card_str = h.block.render_for_agent("dual_card_with_pitfalls")
+                    self.console.print(
+                        Panel(
+                            Syntax(card_str, "python", theme="monokai", word_wrap=True),
+                            title=f"[bold magenta]{h.block.block_id}[/bold magenta] [dim](score={h.score} · {h.latency_ms}ms)[/dim]",
+                            border_style="magenta",
+                        )
+                    )
+                return False
+
+            if sub == "review":
+                pending = await asyncio.to_thread(load_pending_proposals)
+                if not pending:
+                    self.console.print("[dim]✓ Pending OpenCommons review queue is empty.[/dim]")
+                    return False
+                tbl = Table(title=f"Pending OpenCommons Agent Proposals ({DEFAULT_PENDING_PATH})", border_style="yellow")
+                tbl.add_column("Proposal ID", style="bold yellow")
+                tbl.add_column("Function", style="bold cyan")
+                tbl.add_column("Domain", style="magenta")
+                tbl.add_column("Reason", style="dim")
+                tbl.add_column("Summary")
+                for p in pending:
+                    tbl.add_row(p.proposal_id, p.func_name, p.domain, p.stage_reason, p.summary)
+                self.console.print(tbl)
+                self.console.print(
+                    "[dim]Use `/commons approve <proposal_id_or_func>` or `/commons reject <proposal_id_or_func>`[/dim]"
+                )
+                return False
+
+            if sub == "approve":
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /commons approve <proposal_id_or_func_name>[/yellow]")
+                    return False
+                res_app = await asyncio.to_thread(approve_pending_proposal, args[1])
+                if res_app.get("approved"):
+                    self.console.print(
+                        f"[green]✓ Approved `{res_app['block_id']}` -> committed to OpenCommons ({res_app['total_active_concepts']} active concepts).[/green]"
+                    )
+                else:
+                    self.console.print(f"[red]✗ {res_app.get('error')}[/red]")
+                return False
+
+            if sub == "reject":
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /commons reject <proposal_id_or_func_name>[/yellow]")
+                    return False
+                res_rej = await asyncio.to_thread(reject_pending_proposal, args[1])
+                if res_rej.get("rejected"):
+                    self.console.print(
+                        f"[yellow]✓ Rejected proposal `{res_rej['proposal_id']}` ({res_rej['func_name']}).[/yellow]"
+                    )
+                else:
+                    self.console.print(f"[red]✗ {res_rej.get('error')}[/red]")
+                return False
+
+            # Default: /commons status
+            store = await asyncio.to_thread(load_persistent_store)
+            pending = await asyncio.to_thread(load_pending_proposals)
+            tbl = Table(title=f"OpenCommons Research Store ({DEFAULT_STORE_PATH})", border_style="magenta")
+            tbl.add_column("Block ID", style="bold cyan")
+            tbl.add_column("CID", style="magenta")
+            tbl.add_column("Domain", style="green")
+            tbl.add_column("Tier", style="yellow")
+            tbl.add_column("Summary")
+            for _cid, bid in sorted(store.canonical_block_by_cid.items()):
+                b = store.blocks_by_id[bid]
+                tbl.add_row(b.block_id, b.cid, b.domain, b.trust_tier, b.summary[:68])
+            self.console.print(tbl)
+            self.console.print(
+                f"  [dim]Active equivalence classes:[/dim] [bold green]{len(store.canonical_block_by_cid)}[/bold green] · "
+                f"[dim]Quarantined:[/dim] [red]{len(store.quarantined_ids)}[/red] · "
+                f"[dim]Pending review queue:[/dim] [yellow]{len(pending)}[/yellow] "
+                f"[dim](use `/commons find <query>` or `/commons review`)[/dim]"
+            )
+            return False
+
         if cmd == "/integrate":
             target = args[0].lower() if args else "all"
             try:
@@ -1321,7 +1444,18 @@ class AgyRichTUI:
                 f"  [dim]📎 Attached {', '.join(f'[cyan]{f}[/cyan]' for f in attached)}[/dim]"
             )
 
-        # On Turn 0 (or when AST Repo-Map is enabled), prepend a compact query-ranked AST Repo-Map + surgical slices
+        # On Turn 0, prepend query-matched OpenCommons Dual Concept Cards + AST Repo-Map + surgical slices
+        if self.options.enable_opencommons and self.session_turns == 0:
+            from agy_local.opencommons import build_turn_zero_commons_context
+
+            oc_block, oc_hits = await asyncio.to_thread(build_turn_zero_commons_context, user_text)
+            if oc_block and oc_hits > 0:
+                augmented_prompt = f"{oc_block}\n\n{augmented_prompt}"
+                get_harness_telemetry().commons_cards_injected += oc_hits
+                self.console.print(
+                    f"  [dim]🧬 Retrieved {oc_hits} verified OpenCommons Dual Concept Card(s)[/dim]"
+                )
+
         if self.auto_inject_ast_map and self.session_turns == 0:
             from agy_local.ast_map import build_turn_zero_context
 

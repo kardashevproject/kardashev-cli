@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agy_local.opencommons import (
+from kardashev_cli.opencommons import (
     DEFAULT_STORE_PATH,
     fingerprint_function,
     load_persistent_store,

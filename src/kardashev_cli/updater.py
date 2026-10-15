@@ -1,13 +1,13 @@
-"""Self-updater, version checker, user config manager, and shell completion generator for agy-local.
+"""Self-updater, version checker, user config manager, and shell completion generator for kardashev-cli.
 
-Provides Claude Code / OpenAI Codex CLI style installation & lifecycle management:
-- Persistent user defaults in `~/.config/agy-local/config.json` (`default_preset`, `policy_mode`,
+Provides standalone CLI installation & lifecycle management:
+- Persistent user defaults in `~/.config/kardashev/config.json` (`default_preset`, `policy_mode`,
   `auto_update`, `ralph_verify_cmd`, `show_thoughts`, `with_chronosml_mcp`, `with_opencommons_mcp`).
 - Cached background GitHub release / commit version checking (every 12 hours, zero startup block).
-- `agy-local update` (and `/update` inside TUI): detects editable git checkout vs standalone
-  `~/.local/share/agy-local` / `uv` / `pip` install, pulls latest commits, upgrades dependencies,
-  and refreshes `~/.local/bin/{agy,agy-local,agy-local-mcp}` symlinks.
-- `agy-local completions [bash|zsh|fish]`: generates shell tab-completion scripts.
+- `kardashev update` (and `/update` inside TUI): detects editable git checkout vs standalone
+  `~/.local/share/kardashev` / `uv` / `pip` install, pulls latest commits, upgrades dependencies,
+  and refreshes `~/.local/bin/{kardashev,ksh,kardashev-mcp,opencommons-mcp}` symlinks.
+- `kardashev completions [bash|zsh|fish]`: generates shell tab-completion scripts.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from agy_local import __version__
+from kardashev_cli import __version__
 
 GITHUB_REPO = "kardashevproject/kardashev-cli"
 GITHUB_API_RELEASES = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -35,7 +35,7 @@ UPDATE_CHECK_TTL_SECONDS = 12 * 3600  # 12 hours
 
 @dataclass
 class UserConfig:
-    """Persistent user configuration stored at `~/.config/agy-local/config.json`."""
+    """Persistent user configuration stored at `~/.config/kardashev/config.json`."""
 
     default_preset: str = "gemma4-26b"
     policy_mode: str = "allow-all"
@@ -50,7 +50,7 @@ class UserConfig:
     @classmethod
     def config_path(cls) -> Path:
         base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "agy-local" / "config.json"
+        return base / "kardashev" / "config.json"
 
     @classmethod
     def load(cls) -> UserConfig:
@@ -74,7 +74,7 @@ class UserConfig:
 
 @dataclass
 class UpdateStatus:
-    """Result of checking local installation against upstream GitHub `kardashevproject/agy-local`."""
+    """Result of checking local installation against upstream GitHub `kardashevproject/kardashev-cli`."""
 
     current_version: str
     latest_version: str
@@ -90,14 +90,13 @@ class UpdateStatus:
 
 
 def detect_install_layout() -> tuple[str, Path | None]:
-    """Detects whether `agy-local` is running from a git checkout, managed venv, or system pip."""
-    # Check if package source lives inside a git checkout
+    """Detects whether `kardashev-cli` is running from a git checkout, managed venv, or system pip."""
     pkg_dir = Path(__file__).resolve().parent
     candidate_repo = pkg_dir.parent.parent
     if (candidate_repo / ".git").exists():
         return ("git-editable", candidate_repo)
 
-    managed_root = Path.home() / ".local" / "share" / "agy-local" / "repo"
+    managed_root = Path.home() / ".local" / "share" / "kardashev" / "repo"
     if (managed_root / ".git").exists():
         return ("managed-venv", managed_root)
 
@@ -122,7 +121,7 @@ def _local_git_head(repo_root: Path | None) -> str | None:
 
 def _update_cache_path() -> Path:
     base = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    d = base / "agy-local"
+    d = base / "kardashev"
     d.mkdir(parents=True, exist_ok=True)
     return d / "update_check.json"
 
@@ -133,7 +132,6 @@ def _is_remote_ahead(repo_root: Path | None, local_sha: str | None, remote_sha: 
         return False
     if repo_root is not None and (repo_root / ".git").exists():
         with contextlib.suppress(OSError, subprocess.SubprocessError):
-            # If remote_sha is already an ancestor of local HEAD, local is ahead of remote -> no update needed!
             proc = subprocess.run(
                 ["git", "-C", str(repo_root), "merge-base", "--is-ancestor", remote_sha, local_sha],
                 capture_output=True,
@@ -250,22 +248,19 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
 
 
 def ensure_bin_symlinks() -> list[str]:
-    """Ensures `~/.local/bin/{kardashev,ksh,kardashev-mcp,agy,agy-local,agy-local-mcp,opencommons-mcp}` point to the active venv scripts."""
+    """Ensures `~/.local/bin/{kardashev,ksh,kardashev-mcp,opencommons-mcp}` point to the active venv scripts."""
     bin_dir = Path(sys.executable).parent
     user_bin = Path.home() / ".local" / "bin"
     user_bin.mkdir(parents=True, exist_ok=True)
     linked: list[str] = []
 
-    primary_cli = bin_dir / "kardashev" if (bin_dir / "kardashev").exists() else bin_dir / "agy-local"
-    primary_mcp = bin_dir / "kardashev-mcp" if (bin_dir / "kardashev-mcp").exists() else bin_dir / "agy-local-mcp"
+    primary_cli = bin_dir / "kardashev"
+    primary_mcp = bin_dir / "kardashev-mcp"
 
     targets = {
         "kardashev": primary_cli,
         "ksh": primary_cli,
         "kardashev-mcp": primary_mcp,
-        "agy-local": primary_cli,
-        "agy": primary_cli,
-        "agy-local-mcp": primary_mcp,
         "opencommons-mcp": bin_dir / "opencommons-mcp",
     }
     for name, src in targets.items():
@@ -283,7 +278,7 @@ def ensure_bin_symlinks() -> list[str]:
 
 
 def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
-    """Performs an in-place self-update of `kardashev-cli` / `agy-local`."""
+    """Performs an in-place self-update of `kardashev-cli`."""
     install_mode, repo_root = detect_install_layout()
     pip_cmd = [sys.executable, "-m", "pip", "install", "--upgrade"]
     uv_bin = shutil.which("uv")
@@ -318,14 +313,12 @@ def perform_self_update(*, include_litert: bool = True) -> tuple[bool, str]:
 
         linked = ensure_bin_symlinks()
         new_sha = _local_git_head(repo_root) or __version__
-        # Refresh cache so it knows we are up to date
         check_for_updates(force=True)
         return (
             True,
             f"Updated kardashev-cli ({install_mode}) to {new_sha[:8]} and linked {len(linked)} binaries in ~/.local/bin.",
         )
 
-    # Standalone pip/uv git upgrade from GitHub
     git_url = f"git+https://github.com/{GITHUB_REPO}.git"
     if include_litert:
         git_url = f"kardashev-cli[litert] @ git+https://github.com/{GITHUB_REPO}.git"
@@ -349,7 +342,7 @@ def generate_shell_completion(shell: str) -> str:
     flags = "--preset --backend --model --model-path --base-url --workspace --policy --litert-device --speculative --with-chronosml --with-opencommons --ralph --plain --dry-run --json --help --version"
 
     if shell == "zsh":
-        return f"""#compdef kardashev ksh agy-local agy
+        return f"""#compdef kardashev ksh
 _kardashev() {{
   local -a subcmds presets
   subcmds=({subcommands})
@@ -370,29 +363,22 @@ _kardashev() {{
       ;;
   esac
 }}
-compdef _kardashev kardashev ksh agy-local agy
+compdef _kardashev kardashev ksh
 """
 
     if shell == "fish":
         lines = [
-            "# Fish completions for kardashev, ksh, agy-local & agy",
+            "# Fish completions for kardashev & ksh",
             f"complete -c kardashev -f -n '__fish_use_subcommand' -a '{subcommands}'",
             f"complete -c ksh -f -n '__fish_use_subcommand' -a '{subcommands}'",
-            f"complete -c agy-local -f -n '__fish_use_subcommand' -a '{subcommands}'",
-            f"complete -c agy -f -n '__fish_use_subcommand' -a '{subcommands}'",
             f"complete -c kardashev -l preset -s p -a '{presets}'",
             f"complete -c ksh -l preset -s p -a '{presets}'",
-            f"complete -c agy-local -l preset -s p -a '{presets}'",
-            f"complete -c agy -l preset -s p -a '{presets}'",
             "complete -c kardashev -l policy -a 'allow-all ask sandbox'",
             "complete -c ksh -l policy -a 'allow-all ask sandbox'",
-            "complete -c agy-local -l policy -a 'allow-all ask sandbox'",
-            "complete -c agy -l policy -a 'allow-all ask sandbox'",
         ]
         return "\n".join(lines) + "\n"
 
-    # Default: bash
-    return f"""# Bash completion for kardashev, ksh, agy-local & agy
+    return f"""# Bash completion for kardashev & ksh
 _kardashev_completions() {{
   local cur prev subcmds presets flags
   COMPREPLY=()
@@ -421,5 +407,5 @@ _kardashev_completions() {{
   COMPREPLY=( $(compgen -W "${{flags}}" -- "${{cur}}") )
   return 0
 }}
-complete -F _kardashev_completions kardashev ksh agy-local agy
+complete -F _kardashev_completions kardashev ksh
 """

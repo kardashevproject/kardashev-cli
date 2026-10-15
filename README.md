@@ -1,31 +1,31 @@
-# kardashev-cli (`kardashev` / `ksh` / `agy`)
+# kardashev-cli (`kardashev` / `ksh`)
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
-[![Antigravity SDK](https://img.shields.io/badge/Antigravity-localharness-success.svg)](https://github.com/google-antigravity/antigravity-sdk-python)
+[![The Kardashev Project](https://img.shields.io/badge/Kardashev_Project-Kardashev_Studio-success.svg)](https://github.com/kardashevproject/kardashev-cli)
 
-**`kardashev-cli`** (CLI executables **`kardashev`**, **`ksh`**, **`agy`**, and **`agy-local`**) is The Kardashev Project's flagship open-source CLI, interactive terminal studio, distributed OpenCommons CRDT research engine, and coding harness that lets you run the full **Google Antigravity `localharness`** (`view_file`, `replace_file_content`, `write_to_file`, `run_command`, `grep`, `list_dir`, MCP servers, and skills) backed by **any local or open-weight model**:
+**`kardashev-cli`** (CLI executables **`kardashev`** and **`ksh`**) is The Kardashev Project's flagship open-source CLI, interactive terminal studio (**Kardashev Studio**), distributed OpenCommons CRDT research engine, and autonomous coding harness (`view_file`, `replace_file_content`, `write_to_file`, `run_command`, `grep`, `list_dir`, MCP servers, and skills) backed by **any local or open-weight model**:
 
 - **Managed On-Device LiteRT Runtime (`LiteRTAgentConfig`)**: Run `Gemma 4 26B A4B` natively on GPU (CUDA / Apple Metal) or NPU with zero API keys, speculative decoding, and automatic 64k KV-cache compaction (`token_threshold=40960`).
-- **OpenAI-Compatible Local & Open Model Servers (`LocalOpenAIAgentConfig`)**: Connect the Antigravity harness to **vLLM**, **Ollama**, **SGLang**, **LM Studio**, or **Zhipu GLM API** endpoints with automatic `.lightweight()` tool and prompt optimizations, plus pre-flight endpoint liveness probing and zero-crash diagnostics if a local server is offline.
+- **OpenAI-Compatible Local & Open Model Servers (`LocalOpenAIAgentConfig`)**: Connect the Kardashev harness to **vLLM**, **Ollama**, **SGLang**, **LM Studio**, or **Zhipu GLM API** endpoints with automatic `.lightweight()` tool and prompt optimizations, plus pre-flight endpoint liveness probing and zero-crash diagnostics if a local server is offline.
 - **Curated Open-Weight Presets**: Built-in presets for `gemma4-26b`, `glm4-9b-ollama`, `glm4-vllm`, `glm-zhipu-api`, `qwen3.6-35b-vllm`, `qwen3.8-27b-vllm`, `qwen3-vl-8b-vllm`, `gpt-oss-20b-vllm`, and `lm-studio`.
 - **Zero-Config Local Discovery (`kardashev models` & `kardashev doctor`)**: Automatically scans `~/.litert-lm/models`, `~/.cache/huggingface/hub`, and `~/models`, and probes local ports (`8000`, `11434`, `1234`, `30000`) to detect ready-to-run checkpoints and live servers.
 
 - **4-Phase Super-Intelligence Cognitive Harness (`SUPER_INTELLIGENCE_COT_PROMPT`)**: Replaces generic tool prompts with a strict 4-phase engineering protocol (`[1. LOCATE & GROUND]` $\rightarrow$ `[2. HYPOTHESIZE & INVARIANTS]` $\rightarrow$ `[3. SURGICAL EDIT]` $\rightarrow$ `[4. EMPIRICAL VERIFICATION & COMMONS CONTRIBUTION]`) plus automatic Turn-0 AST Repo-Map and `<opencommons_knowledge>` injection.
-- **Distributed OpenCommons Research Engine & Zero-Trust CRDT Gossip Hub (`src/agy_local/opencommons.py` & `opencommons-mcp`)**:
+- **Distributed OpenCommons Research Engine & Zero-Trust CRDT Gossip Hub (`src/kardashev_cli/opencommons.py` & `opencommons-mcp`)**:
   - **Fast Structural & Behavioral Fingerprinting (`<5ms`)**: Alpha-normalized De Bruijn AST Merkle hash (`sid`) for $O(1)$ structural deduplication plus 16-probe canonical execution fingerprinting (`fp -> cid`) that merges distinct algorithms computing the same mathematical function into a single Canonical Equivalence Class.
   - **3-Layer Zero-Trust Security Sandbox**: Blocks `ast.Import`/`ast.ImportFrom`, `ast.Global`/`ast.Nonlocal`, all `__dunder__` attribute/identifier escapes (`__subclasses__`, `__globals__`, `__builtins__`), and forbidden dynamic builtins (`eval`, `exec`, `open`, `getattr`), paired with a pure-math `SAFE_EXEC_BUILTINS` whitelist and lazy execution compilation (`0` untrusted network code executed on pull).
   - **16-Bucket Merkle Tree + HTTP `ETag` (`304`) & Gzipped Delta Sync (`kardashev commons pull|push|serve-hub`)**: Synchronize verified research concepts globally via static GitHub Raw CDN (`commons/store.json`) or a live multi-threaded HTTP CRDT Gossip Hub (`kardashev commons serve-hub`).
   - **5-Gate Adversarial Peer Review & Tiered Commit Policy**: Automatically commits agent-contributed Python functions into `~/.opencommons/store.json` (via atomic `fcntl`-locked G-Set join-semilattice CRDT merge $\sqcup$) when all 5 adversarial gates pass, and stages domain-specific or human-review proposals into `~/.opencommons/pending_queue.json` for `/commons review`.
   - **Monotonic Counterexample Ratchet & Autonomous Post-Edit Harvesting**: Agents can report $(K+1)$-th input counterexamples to quarantine flawed blocks and attach `PitfallWarning`s, while `SyntaxGatePostToolHook` automatically harvests newly written, type-annotated pure helper functions after verified file edits.
 - **3-Stage Self-Healing Fuzzy Edit Engine (`SelfHealingEditHook` + `SyntaxGatePostToolHook`)**: Automatically heals hallucinated `StartLine`/`EndLine` coordinates (Stage A), class-method indentation drift (Stage B), and minor whitespace/typo divergence $\ge 88\%$ (Stage C) before `replace_file_content` executes, backed by an AST syntax gate and per-turn SHA-256 infinite-loop breaker.
-- **One-Command Frontier Agent Co-Processor (`kardashev integrate`)**: Connects `kardashev-mcp` / `agy-local-mcp` and installs the co-processor skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase`, `apply_smart_patch`, `commons_find`, and `commons_record`.
+- **One-Command Frontier Agent Co-Processor (`kardashev integrate`)**: Connects `kardashev-mcp` and `opencommons-mcp` and installs the co-processor skill into **Claude Code**, **Cursor**, **OpenAI Codex CLI**, and **Antigravity**, cutting cloud input tokens by 60–80% via `scout_codebase`, `apply_smart_patch`, `commons_find`, and `commons_record`.
 
 ---
 
 ## Quickstart
 
-### 1. One-Line CLI Install (Claude Code / Codex Style)
+### 1. One-Line CLI Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/kardashevproject/kardashev-cli/main/install.sh | bash
@@ -39,14 +39,14 @@ git clone https://github.com/kardashevproject/kardashev-cli.git
 cd kardashev-cli && pip install -e ".[litert]"
 ```
 
-This installs **`kardashev`**, **`ksh`**, **`agy`**, **`agy-local`**, **`kardashev-mcp`**, **`agy-local-mcp`**, and **`opencommons-mcp`** into `~/.local/bin`.
+This installs **`kardashev`**, **`ksh`**, **`kardashev-mcp`**, and **`opencommons-mcp`** into `~/.local/bin`.
 
-### 2. Integrate with Frontier Coding Agents (`Antigravity`, `Claude Code`, `Cursor`, `Codex`)
+### 2. Integrate with External Coding Agents (`Claude Code`, `Cursor`, `Codex`, `Antigravity`)
 
-Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, OpenCommons Knowledge Base, and Verification Co-Processor for frontier coding agents in one command:
+Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, OpenCommons Knowledge Base, and Verification Co-Processor for external coding agents in one command:
 
 ```bash
-kardashev integrate antigravity   # Or: claude, cursor, codex, all
+kardashev integrate all   # Or: claude, cursor, codex, antigravity
 ```
 
 ### 3. Self-Update & Global OpenCommons Sync Anytime
@@ -64,11 +64,11 @@ kardashev commons serve-hub       # Launches a multi-threaded HTTP CRDT Gossip H
 kardashev import-litert --preset gemma4-26b
 ```
 
-### 5. Launch the Interactive Kardashev Studio TUI (`kardashev` / `ksh` / `agy`)
+### 5. Launch the Interactive Kardashev Studio TUI (`kardashev` / `ksh`)
 
 ```bash
-# Launch directly with your saved user defaults (~/.config/agy-local/config.json):
-kardashev   # or: ksh / agy
+# Launch directly with your saved user defaults (~/.config/kardashev/config.json):
+kardashev   # or: ksh
 
 # Run on-device with Gemma 4 26B via LiteRT + autonomous pytest verification loop:
 kardashev chat --preset gemma4-26b --ralph "pytest -q"
@@ -80,11 +80,11 @@ kardashev chat --preset qwen3.6-35b-vllm
 
 ---
 
-## Interactive Rich TUI (`AgyRichTUI`)
+## Interactive Rich TUI (`KardashevRichTUI`)
 
-Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / `agy`) launches a state-of-the-art, keyboard-driven terminal studio (`AgyRichTUI`) featuring:
+`kardashev chat` (`ksh`) launches a keyboard-driven terminal engineering studio (`KardashevRichTUI`) featuring:
 
-- **Live Workspace, Git, Context Gauge & Ralph Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `LocalOpenAIAgentConfig`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), autonomous Ralph verification loop status, and active MCP servers.
+- **Live Workspace, Git, Context Gauge & Ralph Header**: Displays the active model, hardware backend (`LiteRT GPU/NPU` or `OpenAI Server`), git branch & dirty file counter, safety policy badge (`ALLOW-ALL`, `SANDBOX`, `ASK`), autonomous Ralph verification loop status, and active MCP servers.
 - **Real-Time Streaming with Thinking, Live Tool Results & Unified Diffs**:
   - Collapsible reasoning (`💭 Thinking`) panel streamed in real time.
   - Structured tool call timeline (`⏺ Bash(...)`, `⏺ Read(...)`, `⏺ Edit(...)`, `⏺ Write(...)`, `⏺ Grep(...)`, `⏺ ListDir(...)`) paired with live `PostToolCallHook` execution durations (`[ms]`) and result trees (`⎿ ✓ ...` / `⎿ ✗ ...`).
@@ -103,7 +103,7 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 | `/ast [query]` | Render the ranked Aider-style AST Repository Map (`classes`, `methods`, `functions`, `[start-end]` lines). |
 | `/scout <query>` | Run the Surgical Context Scout to extract ranked AST symbols and exact code slices (`<2,000 tokens`). |
 | `/commons [action]` | Manage the OpenCommons research engine (`status`, `find <query>`, `review`, `approve <id>`, `reject <id>`, `pull [url]`, `push [url]`, `seed`). |
-| `/integrate [target]` | Auto-configure `kardashev-mcp` / `agy-local-mcp` and co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
+| `/integrate [target]` | Auto-configure `kardashev-mcp` & `opencommons-mcp` and co-processor skills into `claude`, `cursor`, `codex`, `antigravity`, or `all`. |
 | `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
 | `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session (with automatic endpoint liveness check). |
 | `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`) or press `Alt+P`. |
@@ -111,9 +111,9 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 | `/checkpoint [create\|list]` | Create a named git workspace snapshot or list all turn checkpoints. |
 | `/rewind <index>` | Rewind workspace files to a numbered checkpoint from `/checkpoint list`. |
 | `/compact` | Summarize earlier turns and reset the conversation window to free context tokens. |
-| `/save [name]` / `/load [name]` | Save or restore session transcripts in `~/.local/share/agy-local/sessions/`. |
+| `/save [name]` / `/load [name]` | Save or restore session transcripts in `~/.local/share/kardashev/sessions/`. |
 | `/export [path.md]` | Export the full session transcript, thinking traces, and tool timeline to Markdown. |
-| `/config [show\|save]` | Inspect or save current session settings as persistent user defaults in `~/.config/agy-local/config.json`. |
+| `/config [show\|save]` | Inspect or save current session settings as persistent user defaults in `~/.config/kardashev/config.json`. |
 | `/update` | Self-update `kardashev-cli` in-place from GitHub `main` and refresh CLI symlinks. |
 | `/models` | Scan local disk checkpoints and probe localhost OpenAI inference endpoints. |
 | `/doctor` | Run hardware, GPU, LiteRT, OpenCommons, and MCP diagnostics inside the session. |
@@ -122,7 +122,7 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 | `/thoughts` | Toggle visibility of live reasoning/thinking traces (or press `Alt+T`). |
 | `/clear` | Clear conversation history and reset the terminal view. |
 | `/exit` | Exit the session (or press `Ctrl+D`). |
-| `@path/to/file[:start-end]` | Inline a full workspace file or exact line slice (e.g. `@src/agy_local/cli.py:1-50`). |
+| `@path/to/file[:start-end]` | Inline a full workspace file or exact line slice (e.g. `@src/kardashev_cli/cli.py:1-50`). |
 | `@git:diff` / `@git:status` | Inline live uncommitted git diff or working tree status directly into your prompt. |
 | `!<shell command>` | Execute a local shell command immediately in the workspace without invoking the model. |
 | `Alt+T` / `Alt+P` | Instant keybindings to toggle thinking traces (`Alt+T`) or cycle safety policy (`Alt+P`). |
@@ -133,16 +133,16 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 
 | Subcommand | Description |
 |---|---|
-| `kardashev` / `ksh` (`[chat]`) | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
+| `kardashev` / `ksh` (`[chat]`) | Launch the Rich Terminal UI (`KardashevRichTUI`) with full Kardashev Studio coding tools (pass `--plain` for minimal REPL). |
 | `kardashev exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
 | `kardashev scout "<query>"` | Run the AST Repo-Map & Surgical Context Scout on a workspace (`--json` and `--max-slices` supported). |
 | `kardashev commons [action]` | Query and manage the OpenCommons research engine (`status`, `find`, `record`, `review`, `approve`, `reject`, `seed`, `pull`, `push`, `serve-hub`, `mcp`). |
-| `kardashev integrate [target]` | Auto-register `kardashev-mcp` & `opencommons-mcp` into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
+| `kardashev integrate [target]` | Auto-register `kardashev-mcp` & `opencommons-mcp` into `claude`, `cursor`, `codex`, `antigravity`, or `all`. |
 | `kardashev update` (`--upgrade`) | Self-update `kardashev-cli` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
-| `kardashev config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
+| `kardashev config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/kardashev/config.json`. |
 | `kardashev completions [bash\|zsh\|fish]` | Output shell tab-completion scripts (`eval "$(kardashev completions zsh)"`). |
 | `kardashev serve` | Launch a local vLLM or Ollama server (`--model qwen3.6-35b-a3b-fp8`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
-| `kardashev mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`kardashev-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
+| `kardashev mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`kardashev-mcp`) so external agents can delegate tasks to local models at zero API cost. |
 | `kardashev presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |
 | `kardashev models` | Scan local disk (`~/.litert-lm`, `~/.cache/huggingface`, `~/models`) and probe local inference ports (`8000`, `11434`, `1234`, `30000`). |
 | `kardashev doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, `opencommons-mcp`, and active local model endpoints. |
@@ -152,11 +152,11 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 
 ## Using OpenCommons & `kardashev-mcp` from Any Agent Harness
 
-External agent harnesses (**Claude Code**, **Cursor**, **OpenAI Codex CLI**, **Windsurf**, **Cline**, **LangGraph**, or custom MCP clients) can connect to **OpenCommons** and **`kardashev-cli`** in three ways:
+External agent harnesses (**Claude Code**, **Cursor**, **OpenAI Codex CLI**, **Antigravity**, **Windsurf**, **Cline**, **LangGraph**, or custom MCP clients) can connect to **OpenCommons** and **`kardashev-cli`** in three ways:
 
 ### Option A: One-Command Automatic Registration
 ```bash
-kardashev integrate all   # Or: antigravity, claude, cursor, codex
+kardashev integrate all   # Or: claude, cursor, codex, antigravity
 ```
 This registers both **`kardashev-cli`** (`kardashev-mcp`) and standalone **`opencommons`** (`opencommons-mcp`) in your agent's `mcp.json` / `mcp_servers.json`.
 
@@ -203,10 +203,10 @@ Any self-hosted or cloud OpenCommons Hub (`kardashev commons serve-hub --port 87
 
 ```python
 import asyncio
-from agy_local import AgyRichTUI, HarnessOptions, PolicyMode
+from kardashev_cli import KardashevRichTUI, HarnessOptions, PolicyMode
 
 async def main():
-    tui = AgyRichTUI(
+    tui = KardashevRichTUI(
         HarnessOptions(
             preset="gemma4-26b",          # Or "glm4-9b-ollama", "qwen3.6-35b-vllm"
             workspaces=["."],

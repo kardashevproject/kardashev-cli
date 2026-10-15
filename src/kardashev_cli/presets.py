@@ -1,4 +1,4 @@
-"""Curated model and backend presets for agy-local."""
+"""Curated model and backend presets for kardashev-cli."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 
 class BackendKind(str, enum.Enum):
-    """Supported execution backends for the Antigravity local harness."""
+    """Supported execution backends for the Kardashev CLI agent runtime."""
 
     LITERT = "litert"
     OPENAI = "openai"

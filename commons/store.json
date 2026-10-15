@@ -3,7 +3,7 @@
     {
       "block_id": "adamw_decoupled_step@93f8dd70",
       "cid": "cid:33120d243a9513e7",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952489.9583,
       "dependencies": [],
       "dimensional_units": "w: float, g: float, m: float, v: float, lr: float, wd: float, step: int -> float",
@@ -44,7 +44,7 @@
     {
       "block_id": "bbox_iou_2d@fefbd4b3",
       "cid": "cid:57a48ed47be1a478",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705243.7793,
       "dependencies": [],
       "dimensional_units": "box_a: list[float], box_b: list[float] -> float",
@@ -80,7 +80,7 @@
     {
       "block_id": "bias_corrected_ema_step@6691cd2b",
       "cid": "cid:8055804e2d6c0fdf",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705238.9104,
       "dependencies": [],
       "dimensional_units": "prev_ema: U, sample: U, alpha: float, step: int -> U",
@@ -118,7 +118,7 @@
     {
       "block_id": "black_scholes_d1@af3518f0",
       "cid": "cid:8c6675c34017a677",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952506.1292,
       "dependencies": [],
       "dimensional_units": "spot: USD, strike: USD, rate: 1/yr, vol: 1/sqrt(yr), maturity: yr -> z_score",
@@ -157,7 +157,7 @@
     {
       "block_id": "bloom_optimal_k_and_fpr@0a3ad575",
       "cid": "cid:9361e366fc0d54f5",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705233.501,
       "dependencies": [],
       "dimensional_units": "m_bits: int, n_items: int -> tuple[int, float]",
@@ -193,7 +193,7 @@
     {
       "block_id": "box_muller_normal_pair@969fb739",
       "cid": "cid:05ccfa1b82b640ea",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705213.0261,
       "dependencies": [],
       "dimensional_units": "u1: float, u2: float -> tuple[float, float]",
@@ -229,7 +229,7 @@
     {
       "block_id": "clip_grad_l2_norm@1754970b",
       "cid": "cid:a7c340b8bf904d80",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705227.2756,
       "dependencies": [],
       "dimensional_units": "grads: list[float], max_norm: float -> list[float]",
@@ -265,7 +265,7 @@
     {
       "block_id": "cosine_warmup_lr@cd4f9d59",
       "cid": "cid:aba74dafb891858a",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952487.9304,
       "dependencies": [],
       "dimensional_units": "step: int, warmup: int, total: int, max_lr: float, min_lr: float -> float",
@@ -304,7 +304,7 @@
     {
       "block_id": "crc32_ieee_ints@75160a52",
       "cid": "cid:d8c20fa417065692",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952492.6887,
       "dependencies": [],
       "dimensional_units": "data: list[int] -> uint32",
@@ -339,7 +339,7 @@
     {
       "block_id": "exact_gelu@52f2e5fd",
       "cid": "cid:0f2c0ed9525bc853",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952510.9907,
       "dependencies": [],
       "dimensional_units": "x: float -> float",
@@ -374,7 +374,7 @@
     {
       "block_id": "exponential_backoff_delay@780a66d3",
       "cid": "cid:98c159e3e96a58f4",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952497.4475,
       "dependencies": [],
       "dimensional_units": "attempt: int, base_delay: s, max_delay: s, jitter_unit: float -> s",
@@ -412,7 +412,7 @@
     {
       "block_id": "extended_gcd@85369c71",
       "cid": "cid:feda984bf78591b2",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952507.8943,
       "dependencies": [],
       "dimensional_units": "a: int, b: int -> tuple[int, int, int]",
@@ -448,7 +448,7 @@
     {
       "block_id": "fnv1a_32_ints@e5c9e4f9",
       "cid": "cid:a589f7423673bf7f",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792060154700.6367,
       "dependencies": [],
       "dimensional_units": "data: list[int] -> uint32",
@@ -483,7 +483,7 @@
     {
       "block_id": "fnv1a_32_ints@ea57a593",
       "cid": "cid:a589f7423673bf7f",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952479.3406,
       "dependencies": [],
       "dimensional_units": "data: list[int] -> uint32",
@@ -518,7 +518,7 @@
     {
       "block_id": "hamming_window_weight@a86e64cb",
       "cid": "cid:0c39b8cc1944d7bc",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705237.62,
       "dependencies": [],
       "dimensional_units": "index: int, length: int -> float",
@@ -554,7 +554,7 @@
     {
       "block_id": "haversine_distance_km@51001b30",
       "cid": "cid:6dfcda71d358311f",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952500.98,
       "dependencies": [],
       "dimensional_units": "lat1_deg: deg, lon1_deg: deg, lat2_deg: deg, lon2_deg: deg -> km",
@@ -592,7 +592,7 @@
     {
       "block_id": "hlc_local_tick@0a693bb8",
       "cid": "cid:0d7d0da3b2327c45",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705234.5164,
       "dependencies": [],
       "dimensional_units": "l_prev: int, c_prev: int, phys_ms: int -> tuple[int, int]",
@@ -629,7 +629,7 @@
     {
       "block_id": "hlc_receive_merge@9385323f",
       "cid": "cid:fe655db78b94dc87",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705236.3718,
       "dependencies": [],
       "dimensional_units": "l_loc: int, c_loc: int, l_msg: int, c_msg: int, phys_ms: int -> tuple[int, int]",
@@ -668,7 +668,7 @@
     {
       "block_id": "horner_polynomial_eval@88bfaf83",
       "cid": "cid:119c728ca1681920",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952508.672,
       "dependencies": [],
       "dimensional_units": "coeffs: list[float], x: float -> float",
@@ -704,7 +704,7 @@
     {
       "block_id": "huber_robust_loss@80fce3fd",
       "cid": "cid:52fad944b8c516dd",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705223.9844,
       "dependencies": [],
       "dimensional_units": "y_pred: U, y_true: U, delta: U -> U^2",
@@ -741,7 +741,7 @@
     {
       "block_id": "is_prime_miller_rabin_64@81e4319f",
       "cid": "cid:7167e3ba8456715b",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705231.0576,
       "dependencies": [],
       "dimensional_units": "n: int -> bool",
@@ -776,7 +776,7 @@
     {
       "block_id": "jensen_shannon_divergence@4332202b",
       "cid": "cid:49775df8f826cf8e",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705218.5625,
       "dependencies": [],
       "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
@@ -812,7 +812,7 @@
     {
       "block_id": "kelly_optimal_fraction@f2e0c7b8",
       "cid": "cid:d8674563b73088ab",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705245.2866,
       "dependencies": [],
       "dimensional_units": "win_prob: float, net_odds: float, max_fraction: float -> float",
@@ -849,7 +849,7 @@
     {
       "block_id": "kl_divergence_smoothed@855b9f45",
       "cid": "cid:1103f39f3787822b",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705215.3733,
       "dependencies": [],
       "dimensional_units": "p_weights: list[float], q_weights: list[float] -> nats",
@@ -885,7 +885,7 @@
     {
       "block_id": "lora_adapter_scale@c7ba6241",
       "cid": "cid:cba05ca491828e92",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705225.9922,
       "dependencies": [],
       "dimensional_units": "alpha: float, rank: int, use_rslora: bool -> float",
@@ -922,7 +922,7 @@
     {
       "block_id": "maechler_log1mexp@8a98a7be",
       "cid": "cid:0493c5b6ef37f57e",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705220.8093,
       "dependencies": [],
       "dimensional_units": "x: nats -> nats",
@@ -957,7 +957,7 @@
     {
       "block_id": "modular_pow_fast@a73c35af",
       "cid": "cid:eaa6637456c87724",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705228.6555,
       "dependencies": [],
       "dimensional_units": "base: int, exp: int, mod: int -> int",
@@ -994,7 +994,7 @@
     {
       "block_id": "neumaier_compensated_sum@54e1b257",
       "cid": "cid:bd315a144fc1082e",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952480.4236,
       "dependencies": [],
       "dimensional_units": "xs: list[U] -> U",
@@ -1029,7 +1029,7 @@
     {
       "block_id": "normalized_sinc@a7ac926a",
       "cid": "cid:113f38976537e494",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705221.7214,
       "dependencies": [],
       "dimensional_units": "x: cycles -> dimensionless",
@@ -1064,7 +1064,7 @@
     {
       "block_id": "online_softmax_update@7937eddd",
       "cid": "cid:9e1393dbacaa53c4",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952483.9058,
       "dependencies": [],
       "dimensional_units": "m_old: nats, d_old: dimensionless, x: nats -> tuple[nats, dimensionless]",
@@ -1101,7 +1101,7 @@
     {
       "block_id": "pchip_monotone_slope@c119caad",
       "cid": "cid:8f593f80c1585fc7",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705223.0005,
       "dependencies": [],
       "dimensional_units": "d0: dy/dx, d1: dy/dx, h0: dx, h1: dx -> dy/dx",
@@ -1139,7 +1139,7 @@
     {
       "block_id": "rendezvous_hrw_select@7c42310c",
       "cid": "cid:f456645fbf9f7651",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952498.8708,
       "dependencies": [],
       "dimensional_units": "key: int, nodes: list[int] -> int",
@@ -1175,7 +1175,7 @@
     {
       "block_id": "rk4_damped_step@ef25c468",
       "cid": "cid:a02d8f04ba5f5981",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952491.6116,
       "dependencies": [],
       "dimensional_units": "y: U, k: 1/s, dt: s -> U",
@@ -1212,7 +1212,7 @@
     {
       "block_id": "rmsnorm_vector@1d4e9cfe",
       "cid": "cid:850229e50201fdeb",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952486.2656,
       "dependencies": [],
       "dimensional_units": "xs: list[float], eps: float -> list[float]",
@@ -1248,7 +1248,7 @@
     {
       "block_id": "rope_rotate_pair@473d295a",
       "cid": "cid:1f9e63ced635cb06",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952484.9824,
       "dependencies": [],
       "dimensional_units": "x0: float, x1: float, pos: float, freq: rad -> tuple[float, float]",
@@ -1286,7 +1286,7 @@
     {
       "block_id": "safe_cosine_similarity@4971c0f1",
       "cid": "cid:b3381d2fa15dc6e7",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952504.5693,
       "dependencies": [],
       "dimensional_units": "u: list[float], v: list[float] -> dimensionless",
@@ -1322,7 +1322,7 @@
     {
       "block_id": "safe_logit@9c10aade",
       "cid": "cid:89b1d111022c0834",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952511.8364,
       "dependencies": [],
       "dimensional_units": "p: probability -> nats",
@@ -1357,7 +1357,7 @@
     {
       "block_id": "safe_silu_swish@ebe12812",
       "cid": "cid:3b7107030990d9eb",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705225.0757,
       "dependencies": [],
       "dimensional_units": "x: float, beta: float -> float",
@@ -1393,7 +1393,7 @@
     {
       "block_id": "scaled_hypot_2d@216335d8",
       "cid": "cid:073629d392cdf32d",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705219.9136,
       "dependencies": [],
       "dimensional_units": "x: U, y: U -> U",
@@ -1429,7 +1429,7 @@
     {
       "block_id": "shannon_entropy_nats@62d454c3",
       "cid": "cid:92833b40f9811585",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952502.407,
       "dependencies": [],
       "dimensional_units": "weights: list[float] -> nats",
@@ -1464,7 +1464,7 @@
     {
       "block_id": "stable_binary_cross_entropy_with_logits@82f4f59b",
       "cid": "cid:e068268618793eba",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952481.3577,
       "dependencies": [],
       "dimensional_units": "logit: nats, target: probability -> nats",
@@ -1500,7 +1500,7 @@
     {
       "block_id": "stable_logsumexp@a1ff1d22",
       "cid": "cid:d4eb13604009c856",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952476.6396,
       "dependencies": [],
       "dimensional_units": "logits: nats -> nats",
@@ -1535,7 +1535,7 @@
     {
       "block_id": "stable_logsumexp@d19e7e05",
       "cid": "cid:d4eb13604009c856",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792060154697.522,
       "dependencies": [],
       "dimensional_units": "logits: nats -> nats",
@@ -1570,7 +1570,7 @@
     {
       "block_id": "stable_real_quadratic_roots@d95883a7",
       "cid": "cid:fcb396d4cb45045f",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952510.366,
       "dependencies": [],
       "dimensional_units": "a: float, b: float, c: float -> tuple[float, float]",
@@ -1607,7 +1607,7 @@
     {
       "block_id": "stable_sigmoid@349d307c",
       "cid": "cid:ef745a3329aee0df",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952482.233,
       "dependencies": [],
       "dimensional_units": "x: nats -> probability",
@@ -1642,7 +1642,7 @@
     {
       "block_id": "stable_softplus@f0cc652d",
       "cid": "cid:237b2ff39a67055b",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952482.8345,
       "dependencies": [],
       "dimensional_units": "x: dimensionless -> dimensionless",
@@ -1677,7 +1677,7 @@
     {
       "block_id": "symplectic_leapfrog_step@00dbeefa",
       "cid": "cid:093bf7ec3b7f4cb6",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952478.684,
       "dependencies": [],
       "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
@@ -1715,7 +1715,7 @@
     {
       "block_id": "symplectic_leapfrog_step@cdc07209",
       "cid": "cid:093bf7ec3b7f4cb6",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792060154699.8682,
       "dependencies": [],
       "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
@@ -1753,7 +1753,7 @@
     {
       "block_id": "token_bucket_step@38f0810a",
       "cid": "cid:4a0b708f9c036c32",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952496.0796,
       "dependencies": [],
       "dimensional_units": "tokens: float, cap: float, rate: 1/s, elapsed: s, cost: float -> tuple[bool, float]",
@@ -1792,7 +1792,7 @@
     {
       "block_id": "uleb128_decode@290e4368",
       "cid": "cid:6d992697cb391b36",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952494.6572,
       "dependencies": [],
       "dimensional_units": "encoded: list[int] -> int",
@@ -1827,7 +1827,7 @@
     {
       "block_id": "uleb128_encode@9fc78989",
       "cid": "cid:039fc7c80306149b",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952493.7058,
       "dependencies": [],
       "dimensional_units": "value: int -> list[int]",
@@ -1862,7 +1862,7 @@
     {
       "block_id": "welford_variance@02ad7ba4",
       "cid": "cid:f71d1b0174ca76bd",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792063952477.6948,
       "dependencies": [],
       "dimensional_units": "xs: [U] -> U^2",
@@ -1897,7 +1897,7 @@
     {
       "block_id": "welford_variance@fe73ee69",
       "cid": "cid:f71d1b0174ca76bd",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792060154698.738,
       "dependencies": [],
       "dimensional_units": "xs: [U] -> U^2",
@@ -1932,7 +1932,7 @@
     {
       "block_id": "wilson_score_interval@e349f562",
       "cid": "cid:f40495f99bfece9e",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705211.3772,
       "dependencies": [],
       "dimensional_units": "successes: int, trials: int, z: float -> tuple[float, float]",
@@ -1969,7 +1969,7 @@
     {
       "block_id": "zigzag_decode_int@a5855e58",
       "cid": "cid:f11283686558ed94",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705232.2585,
       "dependencies": [],
       "dimensional_units": "u: int -> int",
@@ -2004,7 +2004,7 @@
     {
       "block_id": "zigzag_encode_int@31be7929",
       "cid": "cid:72b3586df29d1032",
-      "contributor_agent": "agy-local",
+      "contributor_agent": "kardashev-cli",
       "created_at_ms": 1792064705231.7698,
       "dependencies": [],
       "dimensional_units": "n: int -> int",

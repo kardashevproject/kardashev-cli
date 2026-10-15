@@ -1,13 +1,13 @@
-"""JSON-RPC 2.0 MCP Co-Processor Server (`agy-local-mcp`) for Frontier & Local Coding Agents.
+"""JSON-RPC 2.0 MCP Co-Processor Server (`kardashev-mcp`) for Frontier & Local Coding Agents.
 
-Exposes 5 high-signal MCP tools so frontier agents (`Antigravity 2.0`, `Claude Code`, `Cursor`,
-`OpenAI Codex`) can offload codebase scouting, fuzzy self-healing edits, test-fix-verify loops,
-and full subagent tasks to local GPUs (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`):
+Exposes 9 high-signal MCP tools so frontier agents (`Claude Code`, `Cursor`, `OpenAI Codex`,
+`Antigravity 2.0`) can offload codebase scouting, fuzzy self-healing edits, test-fix-verify loops,
+OpenCommons knowledge discovery, and full subagent tasks to local GPUs (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`):
 
 1. `scout_codebase`: Fast AST symbol graph & surgical slice extractor (saves 60-80% frontier cloud input tokens).
 2. `apply_smart_patch`: Fault-tolerant fuzzy search-and-replace (`heal_replace_file_args`) + immediate Python AST syntax check.
 3. `verify_and_repair`: Runs a workspace verification command (`pytest`, `ruff`, etc.) locally and optionally uses the local agent to auto-repair failures.
-4. `run_local_agent_task`: Spawns a local Antigravity `Agent` with the engineered CoT + self-healing harness to execute a coding subtask at zero cloud API cost.
+4. `run_local_agent_task`: Spawns a local Kardashev Studio `Agent` with the engineered CoT + self-healing harness to execute a coding subtask at zero cloud API cost.
 5. `list_local_models`: Lists available presets, discovered local checkpoints, and live localhost servers.
 """
 
@@ -23,11 +23,11 @@ from typing import Any
 
 from google.antigravity import Agent
 
-from agy_local.ast_map import scout_workspace
-from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
-from agy_local.discovery import discover_local_models, probe_local_endpoints
-from agy_local.harness_hooks import check_python_syntax, heal_replace_file_args
-from agy_local.presets import list_presets
+from kardashev_cli.ast_map import scout_workspace
+from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
+from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
+from kardashev_cli.harness_hooks import check_python_syntax, heal_replace_file_args
+from kardashev_cli.presets import list_presets
 
 MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
@@ -127,7 +127,7 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "run_local_agent_task",
         "description": (
-            "Delegate a coding/research task to a local on-device Antigravity agent "
+            "Delegate a coding/research task to a local on-device Kardashev Studio agent "
             "(LiteRT Gemma 4, GLM-4, Qwen3) with AST Repo-Map & Self-Healing Edits at zero API cost."
         ),
         "inputSchema": {
@@ -459,8 +459,8 @@ async def _execute_local_agent_async(
     tool_calls_executed: list[str] = []
     chunks: list[str] = []
 
-    from agy_local.ast_map import build_turn_zero_context
-    from agy_local.harness_hooks import get_harness_telemetry
+    from kardashev_cli.ast_map import build_turn_zero_context
+    from kardashev_cli.harness_hooks import get_harness_telemetry
 
     effective_prompt = prompt
     if opts.enable_ast_repo_map:
@@ -575,19 +575,19 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
             elif tool_name == "list_local_models":
                 res = list_local_models()
             elif tool_name in ("commons_find", "find"):
-                from agy_local.opencommons import execute_commons_find
+                from kardashev_cli.opencommons import execute_commons_find
 
                 res = execute_commons_find(args)
             elif tool_name in ("commons_record", "record"):
-                from agy_local.opencommons import execute_commons_record
+                from kardashev_cli.opencommons import execute_commons_record
 
                 res = execute_commons_record(args)
             elif tool_name in ("commons_sync", "sync"):
-                from agy_local.opencommons import execute_commons_sync
+                from kardashev_cli.opencommons import execute_commons_sync
 
                 res = execute_commons_sync(args)
             elif tool_name in ("commons_status", "status"):
-                from agy_local.opencommons import execute_commons_status
+                from kardashev_cli.opencommons import execute_commons_status
 
                 res = execute_commons_status()
             else:

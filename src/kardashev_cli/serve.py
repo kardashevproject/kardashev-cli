@@ -1,4 +1,4 @@
-"""Local vLLM & Ollama launcher (`agy-local serve`) with ChronosML Roofline & VRAM auto-tuning."""
+"""Local vLLM & Ollama launcher (`kardashev serve`) with ChronosML Roofline & VRAM auto-tuning."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import subprocess
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from agy_local.presets import BackendKind, get_preset
+from kardashev_cli.presets import BackendKind, get_preset
 
 
 @dataclass(frozen=True)
@@ -128,13 +128,13 @@ def _resolve_local_model_target(model_or_name: str) -> tuple[str, float | None]:
     if os.path.exists(expanded):
         from pathlib import Path
 
-        from agy_local.discovery import _dir_size_and_has_weights
+        from kardashev_cli.discovery import _dir_size_and_has_weights
 
         sz_bytes, _ = _dir_size_and_has_weights(Path(expanded))
         sz_gb = round(sz_bytes / (1024**3), 2) if sz_bytes > 0 else None
         return (os.path.abspath(expanded), sz_gb)
 
-    from agy_local.discovery import discover_local_models
+    from kardashev_cli.discovery import discover_local_models
 
     for dm in discover_local_models():
         if dm.name.lower() == model_or_name.lower() or dm.name.lower().endswith(f"/{model_or_name.lower()}"):

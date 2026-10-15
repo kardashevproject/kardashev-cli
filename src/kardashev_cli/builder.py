@@ -1,4 +1,4 @@
-"""Declarative builder for Google Antigravity local agent configurations."""
+"""Declarative builder for Kardashev CLI local agent configurations."""
 
 from __future__ import annotations
 
@@ -19,13 +19,13 @@ from google.antigravity import (
 )
 from google.antigravity.hooks import policy
 
-from agy_local.harness_hooks import (
+from kardashev_cli.harness_hooks import (
     SUPER_INTELLIGENCE_COT_PROMPT,
     ActionableToolErrorHook,
     SelfHealingEditHook,
     SyntaxGatePostToolHook,
 )
-from agy_local.presets import BackendKind, get_preset
+from kardashev_cli.presets import BackendKind, get_preset
 
 
 class PolicyMode(str, enum.Enum):
@@ -38,7 +38,7 @@ class PolicyMode(str, enum.Enum):
 
 @dataclass
 class HarnessOptions:
-    """Configuration options for building an Antigravity local agent harness."""
+    """Configuration options for building a Kardashev CLI agent runtime."""
 
     preset: str | None = None
     backend: BackendKind | str | None = None
@@ -84,7 +84,7 @@ def commons_find(
     """Search the OpenCommons Concept Commons for verified scientific/algorithmic building blocks and refuted pitfalls."""
     import json as _json
 
-    from agy_local.opencommons import execute_commons_find
+    from kardashev_cli.opencommons import execute_commons_find
 
     res = execute_commons_find({"query": query, "modality": modality, "top_k": top_k})
     return _json.dumps(res, indent=2)
@@ -104,7 +104,7 @@ def commons_record(
     """Contribute a verified Python function to OpenCommons (runs 16-probe behavioral fingerprinting & 5-gate peer review; auto-commits if all gates pass or stages in the pending review queue) or report a counterexample."""
     import json as _json
 
-    from agy_local.opencommons import execute_commons_record
+    from kardashev_cli.opencommons import execute_commons_record
 
     args: dict[str, Any] = {
         "source_code": source_code,
@@ -150,7 +150,7 @@ def _build_mcp_servers(options: HarnessOptions) -> list[types.McpServerConfig]:
                 types.McpStdioServer(
                     name="opencommons",
                     command=_sys.executable,
-                    args=["-m", "agy_local.opencommons"],
+                    args=["-m", "kardashev_cli.opencommons"],
                 )
             )
     for name, command, args in options.extra_mcp_stdio:

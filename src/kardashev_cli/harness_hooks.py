@@ -1,8 +1,7 @@
 """Engineered Agentic Harness Hooks: CoT Reasoning Protocol, Self-Healing Fuzzy Edits & Loop Breaker.
 
-Transforms the vanilla Antigravity `localharness` into a state-of-the-art cognitive & execution
-harness engineered for both local open-weight models (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`) and
-hybrid frontier co-processing:
+Powers the Kardashev Studio cognitive & execution harness engineered for both local open-weight
+models (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`) and hybrid frontier co-processing:
 
 1. **Super-Intelligent CoT Reasoning Protocol (`SUPER_INTELLIGENCE_COT_PROMPT`)**:
    - Enforces structured 4-stage reasoning (`[1. LOCATE]` -> `[2. INVARIANTS]` -> `[3. SURGICAL EDIT]`
@@ -42,12 +41,12 @@ from typing import Any
 from google.antigravity import types
 from google.antigravity.hooks import hooks as hooks_mod
 
-from agy_local.ast_map import parse_python_symbols
+from kardashev_cli.ast_map import parse_python_symbols
 
 SUPER_INTELLIGENCE_COT_PROMPT = """\
 <kardashev_cognitive_harness>
-You are operating inside the Kardashev Project's engineered Antigravity harness with AST Repo-Map
-awareness, Self-Healing Edit verification, and the OpenCommons Concept Commons research engine.
+You are operating inside the Kardashev Project's Kardashev Studio autonomous engineering harness with
+AST Repo-Map awareness, Self-Healing Edit verification, and the OpenCommons Concept Commons research engine.
 For every coding, debugging, or scientific task, follow this strict 4-phase cognitive protocol
 inside your reasoning trace before invoking tools:
 
@@ -408,10 +407,10 @@ class SyntaxGatePostToolHook(hooks_mod.PostToolCallHook):
             import contextlib
 
             with contextlib.suppress(Exception):
-                from agy_local.opencommons import extract_candidate_functions_from_source
+                from kardashev_cli.opencommons import extract_candidate_functions_from_source
 
                 src = Path(last_file).read_text(encoding="utf-8")
-                extract_candidate_functions_from_source(src, contributor_agent="agy-local-hook")
+                extract_candidate_functions_from_source(src, contributor_agent="kardashev-hook")
 
 
 class ActionableToolErrorHook(hooks_mod.OnToolErrorHook):

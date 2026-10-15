@@ -1,4 +1,4 @@
-"""Unit tests for agy-local presets, discovery, builder, and CLI."""
+"""Unit tests for kardashev-cli presets, discovery, builder, TUI, and CLI."""
 
 from __future__ import annotations
 
@@ -8,13 +8,18 @@ from pathlib import Path
 import pytest
 from google.antigravity import LiteRTAgentConfig, LocalOpenAIAgentConfig
 
-from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
-from agy_local.cli import main
-from agy_local.discovery import discover_local_models
-from agy_local.mcp_server import handle_mcp_request
-from agy_local.presets import BackendKind, get_preset, list_presets
-from agy_local.serve import compute_serve_plan
-from agy_local.tui import AgyCompleter, AgyRichTUI, expand_at_file_mentions, format_tool_badge
+from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
+from kardashev_cli.cli import main
+from kardashev_cli.discovery import discover_local_models
+from kardashev_cli.mcp_server import handle_mcp_request
+from kardashev_cli.presets import BackendKind, get_preset, list_presets
+from kardashev_cli.serve import compute_serve_plan
+from kardashev_cli.tui import (
+    KardashevCompleter,
+    KardashevRichTUI,
+    expand_at_file_mentions,
+    format_tool_badge,
+)
 
 
 def test_list_and_get_presets() -> None:
@@ -230,7 +235,7 @@ def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
     assert "print('hi')" in augmented
 
     # 3. Test slash & @file tab completion
-    completer = AgyCompleter(str(tmp_path))
+    completer = KardashevCompleter(str(tmp_path))
     slash_completions = [
         c.text for c in completer.get_completions(Document("/pre", cursor_position=4), None)
     ]
@@ -243,10 +248,11 @@ def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
 
     # 4. Test welcome banner rendering
     opts = HarnessOptions(preset="gemma4-26b", workspaces=[str(tmp_path)])
-    tui = AgyRichTUI(options=opts)
+    tui = KardashevRichTUI(options=opts)
     cfg = build_agent_config(opts)
     panel = tui.render_welcome_banner(cfg)
     assert panel is not None
+    assert "Kardashev Studio" in str(panel.title)
 
 
 def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
@@ -256,8 +262,8 @@ def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
     from google.antigravity import types
     from google.antigravity.hooks import hooks as hooks_mod
 
-    import agy_local.tui as tui_mod
-    from agy_local.tui import (
+    import kardashev_cli.tui as tui_mod
+    from kardashev_cli.tui import (
         RalphVerifyStopHook,
         ToolEventRecord,
         TurnTranscript,
@@ -293,7 +299,7 @@ def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
 
     # 3. Test PostToolCallHook result recording & context gauge
     opts = HarnessOptions(preset="gemma4-26b", workspaces=[str(tmp_path)])
-    tui = AgyRichTUI(options=opts)
+    tui = KardashevRichTUI(options=opts)
     tui._active_turn_tools.append(
         ToolEventRecord(call_id="tc-1", name="view_file", badge="Read", summary="code.py")
     )
@@ -358,7 +364,7 @@ def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
 def test_cli_updater_config_and_completions(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from agy_local.updater import UserConfig, detect_install_layout, generate_shell_completion
+    from kardashev_cli.updater import UserConfig, detect_install_layout, generate_shell_completion
 
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
@@ -379,18 +385,18 @@ def test_cli_updater_config_and_completions(
     # 2. Shell completions
     for sh in ("bash", "zsh", "fish"):
         script = generate_shell_completion(sh)
-        assert "agy-local" in script
+        assert "kardashev" in script
         assert "gemma4-26b" in script
 
     assert main(["completions", "zsh"]) == 0
-    assert "#compdef kardashev ksh agy-local agy" in capsys.readouterr().out
+    assert "#compdef kardashev ksh" in capsys.readouterr().out
 
     # 3. Install layout & --version
     mode, root = detect_install_layout()
     assert mode in ("git-editable", "managed-venv", "pip")
     assert root is not None
     assert main(["--version"]) == 0
-    assert "agy-local 0.2.0" in capsys.readouterr().out
+    assert "kardashev 0.2.0" in capsys.readouterr().out
 
 
 def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
@@ -400,14 +406,14 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     from google.antigravity import types
     from google.antigravity.hooks import hooks as hooks_mod
 
-    from agy_local.ast_map import parse_python_symbols, render_compact_repo_map, scout_workspace
-    from agy_local.harness_hooks import (
+    from kardashev_cli.ast_map import parse_python_symbols, render_compact_repo_map, scout_workspace
+    from kardashev_cli.harness_hooks import (
         SelfHealingEditHook,
         get_harness_telemetry,
         heal_replace_file_args,
         reset_harness_telemetry,
     )
-    from agy_local.integrate import integrate_frontier_agent
+    from kardashev_cli.integrate import integrate_frontier_agent
 
     # 1. AST Repo-Map & Scout
     py_file = tmp_path / "engine.py"
@@ -507,7 +513,7 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     assert healed_dup["StartLine"] == 16
 
     # Turn-0 context builder (AST Repo-Map + high-confidence surgical code slices)
-    from agy_local.ast_map import build_turn_zero_context
+    from kardashev_cli.ast_map import build_turn_zero_context
 
     ctx_block, n_files, n_syms, n_slices = build_turn_zero_context(
         tmp_path, "dispatch_packet QuantumRouter"
@@ -557,7 +563,7 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     # 5. C++ Dawn/WebGPU stderr filter
     import os
 
-    from agy_local.tui import suppress_noisy_cpp_stderr
+    from kardashev_cli.tui import suppress_noisy_cpp_stderr
 
     with suppress_noisy_cpp_stderr():
         os.write(
@@ -567,10 +573,10 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
 
 
 def test_opencommons_research_engine_and_agent_participation(tmp_path: Path) -> None:
-    from agy_local.cli import main as cli_main
-    from agy_local.harness_hooks import get_harness_telemetry, reset_harness_telemetry
-    from agy_local.mcp_server import handle_mcp_request
-    from agy_local.opencommons import (
+    from kardashev_cli.cli import main as cli_main
+    from kardashev_cli.harness_hooks import get_harness_telemetry, reset_harness_telemetry
+    from kardashev_cli.mcp_server import handle_mcp_request
+    from kardashev_cli.opencommons import (
         approve_pending_proposal,
         build_turn_zero_commons_context,
         execute_commons_find,
@@ -717,13 +723,13 @@ def trojan_cube(n: int) -> int:
     assert quarantined is True
     assert b_trojan.block_id in store.quarantined_ids
 
-    # 8. Test both `opencommons-mcp` and `agy-local-mcp` JSON-RPC 2.0 tool calls
+    # 8. Test both `opencommons-mcp` and `kardashev-mcp` JSON-RPC 2.0 tool calls
     oc_init = handle_opencommons_mcp_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"}, store_path=store_file)
     assert oc_init is not None and oc_init["result"]["serverInfo"]["name"] == "opencommons-mcp"
 
-    agy_tools = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-    assert agy_tools is not None
-    t_names = [t["name"] for t in agy_tools["result"]["tools"]]
+    ksh_tools = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert ksh_tools is not None
+    t_names = [t["name"] for t in ksh_tools["result"]["tools"]]
     assert "commons_find" in t_names
     assert "commons_record" in t_names
 
@@ -738,8 +744,8 @@ def test_opencommons_zero_trust_sandbox_and_network_gossip_hub(tmp_path: Path) -
     import pytest
     from rich.console import Console
 
-    from agy_local.builder import HarnessOptions, build_agent_config
-    from agy_local.opencommons import (
+    from kardashev_cli.builder import HarnessOptions, build_agent_config
+    from kardashev_cli.opencommons import (
         UnsafeConceptCodeError,
         create_opencommons_hub_server,
         execute_commons_record,
@@ -748,7 +754,7 @@ def test_opencommons_zero_trust_sandbox_and_network_gossip_hub(tmp_path: Path) -
         push_to_remote_hub,
         verify_ast_safety_static,
     )
-    from agy_local.tui import AgyRichTUI
+    from kardashev_cli.tui import KardashevRichTUI
 
     # 1. Layer-1 Static AST Capability Sandbox blocks imports, dunders, and forbidden calls
     with pytest.raises(UnsafeConceptCodeError, match="Import statements"):
@@ -847,7 +853,7 @@ def kahan_compensated_sum(values: list) -> float:
     buf_console = Console(record=True, width=100)
     opts = HarnessOptions(backend="openai", model="qwen3.6-35b-a3b-fp8", base_url="http://127.0.0.1:59999/v1")
     cfg = build_agent_config(opts)
-    tui = AgyRichTUI(options=opts, console=buf_console)
+    tui = KardashevRichTUI(options=opts, console=buf_console)
     tui._render_connection_error(
         RuntimeError('Post "http://127.0.0.1:59999/v1/chat/completions": dial tcp 127.0.0.1:59999: connect: connection refused'),
         cfg,

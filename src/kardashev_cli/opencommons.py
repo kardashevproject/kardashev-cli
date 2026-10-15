@@ -1,8 +1,8 @@
-"""Native OpenCommons Research Engine & Agent Participation Harness for `agy-local`.
+"""Native OpenCommons Research Engine & Agent Participation Harness for `kardashev-cli`.
 
 Integrates The Kardashev Project's **Open-Science Concept Commons (`OpenCommons`)** directly into
-the `agy-local` cognitive harness so local open-weight models (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`)
-and connected frontier agents (`Antigravity 2.0`, `Claude Code`, `Cursor`, `Codex`) actively
+the `kardashev-cli` cognitive harness so local open-weight models (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`)
+and connected frontier agents (`Claude Code`, `Cursor`, `Codex`, `Antigravity 2.0`) actively
 retrieve verified scientific/algorithmic knowledge and contribute back new discoveries:
 
 1. **Fast Structural & Behavioral Fingerprinting (`<5ms`)**:
@@ -20,7 +20,7 @@ retrieve verified scientific/algorithmic knowledge and contribute back new disco
    - **Pending Review Queue (`~/.opencommons/pending_queue.json`)**: Uncertain, stateful, or
      domain-specific functions (or agent-proposed `PitfallWarning` updates that need human
      inspection) are staged in the pending review queue for `/commons review`,
-     `agy commons approve <id>`, or `agy commons reject <id>`.
+     `kardashev commons approve <id>`, or `kardashev commons reject <id>`.
 4. **Monotonic Counterexample Ratchet**:
    - When an agent discovers an unprobed $(K+1)$-th input $x_{K+1}$ that breaks an existing
      `ConceptBlock`, `report_counterexample` verifies the failure, permanently quarantines the
@@ -919,7 +919,7 @@ class ConceptBlock:
     teleological_intent: str = ""
     dimensional_units: str = ""
     trust_tier: TrustTier = "probe_verified"
-    contributor_agent: str = "agy-local"
+    contributor_agent: str = "kardashev-cli"
     wave: int = 1
     created_at_ms: float = field(default_factory=lambda: time.time() * 1000.0)
 
@@ -1034,7 +1034,7 @@ class OpenCommonsStore:
         pitfalls: tuple[PitfallWarning, ...] = (),
         teleological_intent: str = "",
         dimensional_units: str = "",
-        contributor_agent: str = "agy-local",
+        contributor_agent: str = "kardashev-cli",
         wave: int = 1,
         run_peer_review: bool = False,
         contract_io: list[tuple[tuple[Any, ...], Any]] | None = None,
@@ -2865,7 +2865,7 @@ def deserialize_block(data: dict[str, Any]) -> ConceptBlock:
         teleological_intent=data.get("teleological_intent", ""),
         dimensional_units=data.get("dimensional_units", ""),
         trust_tier=data.get("trust_tier", "probe_verified"),
-        contributor_agent=data.get("contributor_agent", "agy-local"),
+        contributor_agent=data.get("contributor_agent", "kardashev-cli"),
         wave=int(data.get("wave", 1)),
         created_at_ms=float(data.get("created_at_ms", 0.0)),
     )
@@ -3746,7 +3746,7 @@ def execute_commons_record(
         `pending_queue.json` (`status="queued_for_review"`) so the user can inspect via `/commons review`.
       - Fails due to degenerate constant output or silent caller mutation -> Quarantined (`status="quarantined"`).
     """
-    from agy_local.harness_hooks import get_harness_telemetry
+    from kardashev_cli.harness_hooks import get_harness_telemetry
 
     store = load_persistent_store(store_path)
     htel = get_harness_telemetry()
@@ -3785,7 +3785,7 @@ def execute_commons_record(
     pseudocode = str(arguments.get("pseudocode", ""))
     teleological_intent = str(arguments.get("teleological_intent", ""))
     dimensional_units = str(arguments.get("dimensional_units", ""))
-    contributor = str(arguments.get("contributor_agent", "agy-local"))
+    contributor = str(arguments.get("contributor_agent", "kardashev-cli"))
     require_review = bool(arguments.get("require_human_review", False))
 
     pitfalls_raw = arguments.get("pitfalls") or []
@@ -3945,7 +3945,7 @@ def extract_candidate_functions_from_source(
     source_code: str,
     *,
     domain: str = "workspace_discovery",
-    contributor_agent: str = "agy-local-auto",
+    contributor_agent: str = "kardashev-auto",
     store_path: Path | str | None = None,
     pending_path: Path | str | None = None,
 ) -> list[dict[str, Any]]:

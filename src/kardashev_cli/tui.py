@@ -1,7 +1,7 @@
-"""Rich Terminal UI (TUI) for agy-local inspired by Claude Code & OpenAI Codex CLI.
+"""Rich Terminal UI (TUI) for Kardashev CLI (`kardashev` / `ksh`).
 
-State-of-the-art interactive agent harness featuring:
-- Claude Code / Codex style header card with live workspace, git branch & dirty counter,
+State-of-the-art interactive autonomous engineering & scientific studio featuring:
+- Kardashev Studio header card with live workspace, git branch & dirty counter,
   active model & backend, safety policy badge, autonomous Ralph loop status, and MCP indicators.
 - Real-time Rich `Live` streaming:
   - Collapsible/dimmed reasoning (`💭 Thinking`) panel.
@@ -17,7 +17,7 @@ State-of-the-art interactive agent harness featuring:
     finishes a turn; if verification fails, feeds the failure output back into the model to
     self-repair up to `max_iterations`.
 - Session Persistence & Export (`/save`, `/load`, `/export`, `/compact`):
-  - Save/restore session transcripts & state in `~/.local/share/agy-local/sessions/` or export
+  - Save/restore session transcripts & state in `~/.local/share/kardashev/sessions/` or export
     clean Markdown reports.
 - Interactive `prompt_toolkit` prompt with keybindings (`Alt+T` toggle thoughts, `Alt+P` cycle
   policy), `/slash` command & sub-argument tab completion, `@file:start-end` & `@git:diff`
@@ -59,13 +59,13 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from agy_local.ast_map import build_workspace_index, render_compact_repo_map, scout_workspace
-from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
-from agy_local.discovery import discover_local_models, probe_local_endpoints
-from agy_local.harness_hooks import get_harness_telemetry
-from agy_local.integrate import integrate_frontier_agent
-from agy_local.presets import PRESETS, BackendKind, list_presets
-from agy_local.updater import UserConfig, check_for_updates, perform_self_update
+from kardashev_cli.ast_map import build_workspace_index, render_compact_repo_map, scout_workspace
+from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
+from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
+from kardashev_cli.harness_hooks import get_harness_telemetry
+from kardashev_cli.integrate import integrate_frontier_agent
+from kardashev_cli.presets import PRESETS, BackendKind, list_presets
+from kardashev_cli.updater import UserConfig, check_for_updates, perform_self_update
 
 _NOISY_STDERR_SUBSTRINGS: tuple[str, ...] = (
     "maxDynamicUniformBuffersPerPipelineLayout artificially reduced",
@@ -140,7 +140,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/save": "Save session transcript and metadata (/save \\[name])",
     "/load": "Load and resume a saved session (/load <name>)",
     "/export": "Export full conversation & tool trace to a Markdown file (/export \\[path.md])",
-    "/config": "View or save persistent user defaults in ~/.config/agy-local/config.json",
+    "/config": "View or save persistent user defaults in ~/.config/kardashev/config.json",
     "/update": "Self-update kardashev-cli from GitHub main and refresh ~/.local/bin symlinks",
     "/models": "Scan local disk checkpoints and probe localhost OpenAI servers",
     "/doctor": "Run hardware, GPU, LiteRT, and MCP diagnostics",
@@ -197,7 +197,7 @@ class TurnTranscript:
 
 
 # Module-level active TUI pointer used by stateless SDK hooks (avoids pickling RLock on Console).
-_ACTIVE_TUI: AgyRichTUI | None = None
+_ACTIVE_TUI: KardashevRichTUI | None = None
 
 
 def _git_branch_and_dirty(workspace: str) -> tuple[str | None, int]:
@@ -230,7 +230,7 @@ def create_git_checkpoint(workspace: str, index: int, turn: int, label: str) -> 
     """Creates a non-destructive git snapshot OID (via `git stash create` or `HEAD`) for `/rewind`."""
     try:
         stash_proc = subprocess.run(
-            ["git", "-C", workspace, "stash", "create", f"agy-local-checkpoint-{index}"],
+            ["git", "-C", workspace, "stash", "create", f"kardashev-checkpoint-{index}"],
             capture_output=True,
             text=True,
             timeout=3.0,
@@ -379,7 +379,7 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
                 pass
             continue
 
-        # Parse optional :start-end line range (e.g. @src/agy_local/cli.py:10-45)
+        # Parse optional :start-end line range (e.g. @src/kardashev_cli/cli.py:10-45)
         line_start: int | None = None
         line_end: int | None = None
         m = re.match(r"^(.+?):(\d+)(?:-(\d+))?$", raw_spec)
@@ -421,7 +421,7 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
     return augmented, attached_files
 
 
-class AgyCompleter(Completer):
+class KardashevCompleter(Completer):
     """Provides tab completion for `/slash` commands, presets, policies, and `@file` / `@git:` mentions."""
 
     def __init__(self, workspace: str) -> None:
@@ -649,8 +649,8 @@ def render_context_gauge(used_tokens: int, limit_tokens: int, width: int = 16) -
     return f"[{color}]{bar}[/{color}] {pct * 100:.1f}%"
 
 
-class AgyRichTUI:
-    """Claude Code & OpenAI Codex inspired interactive TUI session manager."""
+class KardashevRichTUI:
+    """Kardashev Studio interactive TUI session manager."""
 
     def __init__(
         self,
@@ -700,7 +700,6 @@ class AgyRichTUI:
         )
 
     def _active_model_summary(self, cfg: Any) -> tuple[str, str, int]:
-        cls_name = type(cfg).__name__
         compaction = getattr(cfg, "compaction_config", None)
         ctx_limit = getattr(compaction, "token_threshold", None) or 40960
         if hasattr(cfg, "model_path"):
@@ -715,10 +714,10 @@ class AgyRichTUI:
             return (model_short or "litert", f"LiteRT ({dev}{spec})", ctx_limit)
         model_name = str(getattr(cfg, "model", "openai-model"))
         base_url = str(getattr(cfg, "base_url", "http://127.0.0.1:8000/v1"))
-        return (model_name, f"{cls_name} @ {base_url}", ctx_limit)
+        return (model_name, f"OpenAI Server @ {base_url}", ctx_limit)
 
     def render_welcome_banner(self, cfg: Any) -> Panel:
-        """Builds the Claude Code / Codex style welcome status card."""
+        """Builds the Kardashev Studio welcome status card."""
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
         branch, dirty = _git_branch_and_dirty(workspace)
         model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
@@ -777,8 +776,8 @@ class AgyRichTUI:
 
         return Panel(
             grid,
-            title="[bold bright_white]✦ Kardashev CLI · Local & Distributed Agent Studio[/bold bright_white] [dim](kardashev / ksh / agy v0.2.0)[/dim]",
-            subtitle="[dim]The Kardashev Project · Engineered AST, CoT, OpenCommons & Self-Healing Harness[/dim]",
+            title="[bold bright_white]✦ Kardashev Studio[/bold bright_white] [dim](kardashev v0.2.0)[/dim]",
+            subtitle="[dim]The Kardashev Project · Autonomous AST, CoT, OpenCommons & Self-Healing Engine[/dim]",
             border_style="bright_blue",
             padding=(0, 1),
         )
@@ -857,7 +856,7 @@ class AgyRichTUI:
         )
 
     def _sessions_dir(self) -> Path:
-        d = Path.home() / ".local" / "share" / "agy-local" / "sessions"
+        d = Path.home() / ".local" / "share" / "kardashev" / "sessions"
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -865,7 +864,7 @@ class AgyRichTUI:
         """Exports the current session transcript and tool trace to a Markdown report."""
         model_label, backend_label, _ = self._active_model_summary(cfg)
         lines = [
-            f"# Antigravity Local Studio Session (`{model_label}`)",
+            f"# Kardashev Studio Session (`{model_label}`)",
             "",
             f"- **Backend**: `{backend_label}`",
             f"- **Turns**: {self.session_turns}",
@@ -1103,7 +1102,7 @@ class AgyRichTUI:
             if not args:
                 files = sorted(self._sessions_dir().glob("*.json"))
                 if not files:
-                    self.console.print("[dim]No saved sessions found in ~/.local/share/agy-local/sessions/[/dim]")
+                    self.console.print("[dim]No saved sessions found in ~/.local/share/kardashev/sessions/[/dim]")
                     return False
                 tbl = Table(title="Saved Sessions", border_style="cyan")
                 tbl.add_column("Session File", style="bold cyan")
@@ -1127,7 +1126,7 @@ class AgyRichTUI:
             return False
 
         if cmd == "/export":
-            out_name = args[0] if args else f"agy-session-{int(time.time())}.md"
+            out_name = args[0] if args else f"kardashev-session-{int(time.time())}.md"
             target = Path(workspace) / out_name if not os.path.isabs(out_name) else Path(out_name)
             self.export_markdown(target, cfg)
             self.console.print(f"[green]✓ Exported Markdown session report to {target}[/green]")
@@ -1161,7 +1160,7 @@ class AgyRichTUI:
                 return False
             preset_obj = PRESETS[target_key]
             if preset_obj.backend == BackendKind.OPENAI:
-                from agy_local.discovery import probe_endpoint
+                from kardashev_cli.discovery import probe_endpoint
 
                 ep = await asyncio.to_thread(probe_endpoint, preset_obj.default_base_url, preset_obj.key, 0.8)
                 if not ep.reachable and "--force" not in args:
@@ -1227,7 +1226,7 @@ class AgyRichTUI:
                 return True
 
             target_url = args[1] if len(args) > 1 else (self.options.base_url or "http://127.0.0.1:8000/v1")
-            from agy_local.discovery import probe_endpoint
+            from kardashev_cli.discovery import probe_endpoint
 
             ep = await asyncio.to_thread(probe_endpoint, target_url, "Target Endpoint", 0.8)
             if not ep.reachable:
@@ -1292,7 +1291,7 @@ class AgyRichTUI:
             return False
 
         if cmd == "/doctor":
-            from agy_local.cli import _cmd_doctor
+            from kardashev_cli.cli import _cmd_doctor
 
             class _DummyArgs:
                 json = False
@@ -1418,7 +1417,7 @@ class AgyRichTUI:
             return False
 
         if cmd == "/commons":
-            from agy_local.opencommons import (
+            from kardashev_cli.opencommons import (
                 DEFAULT_PENDING_PATH,
                 DEFAULT_STORE_PATH,
                 approve_pending_proposal,
@@ -1570,8 +1569,7 @@ class AgyRichTUI:
             return False
 
         if cmd == "/serve":
-            from agy_local.discovery import probe_endpoint
-            from agy_local.serve import compute_serve_plan
+            from kardashev_cli.serve import compute_serve_plan
 
             if not args or args[0].lower() == "status":
                 endpoints = await asyncio.to_thread(probe_local_endpoints, 0.8)
@@ -1600,7 +1598,7 @@ class AgyRichTUI:
             cleaned = [a for a in args if a not in ("--model", "-m", "--preset", "-p", "--dry-run")]
             target_m = cleaned[0] if cleaned else "qwen3.6-35b-a3b-fp8"
             plan = compute_serve_plan(model=target_m)
-            log_dir = Path.home() / ".cache" / "agy-local"
+            log_dir = Path.home() / ".cache" / "kardashev"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_file = log_dir / f"serve-{plan.served_model_name}.log"
 
@@ -1641,7 +1639,7 @@ class AgyRichTUI:
         return False
 
     async def _run_turn(self, agent: Agent, user_text: str, cfg: Any) -> None:
-        from agy_local.harness_hooks import reset_turn_tool_signatures
+        from kardashev_cli.harness_hooks import reset_turn_tool_signatures
 
         reset_turn_tool_signatures()
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
@@ -1653,7 +1651,7 @@ class AgyRichTUI:
 
         # On Turn 0, prepend query-matched OpenCommons Dual Concept Cards + AST Repo-Map + surgical slices
         if self.options.enable_opencommons and self.session_turns == 0:
-            from agy_local.opencommons import build_turn_zero_commons_context
+            from kardashev_cli.opencommons import build_turn_zero_commons_context
 
             oc_block, oc_hits = await asyncio.to_thread(build_turn_zero_commons_context, user_text)
             if oc_block and oc_hits > 0:
@@ -1664,7 +1662,7 @@ class AgyRichTUI:
                 )
 
         if self.auto_inject_ast_map and self.session_turns == 0:
-            from agy_local.ast_map import build_turn_zero_context
+            from kardashev_cli.ast_map import build_turn_zero_context
 
             ctx_block, n_files, n_syms, n_slices = await asyncio.to_thread(
                 build_turn_zero_context, workspace, user_text
@@ -1891,7 +1889,7 @@ class AgyRichTUI:
         global _ACTIVE_TUI
         _ACTIVE_TUI = self
 
-        history_path = Path.home() / ".cache" / "agy-local" / "prompt_history.txt"
+        history_path = Path.home() / ".cache" / "kardashev" / "prompt_history.txt"
         history_path.parent.mkdir(parents=True, exist_ok=True)
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
 
@@ -1906,7 +1904,7 @@ class AgyRichTUI:
         if sys.stdin.isatty():
             prompt_session = PromptSession(
                 history=FileHistory(str(history_path)),
-                completer=AgyCompleter(workspace),
+                completer=KardashevCompleter(workspace),
                 key_bindings=self._build_key_bindings(),
                 style=pt_style,
                 complete_while_typing=False,
@@ -2007,7 +2005,7 @@ class AgyRichTUI:
                         tokens = text.split()
                         if (
                             len(tokens) >= 2
-                            and tokens[0].lower() in ("kardashev", "ksh", "agy", "agy-local")
+                            and tokens[0].lower() in ("kardashev", "ksh")
                             and tokens[1].lower()
                             in ("serve", "models", "presets", "doctor", "commons", "scout", "update", "upgrade", "integrate", "config")
                         ):

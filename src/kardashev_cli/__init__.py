@@ -1,8 +1,8 @@
-"""kardashev-cli (agy-local): Engineered local & open-weight coding agent harness with OpenCommons CRDT research."""
+"""kardashev-cli: Autonomous scientific & systems coding agent studio with OpenCommons CRDT research."""
 
 __version__ = "0.2.0"
 
-from agy_local.ast_map import (
+from kardashev_cli.ast_map import (
     FileSymbolSummary,
     ScoutResult,
     SymbolNode,
@@ -10,14 +10,14 @@ from agy_local.ast_map import (
     render_compact_repo_map,
     scout_workspace,
 )
-from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
-from agy_local.discovery import (
+from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
+from kardashev_cli.discovery import (
     DiscoveredEndpoint,
     DiscoveredModel,
     discover_local_models,
     probe_local_endpoints,
 )
-from agy_local.harness_hooks import (
+from kardashev_cli.harness_hooks import (
     SUPER_INTELLIGENCE_COT_PROMPT,
     ActionableToolErrorHook,
     HarnessTelemetry,
@@ -28,8 +28,8 @@ from agy_local.harness_hooks import (
     heal_replace_file_args,
     reset_harness_telemetry,
 )
-from agy_local.integrate import IntegrationResult, integrate_frontier_agent
-from agy_local.mcp_server import (
+from kardashev_cli.integrate import IntegrationResult, integrate_frontier_agent
+from kardashev_cli.mcp_server import (
     apply_smart_patch,
     handle_mcp_request,
     list_local_models,
@@ -37,10 +37,15 @@ from agy_local.mcp_server import (
     scout_codebase,
     verify_and_repair,
 )
-from agy_local.presets import PRESETS, BackendKind, ModelPreset, get_preset, list_presets
-from agy_local.serve import ServePlan, compute_serve_plan
-from agy_local.tui import AgyRichTUI, expand_at_file_mentions, format_tool_badge
-from agy_local.updater import (
+from kardashev_cli.presets import PRESETS, BackendKind, ModelPreset, get_preset, list_presets
+from kardashev_cli.serve import ServePlan, compute_serve_plan
+from kardashev_cli.tui import (
+    KardashevCompleter,
+    KardashevRichTUI,
+    expand_at_file_mentions,
+    format_tool_badge,
+)
+from kardashev_cli.updater import (
     UpdateStatus,
     UserConfig,
     check_for_updates,
@@ -52,7 +57,6 @@ __all__ = [
     "PRESETS",
     "SUPER_INTELLIGENCE_COT_PROMPT",
     "ActionableToolErrorHook",
-    "AgyRichTUI",
     "BackendKind",
     "DiscoveredEndpoint",
     "DiscoveredModel",
@@ -60,6 +64,8 @@ __all__ = [
     "HarnessOptions",
     "HarnessTelemetry",
     "IntegrationResult",
+    "KardashevCompleter",
+    "KardashevRichTUI",
     "ModelPreset",
     "PolicyMode",
     "ScoutResult",

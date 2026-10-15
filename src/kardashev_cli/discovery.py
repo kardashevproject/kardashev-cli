@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from agy_local.presets import BackendKind
+from kardashev_cli.presets import BackendKind
 
 DEFAULT_PROBE_ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("vLLM / SGLang (8000)", "http://127.0.0.1:8000/v1"),

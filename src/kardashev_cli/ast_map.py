@@ -1,11 +1,11 @@
-"""AST Repo-Map & Surgical Context Scout for agy-local.
+"""AST Repo-Map & Surgical Context Scout for kardashev-cli.
 
 Provides fast, zero-dependency AST & regex symbol indexing across a workspace so:
 1. Local models (`Gemma 4 26B`, `Qwen 3.6`, `GLM-4`) immediately receive exact file paths,
    class/function signatures, and line ranges (`StartLine`-`EndLine`) on Turn 1 without wasting
    5-10 turns on blind `list_dir` and `view_file` calls.
-2. Frontier coding agents (`Antigravity 2.0`, `Claude Code`, `Cursor`, `Codex`) can invoke the
-   `scout_codebase` MCP tool or `agy-local scout "<query>"` to retrieve a hyper-dense, ranked
+2. External coding agents (`Claude Code`, `Cursor`, `Codex`, `Antigravity`) can invoke the
+   `scout_codebase` MCP tool or `kardashev scout "<query>"` to retrieve a hyper-dense, ranked
    surgical context pack (`<2,000 tokens`), cutting cloud input tokens by 60-80%.
 """
 

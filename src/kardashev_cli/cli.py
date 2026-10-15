@@ -1,4 +1,4 @@
-"""CLI entrypoint for agy-local."""
+"""CLI entrypoint for Kardashev CLI (`kardashev` / `ksh`)."""
 
 from __future__ import annotations
 
@@ -14,18 +14,18 @@ from collections.abc import Sequence
 from google.antigravity import Agent
 from google.antigravity.utils.interactive import run_interactive_loop
 
-from agy_local import __version__
-from agy_local.ast_map import scout_workspace
-from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
-from agy_local.discovery import discover_local_models, probe_local_endpoints
-from agy_local.harness_hooks import get_harness_telemetry
-from agy_local.integrate import integrate_frontier_agent
-from agy_local.mcp_server import serve_stdio
-from agy_local.opencommons import load_pending_proposals, load_persistent_store
-from agy_local.presets import BackendKind, get_preset, list_presets
-from agy_local.serve import compute_serve_plan
-from agy_local.tui import AgyRichTUI
-from agy_local.updater import (
+from kardashev_cli import __version__
+from kardashev_cli.ast_map import scout_workspace
+from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
+from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
+from kardashev_cli.harness_hooks import get_harness_telemetry
+from kardashev_cli.integrate import integrate_frontier_agent
+from kardashev_cli.mcp_server import serve_stdio
+from kardashev_cli.opencommons import load_pending_proposals, load_persistent_store
+from kardashev_cli.presets import BackendKind, get_preset, list_presets
+from kardashev_cli.serve import compute_serve_plan
+from kardashev_cli.tui import KardashevRichTUI
+from kardashev_cli.updater import (
     UserConfig,
     check_for_updates,
     ensure_bin_symlinks,
@@ -36,22 +36,22 @@ from agy_local.updater import (
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="agy-local",
+        prog="kardashev",
         description=(
-            "Run the Google Antigravity coding harness with local LiteRT models "
-            "(Gemma 4 26B) or OpenAI-compatible servers (vLLM, Ollama, SGLang, LM Studio, GLM-4, Qwen)."
+            "Kardashev Studio: Autonomous scientific & engineering harness for local LiteRT models "
+            "(Gemma 4 26B), OpenAI-compatible servers (vLLM, Ollama, SGLang, GLM-4, Qwen), and OpenCommons."
         ),
     )
     parser.add_argument(
         "-V",
         "--version",
         action="store_true",
-        help="Show agy-local version and installation mode.",
+        help="Show kardashev-cli version and installation mode.",
     )
     parser.add_argument(
         "--upgrade",
         action="store_true",
-        help="Self-update agy-local from GitHub main and refresh CLI symlinks.",
+        help="Self-update kardashev-cli from GitHub main and refresh CLI symlinks.",
     )
     sub = parser.add_subparsers(dest="command")
 
@@ -132,18 +132,18 @@ def _build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--with-opencommons",
             action="store_true",
-            help="Attach the OpenCommons 2-tool MCP server (opencommons-mcp) for shared verified concept retrieval and recording.",
+            help="Attach the OpenCommons MCP server (opencommons-mcp) for shared verified concept retrieval and recording.",
         )
         p.add_argument(
             "--dry-run",
             action="store_true",
-            help="Print the resolved Antigravity AgentConfig summary and exit without launching.",
+            help="Print the resolved AgentConfig summary and exit without launching.",
         )
 
     # 1. chat (interactive Rich TUI or plain REPL)
     chat_p = sub.add_parser(
         "chat",
-        help="Launch the interactive Antigravity Studio TUI in your terminal.",
+        help="Launch the interactive Kardashev Studio TUI in your terminal.",
     )
     chat_p.add_argument(
         "--plain",
@@ -165,7 +165,7 @@ def _build_parser() -> argparse.ArgumentParser:
     # 2. exec (single-shot autonomous prompt)
     exec_p = sub.add_parser(
         "exec",
-        help="Execute a single autonomous task prompt with the full Antigravity tool harness.",
+        help="Execute a single autonomous task prompt with the full Kardashev Studio tool harness.",
     )
     exec_p.add_argument("prompt", help="Task prompt to execute.")
     exec_p.add_argument(
@@ -253,14 +253,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # 8. mcp (JSON-RPC 2.0 stdio MCP server)
     sub.add_parser(
         "mcp",
-        help="Run the agy-local JSON-RPC 2.0 stdio MCP server for zero-cost local agent delegation.",
+        help="Run the kardashev-mcp JSON-RPC 2.0 stdio MCP server for zero-cost local agent delegation.",
     )
 
-    # 9. update / upgrade (Claude Code / Codex style self-updater)
+    # 9. update / upgrade (self-updater)
     upd_p = sub.add_parser(
         "update",
         aliases=["upgrade"],
-        help="Check for updates or self-update agy-local from GitHub main.",
+        help="Check for updates or self-update kardashev-cli from GitHub main.",
     )
     upd_p.add_argument(
         "--check",
@@ -273,10 +273,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output update check status as JSON.",
     )
 
-    # 10. config (manage ~/.config/agy-local/config.json defaults)
+    # 10. config (manage ~/.config/kardashev/config.json defaults)
     cfg_p = sub.add_parser(
         "config",
-        help="View or modify persistent user defaults in ~/.config/agy-local/config.json.",
+        help="View or modify persistent user defaults in ~/.config/kardashev/config.json.",
     )
     cfg_p.add_argument(
         "action",
@@ -301,10 +301,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Target shell (default: bash).",
     )
 
-    # 12. integrate (install agy-local Co-Processor MCP & skill into frontier coding agents)
+    # 12. integrate (install Kardashev Co-Processor MCP & skill into frontier coding agents)
     int_p = sub.add_parser(
         "integrate",
-        help="Auto-configure Antigravity, Claude Code, Cursor, or Codex with the agy-local Co-Processor MCP & skill.",
+        help="Auto-configure Claude Code, Cursor, Codex, or Antigravity with the Kardashev Co-Processor MCP & skill.",
     )
     int_p.add_argument(
         "target",
@@ -431,7 +431,7 @@ async def _cmd_chat(args: argparse.Namespace) -> int:
         await run_interactive_loop(cfg)
         return 0
 
-    tui = AgyRichTUI(options=opts)
+    tui = KardashevRichTUI(options=opts)
     if getattr(args, "ralph", None):
         tui.ralph_verify_cmd = args.ralph
     tui.ralph_max_iterations = getattr(args, "ralph_max_iter", 3)
@@ -450,7 +450,7 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
 
     effective_prompt = args.prompt
     if opts.enable_ast_repo_map and opts.workspaces:
-        from agy_local.ast_map import build_turn_zero_context
+        from kardashev_cli.ast_map import build_turn_zero_context
 
         ctx_block, _n_files, _n_syms, _n_slices = build_turn_zero_context(
             opts.workspaces[0], args.prompt
@@ -463,14 +463,14 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
             )
 
     if opts.enable_opencommons:
-        from agy_local.opencommons import build_turn_zero_commons_context
+        from kardashev_cli.opencommons import build_turn_zero_commons_context
 
         oc_block, oc_hits = build_turn_zero_commons_context(args.prompt)
         if oc_block and oc_hits > 0:
             get_harness_telemetry().commons_cards_injected += oc_hits
             effective_prompt = f"{oc_block}\n\n{effective_prompt}"
 
-    from agy_local.tui import suppress_noisy_cpp_stderr
+    from kardashev_cli.tui import suppress_noisy_cpp_stderr
 
     try:
         with suppress_noisy_cpp_stderr():
@@ -633,7 +633,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         print(json.dumps(report, indent=2))
         return 0
 
-    print("=== Kardashev CLI (agy-local) Environment Doctor ===")
+    print("=== Kardashev CLI Environment Doctor ===")
     print(f"  Python interpreter   : {report['python']}")
     print(f"  litert-lm CLI        : {report['litert_lm_cli'] or 'MISSING (pip install litert-lm)'}")
     print(f"  NVIDIA GPU (CUDA)    : {'DETECTED' if report['nvidia_gpu_detected'] else 'Not found'}")
@@ -800,7 +800,7 @@ def _cmd_scout(args: argparse.Namespace) -> int:
 def _cmd_commons(args: argparse.Namespace) -> int:
     from pathlib import Path as _Path
 
-    from agy_local.opencommons import (
+    from kardashev_cli.opencommons import (
         DEFAULT_PENDING_PATH,
         DEFAULT_STORE_PATH,
         approve_pending_proposal,
@@ -848,6 +848,7 @@ def _cmd_commons(args: argparse.Namespace) -> int:
         print("  • GET  /v1/manifest  (16-bucket Merkle tree + ETag)")
         print("  • GET  /v1/store     (Full gzipped store replica)")
         print("  • POST /v1/sync      (Zero-Trust 5-gate verification + CRDT join)")
+        print("  • POST /mcp          (Streamable HTTP MCP JSON-RPC 2.0 endpoint)")
         try:
             srv.serve_forever()
         except KeyboardInterrupt:
@@ -987,7 +988,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args_list in (["-V"], ["--version"]):
         status = check_for_updates(force=False)
         sha_info = f" ({status.local_commit[:7]})" if status.local_commit else ""
-        print(f"agy-local {__version__}{sha_info} [{status.install_mode}]")
+        print(f"kardashev {__version__}{sha_info} [{status.install_mode}]")
         return 0
 
     if args_list == ["--upgrade"]:
@@ -1000,7 +1001,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if getattr(args, "version", False):
         status = check_for_updates(force=False)
         sha_info = f" ({status.local_commit[:7]})" if status.local_commit else ""
-        print(f"agy-local {__version__}{sha_info} [{status.install_mode}]")
+        print(f"kardashev {__version__}{sha_info} [{status.install_mode}]")
         return 0
 
     try:

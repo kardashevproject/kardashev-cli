@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -31,6 +32,8 @@ from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
 from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
 from kardashev_cli.harness_hooks import heal_replace_file_args
 from kardashev_cli.presets import list_presets
+
+_VERIFY_TIMEOUT_S = 120
 
 MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
@@ -460,6 +463,48 @@ def apply_smart_patch(
     }
 
 
+class _VerifyRunResult:
+    """Lightweight holder for a capped, process-group-safe verification run."""
+
+    __slots__ = ("returncode", "stderr", "stdout", "timed_out")
+
+    def __init__(self, returncode: int | None, stdout: str, stderr: str, timed_out: bool) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def _run_verify_command(
+    command: str, ws: str, timeout_s: int | None = None
+) -> _VerifyRunResult:
+    """Runs `command` in its own process group so a timeout can kill the whole tree.
+
+    Returns a structured `_VerifyRunResult` instead of raising `subprocess.TimeoutExpired`.
+    `timeout_s` defaults to the module-level `_VERIFY_TIMEOUT_S`, resolved at call time (not
+    bound as a mutable default argument) so callers/tests can override it dynamically.
+    """
+    if timeout_s is None:
+        timeout_s = _VERIFY_TIMEOUT_S
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=ws,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+        return _VerifyRunResult(proc.returncode, stdout or "", stderr or "", False)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        stdout, stderr = proc.communicate()
+        return _VerifyRunResult(None, stdout or "", stderr or "", True)
+
+
 def verify_and_repair(
     command: str = "pytest -q",
     workspace: str | None = None,
@@ -468,22 +513,24 @@ def verify_and_repair(
 ) -> dict[str, Any]:
     """MCP tool 3: `verify_and_repair` — executes verification command and compresses output."""
     ws = os.path.abspath(os.path.expanduser(workspace)) if workspace else os.getcwd()
-    proc = subprocess.run(
-        command,
-        shell=True,
-        cwd=ws,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    run = _run_verify_command(command, ws)
+    combined = ((run.stdout or "") + "\n" + (run.stderr or "")).strip()
     lines = combined.splitlines()
     tail_summary = "\n".join(lines[-35:]) if len(lines) > 35 else combined
 
-    if proc.returncode == 0:
+    if run.timed_out:
+        return {
+            "passed": False,
+            "timed_out": True,
+            "exit_code": None,
+            "command": command,
+            "failure_tail": tail_summary,
+        }
+
+    if run.returncode == 0:
         return {
             "passed": True,
+            "timed_out": False,
             "exit_code": 0,
             "command": command,
             "summary": lines[-1] if lines else "passed",
@@ -493,13 +540,14 @@ def verify_and_repair(
     if not auto_repair:
         return {
             "passed": False,
-            "exit_code": proc.returncode,
+            "timed_out": False,
+            "exit_code": run.returncode,
             "command": command,
             "failure_tail": tail_summary,
         }
 
     repair_prompt = (
-        f"The verification command `{command}` failed in `{ws}` with exit code {proc.returncode}.\n"
+        f"The verification command `{command}` failed in `{ws}` with exit code {run.returncode}.\n"
         f"Failure output:\n```\n{tail_summary}\n```\n"
         f"Diagnose the root cause, apply a minimal fix using `replace_file_content`, and re-run `{command}`."
     )
@@ -509,19 +557,23 @@ def verify_and_repair(
         workspace=ws,
         policy="allow-all",
     )
-    recheck = subprocess.run(
-        command,
-        shell=True,
-        cwd=ws,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    re_lines = ((recheck.stdout or "") + "\n" + (recheck.stderr or "")).strip().splitlines()
+    recheck = _run_verify_command(command, ws)
+    if recheck.timed_out:
+        return {
+            "passed": False,
+            "timed_out": True,
+            "initial_exit_code": run.returncode,
+            "final_exit_code": None,
+            "auto_repaired": False,
+            "repair_tool_calls": agent_res.get("tool_calls", []),
+            "repair_summary": agent_res.get("output", ""),
+        }
+    re_combined = ((recheck.stdout or "") + "\n" + (recheck.stderr or "")).strip()
+    re_lines = re_combined.splitlines()
     return {
         "passed": recheck.returncode == 0,
-        "initial_exit_code": proc.returncode,
+        "timed_out": False,
+        "initial_exit_code": run.returncode,
         "final_exit_code": recheck.returncode,
         "auto_repaired": recheck.returncode == 0,
         "repair_tool_calls": agent_res.get("tool_calls", []),

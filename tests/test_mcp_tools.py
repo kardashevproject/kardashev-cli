@@ -1,11 +1,14 @@
-"""Regression tests for `kardashev_cli.mcp_server.apply_smart_patch` correctness."""
+"""Regression tests for `kardashev_cli.mcp_server` apply_smart_patch and verify_and_repair correctness."""
 
 from __future__ import annotations
 
 import textwrap
 from pathlib import Path
 
-from kardashev_cli.mcp_server import apply_smart_patch
+import pytest
+
+from kardashev_cli import mcp_server
+from kardashev_cli.mcp_server import apply_smart_patch, verify_and_repair
 
 
 def _write_duplicate_block_file(tmp_path: Path) -> Path:
@@ -154,3 +157,36 @@ def test_apply_smart_patch_atomic_write_on_success(tmp_path: Path) -> None:
     # No leftover temp files in the directory.
     leftovers = [p for p in tmp_path.iterdir() if p.name.startswith(".simple2.py.")]
     assert leftovers == []
+
+
+# ---------------------------------------------------------------------------
+# verify_and_repair
+# ---------------------------------------------------------------------------
+
+
+def test_verify_and_repair_timeout_returns_structured_result(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Keep the test fast: shrink the timeout instead of waiting for the real 120s cap.
+    monkeypatch.setattr(mcp_server, "_VERIFY_TIMEOUT_S", 1)
+
+    res = verify_and_repair(command="sleep 5", workspace=str(tmp_path), auto_repair=False)
+
+    assert res["passed"] is False
+    assert res["timed_out"] is True
+    assert res["exit_code"] is None
+    assert "command" in res
+
+
+def test_verify_and_repair_passing_command(tmp_path: Path) -> None:
+    res = verify_and_repair(command="true", workspace=str(tmp_path), auto_repair=False)
+    assert res["passed"] is True
+    assert res["timed_out"] is False
+    assert res["exit_code"] == 0
+
+
+def test_verify_and_repair_failing_command_without_auto_repair(tmp_path: Path) -> None:
+    res = verify_and_repair(command="false", workspace=str(tmp_path), auto_repair=False)
+    assert res["passed"] is False
+    assert res["timed_out"] is False
+    assert res["exit_code"] == 1

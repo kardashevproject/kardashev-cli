@@ -64,17 +64,18 @@ class IntegrationResult:
         return asdict(self)
 
 
-def _resolve_mcp_command() -> str:
-    user_bin = Path.home() / ".local" / "bin" / "agy-local-mcp"
-    if user_bin.exists():
-        return str(user_bin)
-    which_bin = shutil.which("agy-local-mcp")
-    if which_bin:
-        return which_bin
-    venv_bin = Path(sys.executable).parent / "agy-local-mcp"
-    if venv_bin.exists():
-        return str(venv_bin)
-    return "agy-local-mcp"
+def _resolve_mcp_command(binary_name: str = "kardashev-mcp", fallback_name: str = "agy-local-mcp") -> str:
+    for name in (binary_name, fallback_name):
+        user_bin = Path.home() / ".local" / "bin" / name
+        if user_bin.exists():
+            return str(user_bin)
+        which_bin = shutil.which(name)
+        if which_bin:
+            return which_bin
+        venv_bin = Path(sys.executable).parent / name
+        if venv_bin.exists():
+            return str(venv_bin)
+    return binary_name
 
 
 def _upsert_mcp_json(config_path: Path, mcp_cmd: str, key_name: str = "mcpServers") -> None:
@@ -93,6 +94,17 @@ def _upsert_mcp_json(config_path: Path, mcp_cmd: str, key_name: str = "mcpServer
         servers = {}
         data[key_name] = servers
 
+    opencommons_cmd = _resolve_mcp_command("opencommons-mcp", "opencommons-mcp")
+
+    servers["kardashev-cli"] = {
+        "command": mcp_cmd,
+        "args": [],
+    }
+    servers["opencommons"] = {
+        "command": opencommons_cmd,
+        "args": [],
+    }
+    # Keep legacy key pointing to the same command for backwards compatibility
     servers["agy-local"] = {
         "command": mcp_cmd,
         "args": [],

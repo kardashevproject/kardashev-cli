@@ -125,7 +125,7 @@ def test_compute_serve_plan_and_cli(capsys: pytest.CaptureFixture[str]) -> None:
 def test_mcp_server_jsonrpc(tmp_path: Path) -> None:
     init_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
     assert init_resp is not None
-    assert init_resp["result"]["serverInfo"]["name"] == "agy-local"
+    assert init_resp["result"]["serverInfo"]["name"] == "kardashev-mcp"
 
     tools_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert tools_resp is not None
@@ -138,6 +138,8 @@ def test_mcp_server_jsonrpc(tmp_path: Path) -> None:
         "list_local_models",
         "commons_find",
         "commons_record",
+        "commons_sync",
+        "commons_status",
     }
 
     call_resp = handle_mcp_request(
@@ -815,6 +817,28 @@ def kahan_compensated_sum(values: list) -> float:
         assert pull_cached["ok"] is True
         assert pull_cached["up_to_date"] is True
         assert pull_cached["new_blocks_pulled"] == 0
+
+        # External agent harness connects directly to Hub's Streamable HTTP MCP endpoint (`POST /mcp`)
+        import urllib.request
+
+        mcp_req = urllib.request.Request(
+            f"{hub_url}/mcp",
+            data=json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 42,
+                    "method": "tools/call",
+                    "params": {"name": "find", "arguments": {"query": "kahan_compensated_sum"}},
+                }
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(mcp_req, timeout=5.0) as mcp_http_resp:
+            mcp_body = json.loads(mcp_http_resp.read().decode("utf-8"))
+            assert mcp_body["id"] == 42
+            assert mcp_body["result"]["isError"] is False
+            assert mcp_body["result"]["structuredContent"]["hit_count"] >= 1
     finally:
         srv.shutdown()
         srv.server_close()

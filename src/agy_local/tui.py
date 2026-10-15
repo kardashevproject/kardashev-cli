@@ -129,6 +129,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/integrate": "Install Kardashev Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
     "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset glm4-9b-ollama)",
     "/model": "Switch model ID or OpenAI base URL (e.g., /model qwen3-vl-8b http://127.0.0.1:8000/v1)",
+    "/serve": "Start or inspect a background vLLM/Ollama server (e.g., /serve qwen3.6-35b-a3b-fp8 | /serve stop)",
     "/policy": "Switch tool execution policy mode (/policy allow-all | ask | sandbox)",
     "/ralph": "Configure autonomous self-verification loop (e.g., /ralph pytest -q | /ralph off)",
     "/checkpoint": "Create or list workspace git checkpoints (/checkpoint \\[create|list])",
@@ -1167,8 +1168,8 @@ class AgyRichTUI:
                     self.console.print(
                         Panel(
                             f"[bold yellow]⚠ Preset `{target_key}` uses `{preset_obj.default_base_url}` which is currently OFFLINE.[/bold yellow]\n\n"
-                            f"• Start the server first:\n"
-                            f"  [bold green]kardashev serve --model {preset_obj.model_id}[/bold green]\n"
+                            f"• Start the server right here in the background:\n"
+                            f"  [bold green]/serve {preset_obj.model_id}[/bold green]  [dim](or in another terminal: `kardashev serve --model {preset_obj.model_id}`)[/dim]\n"
                             f"• Or stay on in-process LiteRT GPU/NPU:\n"
                             f"  [bold cyan]/preset gemma4-26b[/bold cyan]\n"
                             f"[dim](Pass `/preset {target_key} --force` to switch anyway.)[/dim]",
@@ -1243,8 +1244,8 @@ class AgyRichTUI:
                         Panel(
                             f"[bold yellow]⚠ Local inference server at `{target_url}` is currently OFFLINE.[/bold yellow]\n\n"
                             f"Model [bold cyan]{target_model}[/bold cyan] requires a running OpenAI-compatible server (vLLM / Ollama / SGLang).\n"
-                            f"• To start the server in another terminal, run:\n"
-                            f"  [bold green]kardashev serve --model {target_model}[/bold green]\n"
+                            f"• To start the server right here in the background, type:\n"
+                            f"  [bold green]/serve {target_model}[/bold green]  [dim](or in another terminal: `kardashev serve --model {target_model}`)[/dim]\n"
                             f"• Or stay on in-process LiteRT GPU/NPU (no server needed):\n"
                             f"  [bold cyan]/preset gemma4-26b[/bold cyan]",
                             title="[bold yellow]Inference Server Offline[/bold yellow]",
@@ -1566,6 +1567,74 @@ class AgyRichTUI:
                 self.console.print(tbl)
             except ValueError as exc:
                 self.console.print(f"[red]✗ {exc}[/red]")
+            return False
+
+        if cmd == "/serve":
+            from agy_local.discovery import probe_endpoint
+            from agy_local.serve import compute_serve_plan
+
+            if not args or args[0].lower() == "status":
+                endpoints = await asyncio.to_thread(probe_local_endpoints, 0.8)
+                ep_tbl = Table(title="Local Inference Server Status", border_style="bright_blue")
+                ep_tbl.add_column("Status")
+                ep_tbl.add_column("Server")
+                ep_tbl.add_column("Base URL", style="dim")
+                ep_tbl.add_column("Models")
+                for e in endpoints:
+                    badge = "[bold green]● ONLINE[/bold green]" if e.reachable else "[dim]○ OFFLINE[/dim]"
+                    ep_tbl.add_row(badge, e.label, e.base_url, ", ".join(e.models) if e.models else "—")
+                self.console.print(ep_tbl)
+                self.console.print("[dim]Usage: `/serve <model_or_preset>` to launch in background, or `/serve stop`[/dim]")
+                return False
+
+            if args[0].lower() == "stop":
+                proc_bg = getattr(self, "_bg_serve_proc", None)
+                if proc_bg is not None and proc_bg.poll() is None:
+                    proc_bg.terminate()
+                    self.console.print("[yellow]✓ Terminated background inference server.[/yellow]")
+                else:
+                    self.console.print("[dim]No background server started by this session is currently running.[/dim]")
+                return False
+
+            # Parse `/serve --model <m>` or `/serve <m>`
+            cleaned = [a for a in args if a not in ("--model", "-m", "--preset", "-p", "--dry-run")]
+            target_m = cleaned[0] if cleaned else "qwen3.6-35b-a3b-fp8"
+            plan = compute_serve_plan(model=target_m)
+            log_dir = Path.home() / ".cache" / "agy-local"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / f"serve-{plan.served_model_name}.log"
+
+            if "--dry-run" in args:
+                self.console.print(Panel(json.dumps(plan.to_dict(), indent=2), title="Serve Plan (Dry Run)", border_style="cyan"))
+                return False
+
+            self.console.print(
+                Panel(
+                    f"[bold cyan]Starting background {plan.engine} server for `{plan.served_model_name}`[/bold cyan]\n"
+                    f"  • Target Path : `{plan.model_target}`\n"
+                    f"  • Endpoint    : `http://{plan.host}:{plan.port}/v1`\n"
+                    f"  • Memory Plan : ~{plan.estimated_model_gb:.2f} GB / {plan.available_mem_gb:.2f} GB avail "
+                    f"(util={plan.gpu_memory_utilization}, max_len={plan.max_model_len})\n"
+                    f"  • Log File    : `{log_file}`\n"
+                    f"  • Command     : `{' '.join(plan.command)}`",
+                    title="[bold green]Launching Inference Server[/bold green]",
+                    border_style="green",
+                )
+            )
+            try:
+                log_fh = open(log_file, "w", encoding="utf-8")  # noqa: SIM115, ASYNC230
+                self._bg_serve_proc = subprocess.Popen(  # noqa: ASYNC220
+                    plan.command,
+                    stdout=log_fh,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                self.console.print(
+                    f"[green]✓ Background server PID {self._bg_serve_proc.pid} started![/green] "
+                    f"[dim]Monitor progress with `!tail -n 25 {log_file}` and run `/model {plan.served_model_name}` once ONLINE.[/dim]"
+                )
+            except OSError as exc:
+                self.console.print(f"[red]✗ Failed to start server: {exc}[/red]")
             return False
 
         self.console.print(f"[yellow]Unknown command '{cmd}'. Type /help for available commands.[/yellow]")
@@ -1934,7 +2003,24 @@ class AgyRichTUI:
                                     self.console.print("\n[yellow]⚡ Shell command interrupted.[/yellow]\n")
                             continue
 
-                        # Slash commands
+                        # Slash commands (or CLI commands accidentally typed inside the TUI prompt)
+                        tokens = text.split()
+                        if (
+                            len(tokens) >= 2
+                            and tokens[0].lower() in ("kardashev", "ksh", "agy", "agy-local")
+                            and tokens[1].lower()
+                            in ("serve", "models", "presets", "doctor", "commons", "scout", "update", "upgrade", "integrate", "config")
+                        ):
+                            sub_cmd = "update" if tokens[1].lower() == "upgrade" else tokens[1].lower()
+                            rewritten = f"/{sub_cmd} {' '.join(tokens[2:])}".strip()
+                            self.console.print(
+                                f"  [dim]💡 Intercepted CLI command inside TUI session -> executing `{rewritten}` directly[/dim]"
+                            )
+                            should_break = await self._handle_slash_command(rewritten, agent, cfg)
+                            if should_break:
+                                break
+                            continue
+
                         if text.startswith("/"):
                             should_break = await self._handle_slash_command(text, agent, cfg)
                             if should_break:

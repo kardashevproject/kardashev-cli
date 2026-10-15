@@ -133,34 +133,67 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `kardashev chat` (`ksh` / 
 
 | Subcommand | Description |
 |---|---|
-| `agy` / `agy-local [chat]` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
-| `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
-| `agy-local scout "<query>"` | Run the AST Repo-Map & Surgical Context Scout on a workspace (`--json` and `--max-slices` supported). |
-| `agy-local commons [action]` | Query and manage the OpenCommons research engine (`status`, `find`, `record`, `review`, `approve`, `reject`, `seed`, `sync`, `mcp`). |
-| `agy-local integrate [target]` | Auto-register `agy-local-mcp` & co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
-| `agy-local update` (`--upgrade`) | Self-update `agy-local` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
-| `agy-local config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
-| `agy-local completions [bash\|zsh\|fish]` | Output shell tab-completion scripts (`eval "$(agy-local completions zsh)"`). |
-| `agy-local serve` | Launch a local vLLM or Ollama server (`--preset qwen3.6-35b-vllm`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
-| `agy-local mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`agy-local-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
-| `agy-local presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |
-| `agy-local models` | Scan local disk (`~/.litert-lm`, `~/.cache/huggingface`, `~/models`) and probe local inference ports (`8000`, `11434`, `1234`, `30000`). |
-| `agy-local doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, `opencommons-mcp`, and active local model endpoints. |
-| `agy-local import-litert` | Download and register a LiteRT checkpoint from HuggingFace. |
+| `kardashev` / `ksh` (`[chat]`) | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
+| `kardashev exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
+| `kardashev scout "<query>"` | Run the AST Repo-Map & Surgical Context Scout on a workspace (`--json` and `--max-slices` supported). |
+| `kardashev commons [action]` | Query and manage the OpenCommons research engine (`status`, `find`, `record`, `review`, `approve`, `reject`, `seed`, `pull`, `push`, `serve-hub`, `mcp`). |
+| `kardashev integrate [target]` | Auto-register `kardashev-mcp` & `opencommons-mcp` into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
+| `kardashev update` (`--upgrade`) | Self-update `kardashev-cli` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
+| `kardashev config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
+| `kardashev completions [bash\|zsh\|fish]` | Output shell tab-completion scripts (`eval "$(kardashev completions zsh)"`). |
+| `kardashev serve` | Launch a local vLLM or Ollama server (`--model qwen3.6-35b-a3b-fp8`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
+| `kardashev mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`kardashev-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
+| `kardashev presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |
+| `kardashev models` | Scan local disk (`~/.litert-lm`, `~/.cache/huggingface`, `~/models`) and probe local inference ports (`8000`, `11434`, `1234`, `30000`). |
+| `kardashev doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, `opencommons-mcp`, and active local model endpoints. |
+| `kardashev import-litert` | Download and register a LiteRT checkpoint from HuggingFace. |
 
 ---
 
-## Frontier Agent Co-Processor MCP Server (`agy-local-mcp`)
+## Using OpenCommons & `kardashev-mcp` from Any Agent Harness
 
-Run `agy-local integrate all` (or configure `agy-local-mcp` manually) to expose 7 zero-cost local tools to **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex**:
+External agent harnesses (**Claude Code**, **Cursor**, **OpenAI Codex CLI**, **Windsurf**, **Cline**, **LangGraph**, or custom MCP clients) can connect to **OpenCommons** and **`kardashev-cli`** in three ways:
 
-| MCP Tool | Purpose for Frontier Agents |
+### Option A: One-Command Automatic Registration
+```bash
+kardashev integrate all   # Or: antigravity, claude, cursor, codex
+```
+This registers both **`kardashev-cli`** (`kardashev-mcp`) and standalone **`opencommons`** (`opencommons-mcp`) in your agent's `mcp.json` / `mcp_servers.json`.
+
+### Option B: Standalone `opencommons-mcp` (`stdio` JSON-RPC 2.0)
+Add `opencommons-mcp` to any MCP-compatible harness config:
+```json
+{
+  "mcpServers": {
+    "opencommons": {
+      "command": "opencommons-mcp",
+      "args": []
+    }
+  }
+}
+```
+Exposes 4 dedicated OpenCommons tools:
+- `find`: `<5ms` Concept Equivalence Class (`cid`) search + `<2ms` live I/O probe assertions + Dual Concept Cards & Refuted Pitfalls.
+- `record`: Submit a Python function (runs AST safety sandbox, 16-probe behavioral fingerprinting, and 5-gate adversarial peer review; auto-syncs to the OpenCommons Hub) or report a $(K+1)$-th counterexample.
+- `sync`: Bidirectional 16-bucket Merkle delta sync (`bidirectional`, `pull`, or `push`) with any OpenCommons Hub.
+- `status`: Live Merkle root hash, active `cid` count, quarantined counterexamples, and concept inventory.
+
+### Option C: Direct Streamable HTTP MCP to an OpenCommons Hub (`POST /mcp`)
+Any self-hosted or cloud OpenCommons Hub (`kardashev commons serve-hub --port 8765`) exposes a Streamable HTTP JSON-RPC 2.0 MCP endpoint at `POST /mcp` (and `/v1/mcp`), allowing zero-install remote agents to call `find`, `record`, `sync`, and `status` over HTTP.
+
+---
+
+## Full Co-Processor MCP Server (`kardashev-mcp`)
+
+| MCP Tool | Purpose for Any Agent Harness |
 |---|---|
 | `scout_codebase` | Builds a ranked AST Repository Map + surgical code slices (`<2,000 tokens`) for a natural-language or symbol query, saving 60–80% of frontier input tokens. |
 | `apply_smart_patch` | Applies a code replacement using the 3-stage self-healing fuzzy matcher (exact line-shift, indentation alignment, or $\ge 88\%$ fuzzy block match) with automatic Python AST syntax rollback. |
 | `verify_and_repair` | Runs a test/linter command (`pytest`, `ruff`, `mypy`) and returns structured failure diagnostics or invokes the local agent to repair failures. |
 | `commons_find` | Queries the persistent OpenCommons knowledge base (`~/.opencommons/store.json`) in `<5ms` by natural-language query, parameter/return types, and live `<2ms` I/O probe assertions, returning Dual Concept Cards + Refuted Pitfalls. |
-| `commons_record` | Contributes a verified Python function to OpenCommons (computing AST Merkle `sid`, 16-probe behavioral `fp/cid`, and 5-gate adversarial peer review; auto-commits if all 5 gates pass or stages in `~/.opencommons/pending_queue.json`) or reports a $(K+1)$-th input counterexample. |
+| `commons_record` | Contributes a verified Python function to OpenCommons (computing AST Merkle `sid`, 16-probe behavioral `fp/cid`, and 5-gate adversarial peer review; auto-commits and gossip-syncs if all 5 gates pass) or reports a $(K+1)$-th input counterexample. |
+| `commons_sync` | Synchronizes the local OpenCommons CRDT store (`pull`, `push`, or `bidirectional` Merkle delta sync) with the remote OpenCommons Hub. |
+| `commons_status` | Returns the live 16-bucket Merkle root hash, active Concept Equivalence Classes (`cid`s), and concept catalog. |
 | `run_local_agent_task` | Delegates boilerplate generation, docstrings, or sub-tasks to an on-device model (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama`) at zero API cost. |
 | `list_local_models` | Lists all built-in presets, discovered local checkpoints, and active localhost OpenAI inference servers. |
 

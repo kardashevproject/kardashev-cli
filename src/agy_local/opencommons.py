@@ -50,6 +50,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -544,6 +545,104 @@ class FingerprintResult:
     sample_outputs: tuple[str, ...]
 
 
+def synthesize_ast_guided_probes(source_code: str, n_probes: int = 16) -> list[tuple[Any, ...]]:
+    """Agentic AST-Guided Probe Synthesizer.
+
+    When a domain-specific function has custom preconditions (e.g., `if p <= 0 or p >= 1:` or
+    `if len(matrix) == 0:` or unannotated parameters) that cause generic probes to fail, this
+    synthesizer inspects the AST branch guards, default parameter values, and parameter names to
+    autonomously construct 16 valid domain probes without human intervention.
+    """
+    tree = ast.parse(source_code)
+    fn_nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef)]
+    if not fn_nodes:
+        return []
+    fn = fn_nodes[0]
+
+    # Collect numeric constants appearing in comparisons inside the function body
+    numeric_constants: list[float] = []
+    has_index_or_len = False
+    has_keys_or_items = False
+    for sub in ast.walk(fn):
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, (int, float)) and not isinstance(sub.value, bool):
+            val = float(sub.value)
+            if math.isfinite(val) and abs(val) < 1e9:
+                numeric_constants.append(val)
+        if isinstance(sub, ast.Subscript):
+            has_index_or_len = True
+        if isinstance(sub, ast.Attribute) and sub.attr in ("keys", "values", "items", "get"):
+            has_keys_or_items = True
+
+    # Build candidate pools per parameter using name heuristics + AST constants + default values
+    num_args = len(fn.args.args)
+    defaults_offset = num_args - len(fn.args.defaults)
+    per_param_candidates: list[list[Any]] = []
+
+    for idx, arg in enumerate(fn.args.args):
+        pname = arg.arg.lower()
+        ann = ast.unparse(arg.annotation).strip().lower() if arg.annotation is not None else "any"
+
+        default_val: Any = None
+        if idx >= defaults_offset:
+            with contextlib.suppress(Exception):
+                default_val = ast.literal_eval(fn.args.defaults[idx - defaults_offset])
+
+        if any(k in pname for k in ("prob", "rate", "alpha", "beta", "gamma", "eps", "tol", "ratio", "weight")) or (
+            isinstance(default_val, float) and 0.0 < default_val < 1.0
+        ):
+            cands: list[Any] = [0.05, 0.1, 0.2, 0.25, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.9, 0.95, 0.15, 0.35, 0.85]
+        elif any(k in pname for k in ("pos", "count", "size", "len", "dim", "degree", "steps", "iter", "k", "n", "m")) or (
+            ann == "int"
+        ):
+            base_ints = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 16, 20, 32, 64]
+            for c in numeric_constants:
+                ic = round(c)
+                if ic > 0:
+                    base_ints.extend([max(1, ic - 1), ic, ic + 1, ic + 2])
+            cands = base_ints[:24]
+        elif "matrix" in pname or "grid" in pname or "list[list" in ann:
+            cands = [
+                [[1.0, 0.0], [0.0, 1.0]],
+                [[2.0, 1.0], [1.0, 2.0]],
+                [[1.0, 2.0], [3.0, 4.0]],
+                [[4.0, 2.0], [2.0, 3.0]],
+                [[1.0, 1.0], [1.0, 2.0]],
+                [[3.0, 0.0], [0.0, 3.0]],
+                [[5.0, 1.0], [1.0, 5.0]],
+                [[2.0, 0.5], [0.5, 2.0]],
+            ] * 2
+        elif has_keys_or_items or "dict" in ann or "map" in pname:
+            cands = _build_probe_values_for_type("dict")
+        elif has_index_or_len or any(k in pname for k in ("arr", "vec", "seq", "items", "vals", "data", "xs", "ys")):
+            cands = [
+                [1.0, 2.0, 3.0, 4.0],
+                [2.0, 4.0, 6.0, 8.0],
+                [0.5, 1.5, 2.5, 3.5],
+                [10.0, 20.0, 30.0],
+                [1.0, 3.0, 2.0, 5.0],
+                [0.2, 0.3, 0.5],
+                [5.0, 10.0, 15.0, 20.0],
+                [1.0, 4.0, 9.0, 16.0],
+            ] * 2
+        else:
+            # Strictly positive floats + AST constants shifted away from singularities
+            cands = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0, 12.5, 16.0, 25.0, 50.0, 0.25, 0.75]
+            for c in numeric_constants:
+                cands.extend([c + 0.5, c + 1.0, max(0.1, abs(c) + 0.25)])
+
+        if default_val is not None:
+            cands.insert(0, default_val)
+        per_param_candidates.append(cands)
+
+    probes: list[tuple[Any, ...]] = []
+    for i in range(n_probes):
+        row = []
+        for p_idx, plist in enumerate(per_param_candidates):
+            row.append(copy.deepcopy(plist[(i + p_idx * 2) % len(plist)]))
+        probes.append(tuple(row))
+    return probes
+
+
 def fingerprint_function(
     source_code: str,
     extra_globals: dict[str, Any] | None = None,
@@ -559,26 +658,42 @@ def fingerprint_function(
     exec(compile(source_code, "<commons_block>", "exec"), ns)  # noqa: S102
     fn: Callable[..., Any] = ns[func_name]
 
-    probes = generate_canonical_probes(param_types, n_probes=n_probes)
-    outcome_tokens: list[str] = []
-    valid_outputs: list[str] = []
-    mutates_args = False
+    def _run_probe_suite(probe_list: list[tuple[Any, ...]]) -> tuple[list[str], list[str], bool]:
+        out_tokens: list[str] = []
+        val_outputs: list[str] = []
+        mutated = False
+        for probe_args in probe_list:
+            before_serialized = [_canonical_serialize(a) for a in probe_args]
+            working_args = [copy.deepcopy(a) for a in probe_args]
+            try:
+                res = fn(*working_args)
+                after_serialized = [_canonical_serialize(a) for a in working_args]
+                if after_serialized != before_serialized:
+                    mutated = True
+                res_str = _canonical_serialize(res)
+                state_str = "|".join(after_serialized) if mutated else ""
+                token = f"OK:{res_str}:M({state_str})"
+                out_tokens.append(token)
+                val_outputs.append(res_str)
+            except Exception as exc:  # noqa: BLE001
+                out_tokens.append(f"ERR:{type(exc).__name__}")
+        return out_tokens, val_outputs, mutated
 
-    for probe_args in probes:
-        before_serialized = [_canonical_serialize(a) for a in probe_args]
-        working_args = [copy.deepcopy(a) for a in probe_args]
-        try:
-            res = fn(*working_args)
-            after_serialized = [_canonical_serialize(a) for a in working_args]
-            if after_serialized != before_serialized:
-                mutates_args = True
-            res_str = _canonical_serialize(res)
-            state_str = "|".join(after_serialized) if mutates_args else ""
-            token = f"OK:{res_str}:M({state_str})"
-            outcome_tokens.append(token)
-            valid_outputs.append(res_str)
-        except Exception as exc:  # noqa: BLE001
-            outcome_tokens.append(f"ERR:{type(exc).__name__}")
+    probes = generate_canonical_probes(param_types, n_probes=n_probes)
+    outcome_tokens, valid_outputs, mutates_args = _run_probe_suite(probes)
+
+    # Agentic Zero-Bottleneck Fallback: if standard type-based probes yielded < 4 valid outputs
+    # (e.g. function enforces strict domain bounds like `0 < p < 1` or positive matrices),
+    # autonomously synthesize AST-guided domain probes!
+    if len(valid_outputs) < 4:
+        ast_probes = synthesize_ast_guided_probes(source_code, n_probes=n_probes)
+        if ast_probes:
+            ast_tokens, ast_valid, ast_mut = _run_probe_suite(ast_probes)
+            if len(ast_valid) > len(valid_outputs):
+                probes = ast_probes
+                outcome_tokens = ast_tokens
+                valid_outputs = ast_valid
+                mutates_args = ast_mut
 
     valid_count = len(valid_outputs)
     unique_valid = len(set(valid_outputs))
@@ -1706,14 +1821,144 @@ def push_to_remote_hub(
         return {"ok": False, "hub_url": sync_endpoint, "error": str(exc)}
 
 
+def run_autonomous_referee_cycle(
+    store: OpenCommonsStore,
+    new_block: ConceptBlock,
+) -> dict[str, Any]:
+    """Agentic Differential Referee & Counterexample Hunter.
+
+    When multiple implementations map to the same Concept Equivalence Class (`cid`), the Referee
+    Agent pits `new_block` against the existing canonical implementation across 32 extended boundary
+    & numerical-stability stress probes:
+    - If `new_block` survives extreme boundary probes where the old canonical implementation failed
+      (or if both pass and `new_block` has a cleaner, more concise AST), `new_block` is autonomously
+      promoted to canonical winner for `cid`.
+    - Any failing probe on the losing implementation is automatically recorded as a `PitfallWarning`.
+    """
+    cid = new_block.cid
+    existing_canon_id = store.canonical_block_by_cid.get(cid)
+    if not existing_canon_id or existing_canon_id == new_block.block_id:
+        store.canonical_block_by_cid[cid] = new_block.block_id
+        return {"action": "crowned_initial_canonical", "winner": new_block.block_id, "cid": cid}
+
+    existing_block = store.blocks_by_id.get(existing_canon_id)
+    if existing_block is None or existing_canon_id in store.quarantined_ids:
+        store.canonical_block_by_cid[cid] = new_block.block_id
+        return {"action": "replaced_quarantined_canonical", "winner": new_block.block_id, "cid": cid}
+
+    fn_old = store._get_compiled_fn(existing_canon_id)
+    fn_new = store._get_compiled_fn(new_block.block_id)
+    if fn_new is None:
+        return {"action": "kept_existing", "winner": existing_canon_id, "cid": cid}
+    if fn_old is None:
+        store.canonical_block_by_cid[cid] = new_block.block_id
+        return {"action": "promoted_new_compiled", "winner": new_block.block_id, "cid": cid}
+
+    stress_probes = generate_canonical_probes(new_block.param_types, n_probes=24) + synthesize_ast_guided_probes(
+        new_block.source_code, n_probes=8
+    )
+
+    old_score = 0
+    new_score = 0
+    old_fail_probe: tuple[Any, ...] | None = None
+    new_fail_probe: tuple[Any, ...] | None = None
+
+    for probe in stress_probes:
+        try:
+            res_old = fn_old(*copy.deepcopy(probe))
+            if isinstance(res_old, float) and (math.isnan(res_old) or math.isinf(res_old)):
+                if old_fail_probe is None:
+                    old_fail_probe = probe
+            else:
+                old_score += 1
+        except Exception:  # noqa: BLE001
+            if old_fail_probe is None:
+                old_fail_probe = probe
+
+        try:
+            res_new = fn_new(*copy.deepcopy(probe))
+            if isinstance(res_new, float) and (math.isnan(res_new) or math.isinf(res_new)):
+                if new_fail_probe is None:
+                    new_fail_probe = probe
+            else:
+                new_score += 1
+        except Exception:  # noqa: BLE001
+            if new_fail_probe is None:
+                new_fail_probe = probe
+
+    old_ast_nodes = sum(1 for _ in ast.walk(ast.parse(existing_block.source_code)))
+    new_ast_nodes = sum(1 for _ in ast.walk(ast.parse(new_block.source_code)))
+
+    if new_score > old_score or (new_score == old_score and new_ast_nodes < old_ast_nodes):
+        store.canonical_block_by_cid[cid] = new_block.block_id
+        if old_fail_probe is not None and new_score > old_score:
+            pf = PitfallWarning(
+                pitfall_id=f"referee_{len(new_block.pitfalls) + 1}",
+                naive_pattern=existing_block.name,
+                failure_mechanism="Failed extended referee boundary/stability probe",
+                counterexample_input=repr(old_fail_probe),
+                verified_fix=f"Use canonical implementation {new_block.name}",
+            )
+            store.blocks_by_id[new_block.block_id] = replace(new_block, pitfalls=(*new_block.pitfalls, pf))
+        return {
+            "action": "promoted_superior_implementation",
+            "winner": new_block.block_id,
+            "previous": existing_canon_id,
+            "cid": cid,
+            "new_score": new_score,
+            "old_score": old_score,
+        }
+
+    return {
+        "action": "retained_canonical_winner",
+        "winner": existing_canon_id,
+        "challenger": new_block.block_id,
+        "cid": cid,
+        "new_score": new_score,
+        "old_score": old_score,
+    }
+
+
+_LAST_BG_GOSSIP_TS: float = 0.0
+_BG_GOSSIP_LOCK = threading.Lock()
+
+
+def trigger_background_gossip_sync(
+    *,
+    mode: Literal["pull", "push", "bidirectional"] = "pull",
+    hub_url: str | None = None,
+    store_path: Path | str | None = None,
+    min_interval_seconds: float = 60.0,
+) -> bool:
+    """Fires a non-blocking daemon thread to sync OpenCommons over the network with zero TUI latency."""
+    global _LAST_BG_GOSSIP_TS
+    now = time.time()
+    with _BG_GOSSIP_LOCK:
+        if mode == "pull" and (now - _LAST_BG_GOSSIP_TS) < min_interval_seconds:
+            return False
+        _LAST_BG_GOSSIP_TS = now
+
+    def _worker() -> None:
+        with contextlib.suppress(Exception):
+            target = hub_url or os.environ.get("OPENCOMMONS_HUB_URL") or DEFAULT_HUB_URL
+            if mode in ("push", "bidirectional") and not target.endswith(".json"):
+                push_to_remote_hub(hub_url=target, store_path=store_path, timeout=4.0)
+            if mode in ("pull", "bidirectional"):
+                pull_from_remote_hub(hub_url=target, store_path=store_path, timeout=4.0)
+
+    t = threading.Thread(target=_worker, name="opencommons-gossip-daemon", daemon=True)
+    t.start()
+    return True
+
+
 def process_hub_sync_request(
     req_payload: dict[str, Any],
     *,
     store_path: Path | str | None = None,
 ) -> dict[str, Any]:
     """Server-side handler for `/v1/sync-delta` that audits incoming blocks through the AST security gate
-    + 5-gate adversarial peer review before merging into the Hub's CRDT store, and returns only the
-    delta blocks missing on the client.
+    + 5-gate adversarial peer review + Autonomous Differential Referee before merging into the Hub's CRDT
+    store, and returns only the delta blocks missing on the client.
     """
     hub_store = load_persistent_store(store_path)
     hub_manifest = hub_store.compute_merkle_manifest()
@@ -1723,6 +1968,7 @@ def process_hub_sync_request(
 
     accepted_count = 0
     rejected_count = 0
+    referee_promotions = 0
 
     if mode == "bidirectional" and req_payload.get("blocks"):
         for b_dict in req_payload.get("blocks", []):
@@ -1756,6 +2002,9 @@ def process_hub_sync_request(
                     hub_store.blocks_by_id[blk.block_id] = replace(blk, trust_tier="quarantined")
                     accepted_count += 1
                 elif verdict and verdict.passed:
+                    ref_res = run_autonomous_referee_cycle(hub_store, blk)
+                    if ref_res.get("action") == "promoted_superior_implementation":
+                        referee_promotions += 1
                     accepted_count += 1
                 else:
                     hub_store.blocks_by_id.pop(blk.block_id, None)
@@ -1775,6 +2024,7 @@ def process_hub_sync_request(
             "merkle_root": hub_manifest["merkle_root"],
             "accepted_count": 0,
             "rejected_count": rejected_count,
+            "referee_promotions": referee_promotions,
             "blocks": [],
             "quarantined_ids": sorted(hub_store.quarantined_ids),
         }
@@ -1791,9 +2041,66 @@ def process_hub_sync_request(
         "merkle_root": hub_manifest["merkle_root"],
         "accepted_count": accepted_count,
         "rejected_count": rejected_count,
+        "referee_promotions": referee_promotions,
         "blocks": delta_blocks,
         "quarantined_ids": sorted(hub_store.quarantined_ids),
     }
+
+
+def render_hub_dashboard_html(store: OpenCommonsStore) -> str:
+    """Renders a live dark-mode HTML dashboard for HuggingFace Spaces / Railway browser visitors."""
+    manifest = store.compute_merkle_manifest()
+    rows_html = []
+    for _cid, bid in sorted(store.canonical_block_by_cid.items()):
+        b = store.blocks_by_id[bid]
+        rows_html.append(
+            f"<tr>"
+            f"<td><code>{b.block_id}</code></td>"
+            f"<td><code>{b.cid}</code></td>"
+            f"<td><span class='badge'>{b.domain}</span></td>"
+            f"<td>{b.summary}</td>"
+            f"<td><code>({', '.join(b.param_types)}) -> {b.return_type}</code></td>"
+            f"</tr>"
+        )
+    table_body = "\n".join(rows_html)
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Kardashev OpenCommons CRDT Hub</title>
+  <style>
+    body {{ background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace; margin: 2rem auto; max-width: 1100px; padding: 0 1rem; }}
+    h1 {{ color: #58a6ff; margin-bottom: 0.2rem; }}
+    .sub {{ color: #8b949e; margin-bottom: 1.5rem; }}
+    .stats {{ display: flex; gap: 1rem; margin-bottom: 1.5rem; flex-wrap: wrap; }}
+    .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 1rem 1.25rem; flex: 1; min-width: 180px; }}
+    .card .val {{ font-size: 1.5rem; font-weight: bold; color: #3fb950; }}
+    .card .lbl {{ font-size: 0.85rem; color: #8b949e; }}
+    table {{ width: 100%; border-collapse: collapse; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }}
+    th, td {{ text-align: left; padding: 0.75rem 1rem; border-bottom: 1px solid #21262d; font-size: 0.9rem; }}
+    th {{ background: #21262d; color: #58a6ff; }}
+    code {{ color: #79c0ff; }}
+    .badge {{ background: #1f6feb33; color: #58a6ff; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.8rem; }}
+  </style>
+</head>
+<body>
+  <h1>✦ Kardashev OpenCommons — Autonomous Agentic CRDT Hub</h1>
+  <div class="sub">Zero-Trust AST Sandbox · 16-Probe Behavioral Equivalence (CID) · 5-Gate Adversarial Referee · HTTP Gossip Sync</div>
+  <div class="stats">
+    <div class="card"><div class="val">{len(store.canonical_block_by_cid)}</div><div class="lbl">Active Equivalence Classes (CID)</div></div>
+    <div class="card"><div class="val">{len(store.blocks_by_id)}</div><div class="lbl">Total Verified Blocks</div></div>
+    <div class="card"><div class="val">{len(store.quarantined_ids)}</div><div class="lbl">Quarantined Counterexamples</div></div>
+    <div class="card"><div class="val"><code>{manifest['merkle_root'][:16]}</code></div><div class="lbl">16-Bucket Merkle Root (ETag)</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Canonical Block</th><th>Concept ID (CID)</th><th>Domain</th><th>Summary</th><th>Signature</th></tr></thead>
+    <tbody>{table_body}</tbody>
+  </table>
+  <p class="sub" style="margin-top:1.25rem;">
+    API Endpoints: <code>GET /v1/manifest</code> · <code>GET /v1/store</code> · <code>POST /v1/sync-delta</code> · <code>POST /mcp</code> (Streamable HTTP MCP) · <code>GET /healthz</code>
+  </p>
+</body>
+</html>"""
 
 
 def create_opencommons_hub_server(
@@ -1801,7 +2108,9 @@ def create_opencommons_hub_server(
     port: int = 8765,
     store_path: Path | str | None = None,
 ) -> http.server.ThreadingHTTPServer:
-    """Create a multi-threaded HTTP OpenCommons CRDT Gossip Hub server (`GET /v1/manifest`, `GET /v1/store`, `POST /v1/sync-delta`)."""
+    """Create a multi-threaded HTTP OpenCommons CRDT Gossip Hub & Streamable HTTP MCP server
+    (`GET /`, `GET /healthz`, `GET /v1/manifest`, `GET /v1/store`, `POST /v1/sync-delta`, `POST /mcp`).
+    """
 
     class _HubHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
@@ -1815,16 +2124,43 @@ def create_opencommons_hub_server(
 
             self.send_response(status_code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, If-None-Match, Authorization")
             if use_gzip:
                 self.send_header("Content-Encoding", "gzip")
             if etag:
                 self.send_header("ETag", f'"{etag}"')
+            self.send_header("Cache-Control", "public, max-age=15, must-revalidate")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_html(self, status_code: int, html_text: str) -> None:
+            body = html_text.encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self) -> None:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type, If-None-Match, Authorization")
+            self.end_headers()
+
         def do_GET(self) -> None:
+            if self.path == "/healthz":
+                self._send_json(200, {"status": "ok", "service": "kardashev-opencommons-hub"})
+                return
+
             store = load_persistent_store(store_path)
+            if self.path in ("/", "/index.html"):
+                self._send_html(200, render_hub_dashboard_html(store))
+                return
+
             manifest = store.compute_merkle_manifest()
             client_etag = (self.headers.get("If-None-Match") or "").strip().strip('"')
             if client_etag and client_etag == manifest["merkle_root"]:
@@ -1841,11 +2177,27 @@ def create_opencommons_hub_server(
             self._send_json(404, {"error": f"Unknown endpoint: {self.path}"})
 
         def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw_body = self.rfile.read(length) if length > 0 else b"{}"
+            if self.path in ("/mcp", "/v1/mcp"):
+                try:
+                    req_data = _decode_http_body(raw_body, self.headers.get("Content-Encoding"))
+                    mcp_resp = handle_opencommons_mcp_request(req_data, store_path=store_path)
+                    if mcp_resp is None:
+                        self.send_response(202)
+                        self.end_headers()
+                        return
+                    self._send_json(200, mcp_resp)
+                except (ValueError, KeyError, OSError) as exc:
+                    self._send_json(
+                        400,
+                        {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}},
+                    )
+                return
+
             if not self.path.startswith("/v1/sync"):
                 self._send_json(404, {"error": f"Unknown endpoint: {self.path}"})
                 return
-            length = int(self.headers.get("Content-Length", "0"))
-            raw_body = self.rfile.read(length) if length > 0 else b"{}"
             try:
                 req_data = _decode_http_body(raw_body, self.headers.get("Content-Encoding"))
                 resp_payload = process_hub_sync_request(req_data, store_path=store_path)
@@ -2387,10 +2739,105 @@ OPENCOMMONS_MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional Python tuple literal of failing arguments for counterexample ratcheting.",
                 },
+                "sync_to_hub": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true and the block passes 5-gate peer review, automatically gossip-sync with the remote OpenCommons Hub.",
+                },
             },
         },
     },
+    {
+        "name": "sync",
+        "description": (
+            "Synchronize the local OpenCommons CRDT store with the remote OpenCommons Gossip Hub "
+            "(pull latest verified concepts, push local peer-reviewed discoveries, or run bidirectional "
+            "16-bucket Merkle delta sync)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["bidirectional", "pull", "push"],
+                    "default": "bidirectional",
+                    "description": "Sync direction: 'bidirectional' (pull + push delta), 'pull' (fetch remote concepts), or 'push' (publish local concepts to hub).",
+                },
+                "hub_url": {
+                    "type": "string",
+                    "description": "Optional remote OpenCommons Hub URL (defaults to OPENCOMMONS_HUB_URL or the global Kardashev OpenCommons CDN/Hub).",
+                },
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, bypass ETag cache check on pull.",
+                },
+            },
+        },
+    },
+    {
+        "name": "status",
+        "description": (
+            "Return live OpenCommons CRDT store statistics, 16-bucket Merkle root hash, active Concept "
+            "Equivalence Classes (CIDs), quarantined counterexamples, and pending proposals."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
 ]
+
+
+def execute_commons_sync(
+    arguments: dict[str, Any],
+    store_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Execute the `sync` (or `commons_sync`) MCP tool for any external agent harness."""
+    mode = str(arguments.get("mode", "bidirectional")).lower()
+    hub_url = str(arguments["hub_url"]) if arguments.get("hub_url") else None
+    force = bool(arguments.get("force", False))
+
+    if mode == "pull":
+        return pull_from_remote_hub(hub_url=hub_url, store_path=store_path, force=force)
+    if mode == "push":
+        return push_to_remote_hub(hub_url=hub_url, store_path=store_path)
+
+    target = (hub_url or os.environ.get("OPENCOMMONS_HUB_URL") or DEFAULT_HUB_URL).strip()
+    if not target.endswith(".json"):
+        push_res = push_to_remote_hub(hub_url=target, store_path=store_path)
+        if push_res.get("ok"):
+            return push_res
+    return pull_from_remote_hub(hub_url=target, store_path=store_path, force=force)
+
+
+def execute_commons_status(
+    store_path: Path | str | None = None,
+    pending_path: Path | str | None = None,
+) -> dict[str, Any]:
+    """Execute the `status` (or `commons_status`) MCP tool."""
+    store = load_persistent_store(store_path)
+    manifest = store.compute_merkle_manifest()
+    pending = load_pending_proposals(pending_path)
+    return {
+        "merkle_root": manifest["merkle_root"],
+        "active_concepts_cid": len(store.canonical_block_by_cid),
+        "total_blocks": len(store.blocks_by_id),
+        "quarantined_blocks": len(store.quarantined_ids),
+        "pending_proposals": len(pending),
+        "concepts": [
+            {
+                "block_id": store.blocks_by_id[bid].block_id,
+                "cid": cid,
+                "name": store.blocks_by_id[bid].name,
+                "domain": store.blocks_by_id[bid].domain,
+                "signature": f"({', '.join(store.blocks_by_id[bid].param_types)}) -> {store.blocks_by_id[bid].return_type}",
+                "summary": store.blocks_by_id[bid].summary,
+            }
+            for cid, bid in sorted(store.canonical_block_by_cid.items())
+            if bid in store.blocks_by_id
+        ],
+    }
 
 
 def handle_opencommons_mcp_request(
@@ -2412,7 +2859,7 @@ def handle_opencommons_mcp_request(
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "opencommons-mcp", "version": "1.0.0"},
+                "serverInfo": {"name": "opencommons-mcp", "version": "0.2.0"},
             },
         }
 
@@ -2439,6 +2886,12 @@ def handle_opencommons_mcp_request(
                     store_path=store_path,
                     pending_path=pending_path,
                 )
+                if res_payload.get("status") == "accepted" and arguments.get("sync_to_hub", True):
+                    trigger_background_gossip_sync(mode="bidirectional", store_path=store_path)
+            elif tool_name in ("sync", "commons_sync"):
+                res_payload = execute_commons_sync(arguments, store_path=store_path)
+            elif tool_name in ("status", "commons_status"):
+                res_payload = execute_commons_status(store_path=store_path, pending_path=pending_path)
             else:
                 return {
                     "jsonrpc": "2.0",

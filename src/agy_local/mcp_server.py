@@ -255,7 +255,51 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional Python tuple literal of failing arguments for counterexample ratcheting.",
                 },
+                "sync_to_hub": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "If true and the block passes 5-gate peer review, automatically gossip-sync with the remote OpenCommons Hub.",
+                },
             },
+        },
+    },
+    {
+        "name": "commons_sync",
+        "description": (
+            "Synchronize the local OpenCommons CRDT store with the remote OpenCommons Gossip Hub "
+            "(pull latest verified concepts, push local peer-reviewed discoveries, or run bidirectional "
+            "16-bucket Merkle delta sync)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["bidirectional", "pull", "push"],
+                    "default": "bidirectional",
+                    "description": "Sync direction: 'bidirectional', 'pull', or 'push'.",
+                },
+                "hub_url": {
+                    "type": "string",
+                    "description": "Optional remote OpenCommons Hub URL.",
+                },
+                "force": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, bypass ETag cache check on pull.",
+                },
+            },
+        },
+    },
+    {
+        "name": "commons_status",
+        "description": (
+            "Return live OpenCommons CRDT store statistics, 16-bucket Merkle root hash, active Concept "
+            "Equivalence Classes (CIDs), quarantined counterexamples, and pending proposals."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
         },
     },
 ]
@@ -502,7 +546,7 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
             "result": {
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "agy-local", "version": "0.1.0"},
+                "serverInfo": {"name": "kardashev-mcp", "version": "0.2.0"},
             },
         }
 
@@ -538,6 +582,14 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
                 from agy_local.opencommons import execute_commons_record
 
                 res = execute_commons_record(args)
+            elif tool_name in ("commons_sync", "sync"):
+                from agy_local.opencommons import execute_commons_sync
+
+                res = execute_commons_sync(args)
+            elif tool_name in ("commons_status", "status"):
+                from agy_local.opencommons import execute_commons_status
+
+                res = execute_commons_status()
             else:
                 return {
                     "jsonrpc": "2.0",

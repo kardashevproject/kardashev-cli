@@ -104,6 +104,45 @@ def _probe_chronosml_memory(
     return round(fallback_vram_gb, 2), avail_gb, oom
 
 
+def _find_vllm_binary() -> str:
+    """Finds the `vllm` executable in PATH or common local virtual environments."""
+    in_path = shutil.which("vllm")
+    if in_path:
+        return in_path
+    home = os.path.expanduser("~")
+    candidates = [
+        os.path.join(home, ".local", "bin", "vllm"),
+        os.path.join(home, "venv-vllm", "bin", "vllm"),
+        os.path.join(home, ".venv-vllm", "bin", "vllm"),
+        os.path.join(home, "llm-lab", "autolab", "data", "venv-vllm", "bin", "vllm"),
+    ]
+    for cand in candidates:
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return "vllm"
+
+
+def _resolve_local_model_target(model_or_name: str) -> tuple[str, float | None]:
+    """Resolves a short model name (e.g. `qwen3.6-35b-a3b-fp8`) to its on-disk directory path and size in GB if present."""
+    expanded = os.path.expanduser(model_or_name)
+    if os.path.exists(expanded):
+        from pathlib import Path
+
+        from agy_local.discovery import _dir_size_and_has_weights
+
+        sz_bytes, _ = _dir_size_and_has_weights(Path(expanded))
+        sz_gb = round(sz_bytes / (1024**3), 2) if sz_bytes > 0 else None
+        return (os.path.abspath(expanded), sz_gb)
+
+    from agy_local.discovery import discover_local_models
+
+    for dm in discover_local_models():
+        if dm.name.lower() == model_or_name.lower() or dm.name.lower().endswith(f"/{model_or_name.lower()}"):
+            return (dm.path, dm.size_gb if dm.size_gb > 0 else None)
+
+    return (model_or_name, None)
+
+
 def compute_serve_plan(
     *,
     preset: str | None = None,
@@ -123,12 +162,17 @@ def compute_serve_plan(
     default_ctx = 32768
     served_name: str | None = None
 
+    # If the user passed a preset name via --model, resolve the preset automatically
+    if not preset and model and model.lower() in ("gemma4-26b", "glm4-9b-ollama", "glm4-vllm", "qwen3.6-35b-vllm", "qwen3.8-27b-vllm", "qwen3-vl-8b-vllm", "gpt-oss-20b-vllm"):
+        preset = model.lower()
+        resolved_model = None
+
     if preset:
         p = get_preset(preset)
         if p.backend == BackendKind.LITERT:
             raise ValueError(
                 f"Preset '{preset}' uses the on-device LiteRT backend, which does not require "
-                "an external server. Run `agy-local chat --preset gemma4-26b` directly."
+                "an external server. Run `kardashev chat --preset gemma4-26b` directly."
             )
         if not resolved_model:
             resolved_model = p.resolved_model_path() or p.hf_repo or p.model_id
@@ -145,6 +189,12 @@ def compute_serve_plan(
         resolved_model = "THUDM/glm-4-9b-chat"
     if not served_name:
         served_name = os.path.basename(resolved_model.rstrip("/")) or resolved_model
+
+    # Resolve short local model names via the local model scanner
+    resolved_model, disk_size_gb = _resolve_local_model_target(resolved_model)
+    if disk_size_gb is not None and disk_size_gb > 0:
+        fallback_vram = max(fallback_vram, round(disk_size_gb * 1.10, 2))
+
     if not resolved_engine:
         resolved_engine = "ollama" if ":" in resolved_model and "/" not in resolved_model else "vllm"
 
@@ -154,6 +204,8 @@ def compute_serve_plan(
         seq_len=target_seq_len,
         fallback_vram_gb=fallback_vram,
     )
+    if disk_size_gb is not None and est_gb < disk_size_gb:
+        est_gb = disk_size_gb
 
     # Auto-compute safe gpu_memory_utilization and max_model_len if not explicitly overridden
     if gpu_memory_utilization is None:
@@ -184,7 +236,7 @@ def compute_serve_plan(
         cmd = ["ollama", "run", resolved_model]
     else:
         resolved_port = port or 8000
-        vllm_bin = shutil.which("vllm") or "vllm"
+        vllm_bin = _find_vllm_binary()
         cmd = [
             vllm_bin,
             "serve",

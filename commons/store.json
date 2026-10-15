@@ -1,151 +1,1208 @@
 {
-  "schema_version": "1.0.0",
   "blocks": [
+    {
+      "block_id": "adamw_decoupled_step@93f8dd70",
+      "cid": "cid:33120d243a9513e7",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952489.9583,
+      "dependencies": [],
+      "dimensional_units": "w: float, g: float, m: float, v: float, lr: float, wd: float, step: int -> float",
+      "domain": "machine_learning",
+      "fp": "fp:33120d243a9513e7",
+      "invariants": [
+        "weight decay decoupled from adaptive gradient denominator",
+        "finite for t >= 1"
+      ],
+      "name": "adamw_decoupled_step",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float",
+        "float",
+        "float",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 10.0, 0.0, 100.0, 0.01, 0.1, 10)",
+          "failure_mechanism": "Couples weight decay with 1/sqrt(v), shrinking regularization on parameters with large historical gradients",
+          "naive_pattern": "g = g + wd * w before moment accumulation",
+          "pitfall_id": "coupled_l2_in_adam",
+          "verified_fix": "Apply w * (1 - lr * wd) directly to the weight outside the adaptive moment ratio"
+        }
+      ],
+      "pseudocode": "1. w_decayed = w * (1 - lr * wd); 2. m_hat = m / (1 - beta1^t); 3. v_hat = v / (1 - beta2^t); 4. return w_decayed - lr * m_hat / (sqrt(v_hat) + eps)",
+      "return_type": "float",
+      "sid": "sid:93f8dd70af871355",
+      "source_code": "\ndef adamw_decoupled_step(w: float, g: float, m: float, v: float, lr: float, wd: float, step: int) -> float:\n    t = max(1, abs(step))\n    b1 = 0.9\n    b2 = 0.999\n    m_new = b1 * m + (1.0 - b1) * g\n    v_new = b2 * v + (1.0 - b2) * (g * g)\n    m_hat = m_new / (1.0 - (b1**t))\n    v_hat = max(0.0, v_new / (1.0 - (b2**t)))\n    w_decayed = w * (1.0 - lr * wd)\n    return w_decayed - lr * (m_hat / (math.sqrt(v_hat) + 1e-8))\n",
+      "summary": "Decoupled AdamW single-parameter update with bias-corrected 1st/2nd moments",
+      "teleological_intent": "Orthogonalize L2 regularization from adaptive preconditioner scaling (Loshchilov & Hutter)",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "black_scholes_d1@af3518f0",
+      "cid": "cid:8c6675c34017a677",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952506.1292,
+      "dependencies": [],
+      "dimensional_units": "spot: USD, strike: USD, rate: 1/yr, vol: 1/sqrt(yr), maturity: yr -> z_score",
+      "domain": "quantitative_finance",
+      "fp": "fp:8c6675c34017a677",
+      "invariants": [
+        "antisymmetric under S <-> K when r == -0.5*sigma^2",
+        "finite for all S, K, sigma, T != 0"
+      ],
+      "name": "black_scholes_d1",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(100.0, 100.0, 0.05, 0.2, 1.0)",
+          "failure_mechanism": "Omits Ito lemma +0.5 * vol^2 convexity adjustment, violating martingale put-call parity",
+          "naive_pattern": "(math.log(spot / strike) + rate * maturity) / (vol * math.sqrt(maturity))",
+          "pitfall_id": "bs_d1_missing_ito_half_variance",
+          "verified_fix": "Include + 0.5 * sigma * sigma * T in the drift numerator"
+        }
+      ],
+      "pseudocode": "1. (log(S / K) + (r + 0.5 * sigma^2) * T) / (sigma * sqrt(T))",
+      "return_type": "float",
+      "sid": "sid:af3518f0a83a825b",
+      "source_code": "\ndef black_scholes_d1(spot: float, strike: float, rate: float, vol: float, maturity: float) -> float:\n    s = max(1e-8, abs(spot))\n    k = max(1e-8, abs(strike))\n    sigma = max(1e-6, abs(vol))\n    t = max(1e-6, abs(maturity))\n    return (math.log(s / k) + (rate + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))\n",
+      "summary": "Black-Scholes log-moneyness d1 term with volatility and maturity guards",
+      "teleological_intent": "Standardized log-normal drift-adjusted moneyness under risk-neutral measure",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "cosine_warmup_lr@cd4f9d59",
+      "cid": "cid:aba74dafb891858a",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952487.9304,
+      "dependencies": [],
+      "dimensional_units": "step: int, warmup: int, total: int, max_lr: float, min_lr: float -> float",
+      "domain": "machine_learning",
+      "fp": "fp:aba74dafb891858a",
+      "invariants": [
+        "min_lr <= lr <= max_lr",
+        "continuous C^0 transition at step == warmup_steps"
+      ],
+      "name": "cosine_warmup_lr",
+      "param_types": [
+        "int",
+        "int",
+        "int",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1200, 100, 1000, 1e-3, 1e-5)",
+          "failure_mechanism": "ZeroDivisionError when total == warmup, or LR rebounds upward when step > total",
+          "naive_pattern": "math.cos(math.pi * (step - warmup) / (total - warmup))",
+          "pitfall_id": "cosine_div_by_zero_or_overshoot",
+          "verified_fix": "Clamp progress ratio to [0.0, 1.0] and guard denom = max(1, total - warmup)"
+        }
+      ],
+      "pseudocode": "1. if step < warmup: linear ramp; 2. else: min_lr + 0.5*(max_lr - min_lr)*(1 + cos(pi * progress))",
+      "return_type": "float",
+      "sid": "sid:cd4f9d590316e803",
+      "source_code": "\ndef cosine_warmup_lr(step: int, warmup_steps: int, total_steps: int, max_lr: float, min_lr: float) -> float:\n    s = max(0, step)\n    w = max(0, warmup_steps)\n    if w > 0 and s < w:\n        return max_lr * (s / w)\n    denom = max(1, total_steps - w)\n    progress = min(1.0, max(0.0, (s - w) / denom))\n    return min_lr + 0.5 * (max_lr - min_lr) * (1.0 + math.cos(math.pi * progress))\n",
+      "summary": "Cosine annealing learning rate schedule with linear warmup and clamped progress ratio",
+      "teleological_intent": "Smooth gradient-descent kinetic energy decay avoiding early divergence and late overshoot",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "crc32_ieee_ints@75160a52",
+      "cid": "cid:d8c20fa417065692",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952492.6887,
+      "dependencies": [],
+      "dimensional_units": "data: list[int] -> uint32",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:d8c20fa417065692",
+      "invariants": [
+        "0 <= crc <= 0xFFFFFFFF",
+        "crc32(b'123456789') == 0xCBF43926"
+      ],
+      "name": "crc32_ieee_ints",
+      "param_types": [
+        "list[int]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[49, 50, 51, 52, 53, 54, 55, 56, 57]",
+          "failure_mechanism": "Omitting pre/post bitwise inversion (~0xFFFFFFFF) makes trailing zero bytes undetectable",
+          "naive_pattern": "return crc & 0xFFFFFFFF",
+          "pitfall_id": "crc32_missing_final_inversion",
+          "verified_fix": "Initialize with 0xFFFFFFFF and XOR final state with 0xFFFFFFFF"
+        }
+      ],
+      "pseudocode": "1. crc = 0xFFFFFFFF; 2. for byte: xor & 8-bit shift with 0xEDB88320; 3. return (~crc) & 0xFFFFFFFF",
+      "return_type": "int",
+      "sid": "sid:75160a52dbdbfd60",
+      "source_code": "\ndef crc32_ieee_ints(data: list[int]) -> int:\n    crc = 0xFFFFFFFF\n    for b in data:\n        crc ^= b & 0xFF\n        for _ in range(8):\n            if crc & 1:\n                crc = (crc >> 1) ^ 0xEDB88320\n            else:\n                crc >>= 1\n    return (crc ^ 0xFFFFFFFF) & 0xFFFFFFFF\n",
+      "summary": "IEEE 802.3 32-bit Cyclic Redundancy Check (CRC-32) with reflected polynomial 0xEDB88320",
+      "teleological_intent": "Bitwise Galois field GF(2) polynomial division for burst-error detection",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "exact_gelu@52f2e5fd",
+      "cid": "cid:0f2c0ed9525bc853",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952510.9907,
+      "dependencies": [],
+      "dimensional_units": "x: float -> float",
+      "domain": "machine_learning",
+      "fp": "fp:0f2c0ed9525bc853",
+      "invariants": [
+        "gelu(0.0) == 0.0",
+        "lim_{x -> -inf} gelu(x) == 0.0"
+      ],
+      "name": "exact_gelu",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "1.0",
+          "failure_mechanism": "Omitting 1/sqrt(2) scales standard deviation by 1/sqrt(2), distorting transformer activations",
+          "naive_pattern": "0.5 * x * (1.0 + math.erf(x))",
+          "pitfall_id": "gelu_missing_sqrt2_divisor",
+          "verified_fix": "Divide x by math.sqrt(2.0) (0.7071067811865476) inside math.erf"
+        }
+      ],
+      "pseudocode": "1. 0.5 * x * (1.0 + erf(x / sqrt(2)))",
+      "return_type": "float",
+      "sid": "sid:52f2e5fdb6b3ce20",
+      "source_code": "\ndef exact_gelu(x: float) -> float:\n    return 0.5 * x * (1.0 + math.erf(x * 0.7071067811865476))\n",
+      "summary": "Exact Gaussian Error Linear Unit (GELU) x * Phi(x) via math.erf(x / sqrt(2))",
+      "teleological_intent": "Stochastic regularizer weighting input by Gaussian cumulative distribution",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "exponential_backoff_delay@780a66d3",
+      "cid": "cid:98c159e3e96a58f4",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952497.4475,
+      "dependencies": [],
+      "dimensional_units": "attempt: int, base_delay: s, max_delay: s, jitter_unit: float -> s",
+      "domain": "distributed_systems",
+      "fp": "fp:98c159e3e96a58f4",
+      "invariants": [
+        "0.0 <= delay <= max_delay",
+        "no integer shift overflow for large attempt counts"
+      ],
+      "name": "exponential_backoff_delay",
+      "param_types": [
+        "int",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(2000, 0.1, 60.0, 0.5)",
+          "failure_mechanism": "Raises OverflowError in float exponentiation when attempt >= 1024",
+          "naive_pattern": "min(max_delay, base_delay * (2.0 ** attempt))",
+          "pitfall_id": "backoff_exponent_overflow",
+          "verified_fix": "Clamp exponent min(max(0, attempt), 30) before computing 2 ** exp"
+        }
+      ],
+      "pseudocode": "1. raw = base * (2 ** min(attempt, 30)); 2. capped = min(max_delay, raw); 3. return capped * (0.5 + 0.5 * jitter)",
+      "return_type": "float",
+      "sid": "sid:780a66d39831a8e3",
+      "source_code": "\ndef exponential_backoff_delay(attempt: int, base_delay: float, max_delay: float, jitter_unit: float) -> float:\n    exp = min(max(0, attempt), 30)\n    cap = max(0.001, abs(max_delay))\n    base = max(0.0001, abs(base_delay))\n    capped = min(cap, base * (2.0**exp))\n    j = min(1.0, max(0.0, abs(jitter_unit)))\n    return capped * (0.5 + 0.5 * j)\n",
+      "summary": "Exponential backoff delay with cap and deterministic jitter factor",
+      "teleological_intent": "Desynchronize thundering-herd client retries under contention",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "extended_gcd@85369c71",
+      "cid": "cid:feda984bf78591b2",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952507.8943,
+      "dependencies": [],
+      "dimensional_units": "a: int, b: int -> tuple[int, int, int]",
+      "domain": "number_theory_and_algebra",
+      "fp": "fp:feda984bf78591b2",
+      "invariants": [
+        "a * x + b * y == g",
+        "g >= 0"
+      ],
+      "name": "extended_gcd",
+      "param_types": [
+        "int",
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(-240, -46)",
+          "failure_mechanism": "Can return negative GCD when inputs are negative or hit RecursionError on large integers",
+          "naive_pattern": "Recursive egcd(b, a % b) without sign normalization",
+          "pitfall_id": "recursive_egcd_recursion_limit",
+          "verified_fix": "Use iterative loop and normalize final GCD sign so g >= 0"
+        }
+      ],
+      "pseudocode": "1. Iterative quotient r_old, r = r, r_old - q*r; 2. Track Bezout coefficients s, t",
+      "return_type": "tuple[int, int, int]",
+      "sid": "sid:85369c71b08c7fec",
+      "source_code": "\ndef extended_gcd(a: int, b: int) -> tuple[int, int, int]:\n    old_r, r = a, b\n    old_s, s = 1, 0\n    old_t, t = 0, 1\n    while r != 0:\n        q = old_r // r\n        old_r, r = r, old_r - q * r\n        old_s, s = s, old_s - q * s\n        old_t, t = t, old_t - q * t\n    if old_r < 0:\n        return (-old_r, -old_s, -old_t)\n    return (old_r, old_s, old_t)\n",
+      "summary": "Extended Euclidean Algorithm computing (gcd(a, b), x, y) satisfying Bezout identity a*x + b*y == gcd(a, b)",
+      "teleological_intent": "Constructive modular inverse and Diophantine linear combination",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
     {
       "block_id": "fnv1a_32_ints@e5c9e4f9",
       "cid": "cid:a589f7423673bf7f",
-      "sid": "sid:e5c9e4f9ad3d0a4e",
-      "fp": "fp:a589f7423673bf7f",
-      "name": "fnv1a_32_ints",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792060154700.6367,
+      "dependencies": [],
+      "dimensional_units": "data: list[int] -> uint32",
       "domain": "cryptography_and_framing",
-      "summary": "32-bit FNV-1a deterministic byte payload hash with standard offset basis 0x811c9dc5",
-      "pseudocode": "1. h = 0x811c9dc5; 2. for b in data: h = ((h ^ b) * 0x01000193) & 0xffffffff",
+      "fp": "fp:a589f7423673bf7f",
       "invariants": [
         "0 <= h <= 0xffffffff",
         "avalanche on single-bit flip"
       ],
-      "source_code": "\ndef fnv1a_32_ints(data: list[int]) -> int:\n    h = 0x811C9DC5\n    for b in data:\n        h = ((h ^ (b & 0xFF)) * 0x01000193) & 0xFFFFFFFF\n    return h\n",
+      "name": "fnv1a_32_ints",
       "param_types": [
         "list[int]"
       ],
-      "return_type": "int",
-      "dependencies": [],
       "pitfalls": [
         {
-          "pitfall_id": "wrong_fnv_offset",
-          "naive_pattern": "h = 0",
-          "failure_mechanism": "Zero initialization collapses all-zero prefixes to hash 0",
           "counterexample_input": "[0, 0, 0]",
+          "failure_mechanism": "Zero initialization collapses all-zero prefixes to hash 0",
+          "naive_pattern": "h = 0",
+          "pitfall_id": "wrong_fnv_offset",
           "verified_fix": "Initialize with FNV-1a 32-bit offset basis 0x811c9dc5"
         }
       ],
+      "pseudocode": "1. h = 0x811c9dc5; 2. for b in data: h = ((h ^ b) * 0x01000193) & 0xffffffff",
+      "return_type": "int",
+      "sid": "sid:e5c9e4f9ad3d0a4e",
+      "source_code": "\ndef fnv1a_32_ints(data: list[int]) -> int:\n    h = 0x811C9DC5\n    for b in data:\n        h = ((h ^ (b & 0xFF)) * 0x01000193) & 0xFFFFFFFF\n    return h\n",
+      "summary": "32-bit FNV-1a deterministic byte payload hash with standard offset basis 0x811c9dc5",
       "teleological_intent": "Non-cryptographic uniform hash distribution over byte frames",
-      "dimensional_units": "data: list[int] -> uint32",
       "trust_tier": "peer_reviewed",
-      "contributor_agent": "agy-local",
-      "wave": 1,
-      "created_at_ms": 1792060154700.6367
+      "wave": 1
     },
     {
-      "block_id": "stable_logsumexp@d19e7e05",
-      "cid": "cid:d4eb13604009c856",
-      "sid": "sid:d19e7e0546fc9c61",
-      "fp": "fp:d4eb13604009c856",
-      "name": "stable_logsumexp",
-      "domain": "numerical_analysis",
-      "summary": "Shifted numerically stable LogSumExp preventing exp(x) overflow for x >= 710",
-      "pseudocode": "1. m = max(xs); 2. return m + log(sum(exp(x - m) for x in xs))",
-      "invariants": [
-        "LSE(x + c) == LSE(x) + c",
-        "max(xs) <= LSE(xs) <= max(xs) + log(N)"
-      ],
-      "source_code": "\ndef stable_logsumexp(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    m = max(xs)\n    return m + math.log(sum(math.exp(x - m) for x in xs))\n",
-      "param_types": [
-        "list[float]"
-      ],
-      "return_type": "float",
+      "block_id": "fnv1a_32_ints@ea57a593",
+      "cid": "cid:a589f7423673bf7f",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952479.3406,
       "dependencies": [],
+      "dimensional_units": "data: list[int] -> uint32",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:a589f7423673bf7f",
+      "invariants": [
+        "0 <= h <= 0xffffffff",
+        "avalanche on single-bit flip"
+      ],
+      "name": "fnv1a_32_ints",
+      "param_types": [
+        "list[int]"
+      ],
       "pitfalls": [
         {
-          "pitfall_id": "lse_overflow",
-          "naive_pattern": "math.log(sum(math.exp(x) for x in xs))",
-          "failure_mechanism": "OverflowError when max(xs) >= 710.0",
-          "counterexample_input": "[1000.0, 1001.0, 1002.0]",
-          "verified_fix": "Subtract m = max(xs) before exponentiating"
+          "counterexample_input": "[0, 0, 0]",
+          "failure_mechanism": "Zero initialization collapses all-zero prefixes to hash 0",
+          "naive_pattern": "h = 0",
+          "pitfall_id": "wrong_fnv_offset",
+          "verified_fix": "Initialize with FNV-1a 32-bit offset basis 0x811c9dc5"
         }
       ],
-      "teleological_intent": "Log-partition function free-energy normalization without IEEE-754 overflow",
-      "dimensional_units": "logits: nats -> nats",
+      "pseudocode": "1. h = 0x811c9dc5; 2. for b in data: h = ((h ^ b) * 0x01000193) & 0xffffffff",
+      "return_type": "int",
+      "sid": "sid:ea57a593b08718e9",
+      "source_code": "\ndef fnv1a_32_ints(data: list[int]) -> int:\n    h = 0x811C9DC5\n    for b in data:\n        h = ((h ^ (b & 0xFF)) * 0x01000193) & 0xFFFFFFFF\n    return h\n",
+      "summary": "32-bit FNV-1a deterministic byte payload hash with standard offset basis 0x811c9dc5",
+      "teleological_intent": "Non-cryptographic uniform hash distribution over byte frames",
       "trust_tier": "peer_reviewed",
-      "contributor_agent": "agy-local",
-      "wave": 1,
-      "created_at_ms": 1792060154697.522
+      "wave": 1
     },
     {
-      "block_id": "symplectic_leapfrog_step@cdc07209",
-      "cid": "cid:093bf7ec3b7f4cb6",
-      "sid": "sid:cdc07209d80b64f9",
-      "fp": "fp:093bf7ec3b7f4cb6",
-      "name": "symplectic_leapfrog_step",
-      "domain": "hamiltonian_dynamics",
-      "summary": "Symplectic Velocity Verlet / Leapfrog step preserving phase-space volume (det J == 1)",
-      "pseudocode": "1. v_half = v - 0.5*dt*k*x; 2. x_new = x + dt*v_half; 3. v_new = v_half - 0.5*dt*k*x_new",
+      "block_id": "haversine_distance_km@51001b30",
+      "cid": "cid:6dfcda71d358311f",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952500.98,
+      "dependencies": [],
+      "dimensional_units": "lat1_deg: deg, lon1_deg: deg, lat2_deg: deg, lon2_deg: deg -> km",
+      "domain": "geodesy_and_spatial",
+      "fp": "fp:6dfcda71d358311f",
       "invariants": [
-        "det(Jacobian) == 1.0",
-        "bounded energy oscillation O(dt^2)"
+        "0.0 <= d <= pi * R",
+        "d(p1, p2) == d(p2, p1)"
       ],
-      "source_code": "\ndef symplectic_leapfrog_step(x: float, v: float, k: float, dt: float) -> tuple[float, float]:\n    v_half = v - 0.5 * dt * k * x\n    x_new = x + dt * v_half\n    v_new = v_half - 0.5 * dt * k * x_new\n    return (x_new, v_new)\n",
+      "name": "haversine_distance_km",
       "param_types": [
         "float",
         "float",
         "float",
         "float"
       ],
-      "return_type": "tuple[float, float]",
-      "dependencies": [],
       "pitfalls": [
         {
-          "pitfall_id": "euler_energy_drift",
-          "naive_pattern": "x_new = x + dt*v; v_new = v - dt*k*x",
-          "failure_mechanism": "Explicit Euler inflates phase-space area det J = 1 + k*dt^2 > 1",
+          "counterexample_input": "(37.7749, -122.4194, 37.7749, -122.4194)",
+          "failure_mechanism": "Floating-point rounding produces argument 1.0000000000000002 > 1.0, raising ValueError in math.acos",
+          "naive_pattern": "math.acos(sin(lat1)*sin(lat2) + cos(lat1)*cos(lat2)*cos(dlon))",
+          "pitfall_id": "spherical_law_of_cosines_nan",
+          "verified_fix": "Use Haversine sin^2(d/2) formulation and clamp min(1.0, math.sqrt(max(0.0, a))) before math.asin"
+        }
+      ],
+      "pseudocode": "1. a = sin(dlat/2)^2 + cos(lat1)*cos(lat2)*sin(dlon/2)^2; 2. c = 2 * asin(min(1.0, sqrt(a))); 3. R * c",
+      "return_type": "float",
+      "sid": "sid:51001b3051a638bb",
+      "source_code": "\ndef haversine_distance_km(lat1_deg: float, lon1_deg: float, lat2_deg: float, lon2_deg: float) -> float:\n    r_earth_km = 6371.0088\n    lat1 = math.radians(lat1_deg)\n    lon1 = math.radians(lon1_deg)\n    lat2 = math.radians(lat2_deg)\n    lon2 = math.radians(lon2_deg)\n    dlat = lat2 - lat1\n    dlon = lon2 - lon1\n    a = (math.sin(dlat * 0.5) ** 2) + math.cos(lat1) * math.cos(lat2) * (math.sin(dlon * 0.5) ** 2)\n    c = 2.0 * math.asin(min(1.0, math.sqrt(max(0.0, a))))\n    return r_earth_km * c\n",
+      "summary": "Haversine great-circle geodesic distance on a sphere with antipodal asin clamping",
+      "teleological_intent": "Well-conditioned spherical distance for both sub-meter and antipodal coordinates",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "horner_polynomial_eval@88bfaf83",
+      "cid": "cid:119c728ca1681920",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952508.672,
+      "dependencies": [],
+      "dimensional_units": "coeffs: list[float], x: float -> float",
+      "domain": "signal_processing",
+      "fp": "fp:119c728ca1681920",
+      "invariants": [
+        "exact for degree 0/1",
+        "N multiplications and N additions instead of O(N^2)"
+      ],
+      "name": "horner_polynomial_eval",
+      "param_types": [
+        "list[float]",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([1.0, -2.0, 1.0], 1e10)",
+          "failure_mechanism": "Repeated x**i exponentiation amplifies relative error and overflows for large degree",
+          "naive_pattern": "sum(c * (x ** i) for i, c in enumerate(reversed(coeffs)))",
+          "pitfall_id": "naive_power_polynomial_eval",
+          "verified_fix": "Use nested Horner accumulation acc = acc * x + c"
+        }
+      ],
+      "pseudocode": "1. acc = 0.0; 2. for c in coeffs: acc = acc * x + c; 3. return acc",
+      "return_type": "float",
+      "sid": "sid:88bfaf830f8a079c",
+      "source_code": "\ndef horner_polynomial_eval(coeffs: list[float], x: float) -> float:\n    acc = 0.0\n    for c in coeffs:\n        acc = acc * x + c\n    return acc\n",
+      "summary": "Horner's method polynomial evaluation P(x) = sum_{i} c_i x^{N-1-i} in O(N) fused multiply-adds",
+      "teleological_intent": "Minimize rounding error and operation count in polynomial approximation",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "neumaier_compensated_sum@54e1b257",
+      "cid": "cid:bd315a144fc1082e",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952480.4236,
+      "dependencies": [],
+      "dimensional_units": "xs: list[U] -> U",
+      "domain": "numerical_analysis",
+      "fp": "fp:bd315a144fc1082e",
+      "invariants": [
+        "error <= 2 * eps * sum(|x_i|)",
+        "order-insensitive on ill-conditioned alternating series"
+      ],
+      "name": "neumaier_compensated_sum",
+      "param_types": [
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[1.0, 1e100, 1.0, -1e100]",
+          "failure_mechanism": "Classic Kahan fails when the next term |x| is larger than the running sum |s|",
+          "naive_pattern": "y = x - c; t = s + y; c = (t - s) - y",
+          "pitfall_id": "standard_kahan_large_term",
+          "verified_fix": "Branch on abs(s) >= abs(x) (Neumaier improvement) before updating compensation c"
+        }
+      ],
+      "pseudocode": "1. Track running sum s and compensation c; 2. Handle |x| > |s| branch symmetrically; 3. return s + c",
+      "return_type": "float",
+      "sid": "sid:54e1b2577a589ded",
+      "source_code": "\ndef neumaier_compensated_sum(xs: list[float]) -> float:\n    total = 0.0\n    comp = 0.0\n    for x in xs:\n        t = total + x\n        if abs(total) >= abs(x):\n            comp += (total - t) + x\n        else:\n            comp += (x - t) + total\n        total = t\n    return total + comp\n",
+      "summary": "Kahan-Babushka-Neumaier compensated summation eliminating O(N * eps) floating-point drift",
+      "teleological_intent": "Preserve low-order mantissa bits when summing large and small magnitudes",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "online_softmax_update@7937eddd",
+      "cid": "cid:9e1393dbacaa53c4",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952483.9058,
+      "dependencies": [],
+      "dimensional_units": "m_old: nats, d_old: dimensionless, x: nats -> tuple[nats, dimensionless]",
+      "domain": "machine_learning",
+      "fp": "fp:9e1393dbacaa53c4",
+      "invariants": [
+        "m_new >= m_old",
+        "d_new >= 1.0"
+      ],
+      "name": "online_softmax_update",
+      "param_types": [
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "sequence_length >= 32768",
+          "failure_mechanism": "Requires 2x HBM memory reads in tiled attention kernels",
+          "naive_pattern": "Pass 1: find max; Pass 2: sum exp(x - max)",
+          "pitfall_id": "two_pass_softmax_materialization",
+          "verified_fix": "Rescale running denominator by exp(m_old - m_new) in a single streaming pass"
+        }
+      ],
+      "pseudocode": "1. m_new = max(m_old, x); 2. d_new = d_old * exp(m_old - m_new) + exp(x - m_new)",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:7937eddd86d63e4a",
+      "source_code": "\ndef online_softmax_update(m_old: float, d_old: float, x: float) -> tuple[float, float]:\n    m_new = x if x > m_old else m_old\n    d_new = d_old * math.exp(max(-700.0, m_old - m_new)) + math.exp(max(-700.0, x - m_new))\n    return (m_new, d_new)\n",
+      "summary": "FlashAttention / Milakov-Gimelshein single-pass online softmax rescaling update step",
+      "teleological_intent": "Streaming softmax partition normalization in SRAM without materializing N x N attention matrix",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "rendezvous_hrw_select@7c42310c",
+      "cid": "cid:f456645fbf9f7651",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952498.8708,
+      "dependencies": [],
+      "dimensional_units": "key: int, nodes: list[int] -> int",
+      "domain": "distributed_systems",
+      "fp": "fp:f456645fbf9f7651",
+      "invariants": [
+        "deterministic node assignment",
+        "only 1/N keys remap when a node is added or removed"
+      ],
+      "name": "rendezvous_hrw_select",
+      "param_types": [
+        "int",
+        "list[int]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(42, [1, 2, 3, 4]) -> (42, [1, 2, 3, 4, 5])",
+          "failure_mechanism": "Adding 1 node to N nodes remaps (N-1)/N (~90%+) of all cached keys simultaneously",
+          "naive_pattern": "nodes[hash(key) % len(nodes)]",
+          "pitfall_id": "modulo_hash_remapping",
+          "verified_fix": "Compute pairwise HRW hash score(key, node) and pick argmax"
+        }
+      ],
+      "pseudocode": "1. For each node_id, mix(key, node_id) via 32-bit FNV-1a; 2. Return node_id maximizing weight",
+      "return_type": "int",
+      "sid": "sid:7c42310c3abceff3",
+      "source_code": "\ndef rendezvous_hrw_select(key: int, nodes: list[int]) -> int:\n    if not nodes:\n        return -1\n    best_node = nodes[0]\n    best_score = -1\n    for n in nodes:\n        h = 0x811C9DC5\n        h = ((h ^ (key & 0xFFFF)) * 0x01000193) & 0xFFFFFFFF\n        h = ((h ^ (n & 0xFFFF)) * 0x01000193) & 0xFFFFFFFF\n        if h > best_score:\n            best_score = h\n            best_node = n\n    return best_node\n",
+      "summary": "Rendezvous (Highest Random Weight / HRW) consistent hashing node selection",
+      "teleological_intent": "Zero-ring-state uniform shard placement with minimal disruption on topology changes",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "rk4_damped_step@ef25c468",
+      "cid": "cid:a02d8f04ba5f5981",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952491.6116,
+      "dependencies": [],
+      "dimensional_units": "y: U, k: 1/s, dt: s -> U",
+      "domain": "numerical_analysis",
+      "fp": "fp:a02d8f04ba5f5981",
+      "invariants": [
+        "local truncation error O(dt^5)",
+        "matches Taylor series of exp(-k*dt) through 4th order"
+      ],
+      "name": "rk4_damped_step",
+      "param_types": [
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 1.0, 0.5)",
+          "failure_mechanism": "Equal 1/4 weights reduce Simpson quadrature to 2nd order instead of 4th order",
+          "naive_pattern": "y + (dt / 4.0) * (k1 + k2 + k3 + k4)",
+          "pitfall_id": "rk4_midpoint_weight_error",
+          "verified_fix": "Use Simpson weights (k1 + 2*k2 + 2*k3 + k4) / 6.0"
+        }
+      ],
+      "pseudocode": "1. k1 = -k*y; k2 = -k*(y + 0.5*dt*k1); k3 = -k*(y + 0.5*dt*k2); k4 = -k*(y + dt*k3); 2. y + (dt/6)*(k1 + 2*k2 + 2*k3 + k4)",
+      "return_type": "float",
+      "sid": "sid:ef25c4689b550cc4",
+      "source_code": "\ndef rk4_damped_step(y: float, k: float, dt: float) -> float:\n    k1 = -k * y\n    k2 = -k * (y + 0.5 * dt * k1)\n    k3 = -k * (y + 0.5 * dt * k2)\n    k4 = -k * (y + dt * k3)\n    return y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)\n",
+      "summary": "4th-order Runge-Kutta (RK4) step for linear damping ODE dy/dt = -k * y",
+      "teleological_intent": "Fourth-order accurate autonomous relaxation integration",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "rmsnorm_vector@1d4e9cfe",
+      "cid": "cid:850229e50201fdeb",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952486.2656,
+      "dependencies": [],
+      "dimensional_units": "xs: list[float], eps: float -> list[float]",
+      "domain": "machine_learning",
+      "fp": "fp:850229e50201fdeb",
+      "invariants": [
+        "mean(y^2) <= 1.0",
+        "scale-invariant: RMSNorm(alpha * x) == RMSNorm(x) for alpha > 0"
+      ],
+      "name": "rmsnorm_vector",
+      "param_types": [
+        "list[float]",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([0.0, 0.0, 0.0], 1e-6)",
+          "failure_mechanism": "Placing eps outside sqrt leaves non-differentiable derivative singularity at x = 0",
+          "naive_pattern": "math.sqrt(mean_sq) + eps",
+          "pitfall_id": "rmsnorm_eps_outside_sqrt",
+          "verified_fix": "Place abs(eps) inside math.sqrt(mean_sq + max(1e-12, abs(eps)))"
+        }
+      ],
+      "pseudocode": "1. rms = sqrt(mean(x^2) + eps); 2. return [x / rms for x in xs]",
+      "return_type": "list[float]",
+      "sid": "sid:1d4e9cfe8b98a2e9",
+      "source_code": "\ndef rmsnorm_vector(xs: list[float], eps: float) -> list[float]:\n    if not xs:\n        return []\n    safe_eps = max(1e-12, abs(eps))\n    mean_sq = sum(x * x for x in xs) / len(xs)\n    inv_rms = 1.0 / math.sqrt(mean_sq + safe_eps)\n    return [x * inv_rms for x in xs]\n",
+      "summary": "RMSNorm root-mean-square layer normalization scaling factor with epsilon guard",
+      "teleological_intent": "Stabilize transformer hidden-state activation norm without mean-centering overhead",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "rope_rotate_pair@473d295a",
+      "cid": "cid:1f9e63ced635cb06",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952484.9824,
+      "dependencies": [],
+      "dimensional_units": "x0: float, x1: float, pos: float, freq: rad -> tuple[float, float]",
+      "domain": "machine_learning",
+      "fp": "fp:1f9e63ced635cb06",
+      "invariants": [
+        "x0_rot^2 + x1_rot^2 == x0^2 + x1^2",
+        "orthogonal SO(2) isometry"
+      ],
+      "name": "rope_rotate_pair",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 2.0, 3.0, 0.5)",
+          "failure_mechanism": "Improper reflection (det = -1) breaks relative position inner-product translation invariance",
+          "naive_pattern": "(x0 * cos + x1 * sin, x0 * sin - x1 * cos)",
+          "pitfall_id": "rope_sign_inversion",
+          "verified_fix": "Use proper SO(2) rotation matrix [[cos, -sin], [sin, cos]] with det == +1"
+        }
+      ],
+      "pseudocode": "1. (x0*cos(theta) - x1*sin(theta), x0*sin(theta) + x1*cos(theta))",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:473d295a527a1ebe",
+      "source_code": "\ndef rope_rotate_pair(x0: float, x1: float, pos: float, freq: float) -> tuple[float, float]:\n    angle = pos * freq\n    c = math.cos(angle)\n    s = math.sin(angle)\n    return (x0 * c - x1 * s, x0 * s + x1 * c)\n",
+      "summary": "Rotary Position Embedding (RoPE) 2D complex plane rotation preserving L2 vector norm",
+      "teleological_intent": "Encode relative token distance via inner-product invariance <R_m q, R_n k> = g(q, k, m-n)",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "safe_cosine_similarity@4971c0f1",
+      "cid": "cid:b3381d2fa15dc6e7",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952504.5693,
+      "dependencies": [],
+      "dimensional_units": "u: list[float], v: list[float] -> dimensionless",
+      "domain": "statistics_and_information",
+      "fp": "fp:b3381d2fa15dc6e7",
+      "invariants": [
+        "-1.0 <= sim(u, v) <= 1.0",
+        "sim(u, u) == 1.0 for u != 0"
+      ],
+      "name": "safe_cosine_similarity",
+      "param_types": [
+        "list[float]",
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "([0.0, 0.0], [1.0, 2.0])",
+          "failure_mechanism": "ZeroDivisionError on zero vectors and FP drift produces 1.0000000000000002 (breaking math.acos downstream)",
+          "naive_pattern": "sum(a*b) / (math.sqrt(sum(a*a)) * math.sqrt(sum(b*b)))",
+          "pitfall_id": "cosine_sim_zero_norm_and_fp_overshoot",
+          "verified_fix": "Return 0.0 when norm product == 0 and clamp result to [-1.0, 1.0]"
+        }
+      ],
+      "pseudocode": "1. dot(u, v) / (||u|| * ||v||); 2. Clamp to [-1.0, 1.0]",
+      "return_type": "float",
+      "sid": "sid:4971c0f146f1fbe2",
+      "source_code": "\ndef safe_cosine_similarity(u: list[float], v: list[float]) -> float:\n    n = min(len(u), len(v))\n    if n == 0:\n        return 0.0\n    dot = sum(u[i] * v[i] for i in range(n))\n    nu = math.sqrt(sum(u[i] * u[i] for i in range(n)))\n    nv = math.sqrt(sum(v[i] * v[i] for i in range(n)))\n    denom = nu * nv\n    if denom <= 1e-30:\n        return 0.0\n    return min(1.0, max(-1.0, dot / denom))\n",
+      "summary": "Cosine similarity between two vectors with zero-norm denominator guard and [-1, 1] clamping",
+      "teleological_intent": "Scale-invariant angular similarity in Hilbert space",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "safe_logit@9c10aade",
+      "cid": "cid:89b1d111022c0834",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952511.8364,
+      "dependencies": [],
+      "dimensional_units": "p: probability -> nats",
+      "domain": "statistics_and_information",
+      "fp": "fp:89b1d111022c0834",
+      "invariants": [
+        "logit(0.5) == 0.0",
+        "logit(1 - p) == -logit(p)"
+      ],
+      "name": "safe_logit",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "1.0",
+          "failure_mechanism": "Raises ZeroDivisionError or ValueError at p <= 0.0 or p >= 1.0, and loses precision near p -> 1",
+          "naive_pattern": "math.log(p / (1.0 - p))",
+          "pitfall_id": "logit_boundary_div_zero",
+          "verified_fix": "Clamp p into [1e-15, 1.0 - 1e-15] and use math.log(p) - math.log1p(-p)"
+        }
+      ],
+      "pseudocode": "1. Clamp p to [eps, 1 - eps]; 2. return log(p) - log1p(-p)",
+      "return_type": "float",
+      "sid": "sid:9c10aade3e90b091",
+      "source_code": "\ndef safe_logit(p: float) -> float:\n    clamped = min(1.0 - 1e-15, max(1e-15, abs(p) if abs(p) <= 1.0 else (1.0 / (1.0 + abs(p)))))\n    return math.log(clamped) - math.log1p(-clamped)\n",
+      "summary": "Logit-log-odds transformation log(p / (1 - p)) with symmetric boundary clamping",
+      "teleological_intent": "Bijective mapping from probability simplex (0, 1) to real line R",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "shannon_entropy_nats@62d454c3",
+      "cid": "cid:92833b40f9811585",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952502.407,
+      "dependencies": [],
+      "dimensional_units": "weights: list[float] -> nats",
+      "domain": "statistics_and_information",
+      "fp": "fp:92833b40f9811585",
+      "invariants": [
+        "0.0 <= H(p) <= log(N)",
+        "scale-invariant: H(c * w) == H(w) for c > 0"
+      ],
+      "name": "shannon_entropy_nats",
+      "param_types": [
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[0.5, 0.5, 0.0]",
+          "failure_mechanism": "Raises ValueError (math domain error) when any category has probability 0.0",
+          "naive_pattern": "-sum(p * math.log(p) for p in probs)",
+          "pitfall_id": "entropy_zero_probability_nan",
+          "verified_fix": "Skip zero/non-positive probabilities using lim_{p->0+} p*log(p) = 0"
+        }
+      ],
+      "pseudocode": "1. Normalize positive weights p_i = w_i / sum(w); 2. return -sum(p_i * log(p_i) for p_i > 0)",
+      "return_type": "float",
+      "sid": "sid:62d454c3e4b17c75",
+      "source_code": "\ndef shannon_entropy_nats(weights: list[float]) -> float:\n    pos = [abs(w) for w in weights if abs(w) > 0.0]\n    total = sum(pos)\n    if total <= 0.0:\n        return 0.0\n    ent = 0.0\n    for w in pos:\n        p = w / total\n        if p > 0.0:\n            ent -= p * math.log(p)\n    return max(0.0, ent)\n",
+      "summary": "Shannon discrete entropy H(p) in nats with automatic L1 normalization and 0*log(0) == 0 limit",
+      "teleological_intent": "Expected information content without log(0) domain singularities",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_binary_cross_entropy_with_logits@82f4f59b",
+      "cid": "cid:e068268618793eba",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952481.3577,
+      "dependencies": [],
+      "dimensional_units": "logit: nats, target: probability -> nats",
+      "domain": "numerical_analysis",
+      "fp": "fp:e068268618793eba",
+      "invariants": [
+        "BCE(z, y) >= 0",
+        "finite for all float64 z in [-1e300, 1e300]"
+      ],
+      "name": "stable_binary_cross_entropy_with_logits",
+      "param_types": [
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(100.0, 0.0)",
+          "failure_mechanism": "Raises ValueError (math domain error) or OverflowError when |z| > 37",
+          "naive_pattern": "-(y * math.log(1 / (1 + math.exp(-z))) + (1 - y) * math.log(1 - 1 / (1 + math.exp(-z))))",
+          "pitfall_id": "naive_sigmoid_bce",
+          "verified_fix": "Use max(z, 0.0) - z * y + math.log1p(math.exp(-abs(z)))"
+        }
+      ],
+      "pseudocode": "1. max(z, 0) - z * y + log1p(exp(-abs(z)))",
+      "return_type": "float",
+      "sid": "sid:82f4f59bf3869eb2",
+      "source_code": "\ndef stable_binary_cross_entropy_with_logits(logit: float, target: float) -> float:\n    max_val = logit if logit > 0.0 else 0.0\n    return max_val - logit * target + math.log1p(math.exp(-abs(logit)))\n",
+      "summary": "Numerically stable binary cross-entropy loss from raw logits without exp() overflow or log(0) NaN",
+      "teleological_intent": "Exact Kullback-Leibler divergence on Bernoulli logits without sigmoid saturation",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_logsumexp@a1ff1d22",
+      "cid": "cid:d4eb13604009c856",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952476.6396,
+      "dependencies": [],
+      "dimensional_units": "logits: nats -> nats",
+      "domain": "numerical_analysis",
+      "fp": "fp:d4eb13604009c856",
+      "invariants": [
+        "LSE(x + c) == LSE(x) + c",
+        "max(xs) <= LSE(xs) <= max(xs) + log(N)"
+      ],
+      "name": "stable_logsumexp",
+      "param_types": [
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[1000.0, 1001.0, 1002.0]",
+          "failure_mechanism": "OverflowError when max(xs) >= 710.0",
+          "naive_pattern": "math.log(sum(math.exp(x) for x in xs))",
+          "pitfall_id": "lse_overflow",
+          "verified_fix": "Subtract m = max(xs) before exponentiating"
+        }
+      ],
+      "pseudocode": "1. m = max(xs); 2. return m + log(sum(exp(x - m) for x in xs))",
+      "return_type": "float",
+      "sid": "sid:a1ff1d2209739b4b",
+      "source_code": "\ndef stable_logsumexp(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    m = max(xs)\n    return m + math.log(sum(math.exp(x - m) for x in xs))\n",
+      "summary": "Shifted numerically stable LogSumExp preventing exp(x) overflow for x >= 710",
+      "teleological_intent": "Log-partition function free-energy normalization without IEEE-754 overflow",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_logsumexp@d19e7e05",
+      "cid": "cid:d4eb13604009c856",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792060154697.522,
+      "dependencies": [],
+      "dimensional_units": "logits: nats -> nats",
+      "domain": "numerical_analysis",
+      "fp": "fp:d4eb13604009c856",
+      "invariants": [
+        "LSE(x + c) == LSE(x) + c",
+        "max(xs) <= LSE(xs) <= max(xs) + log(N)"
+      ],
+      "name": "stable_logsumexp",
+      "param_types": [
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[1000.0, 1001.0, 1002.0]",
+          "failure_mechanism": "OverflowError when max(xs) >= 710.0",
+          "naive_pattern": "math.log(sum(math.exp(x) for x in xs))",
+          "pitfall_id": "lse_overflow",
+          "verified_fix": "Subtract m = max(xs) before exponentiating"
+        }
+      ],
+      "pseudocode": "1. m = max(xs); 2. return m + log(sum(exp(x - m) for x in xs))",
+      "return_type": "float",
+      "sid": "sid:d19e7e0546fc9c61",
+      "source_code": "\ndef stable_logsumexp(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    m = max(xs)\n    return m + math.log(sum(math.exp(x - m) for x in xs))\n",
+      "summary": "Shifted numerically stable LogSumExp preventing exp(x) overflow for x >= 710",
+      "teleological_intent": "Log-partition function free-energy normalization without IEEE-754 overflow",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_real_quadratic_roots@d95883a7",
+      "cid": "cid:fcb396d4cb45045f",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952510.366,
+      "dependencies": [],
+      "dimensional_units": "a: float, b: float, c: float -> tuple[float, float]",
+      "domain": "numerical_analysis",
+      "fp": "fp:fcb396d4cb45045f",
+      "invariants": [
+        "r1 <= r2",
+        "preserves root product r1 * r2 == c / a to machine precision when 4ac << b^2"
+      ],
+      "name": "stable_real_quadratic_roots",
+      "param_types": [
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 1e8, 1.0)",
+          "failure_mechanism": "Catastrophic loss of significant digits when 4*a*c << b*b",
+          "naive_pattern": "(-b + math.sqrt(b*b - 4*a*c)) / (2*a)",
+          "pitfall_id": "quadratic_formula_cancellation",
+          "verified_fix": "Compute q = -0.5 * (b + copysign(sqrt(disc), b)) and obtain smaller root via c / q"
+        }
+      ],
+      "pseudocode": "1. disc = max(0, b^2 - 4ac); 2. q = -0.5 * (b + copysign(sqrt(disc), b)); 3. roots = (q/a, c/q)",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:d95883a764095a07",
+      "source_code": "\ndef stable_real_quadratic_roots(a: float, b: float, c: float) -> tuple[float, float]:\n    safe_a = a if abs(a) > 1e-15 else 1.0\n    disc = max(0.0, b * b - 4.0 * safe_a * c)\n    sqrt_d = math.sqrt(disc)\n    q = -0.5 * (b + (sqrt_d if b >= 0.0 else -sqrt_d))\n    if abs(q) <= 1e-30:\n        return (0.0, 0.0)\n    r1 = q / safe_a\n    r2 = c / q\n    return (r1, r2) if r1 <= r2 else (r2, r1)\n",
+      "summary": "Numerically stable quadratic roots (r1 <= r2) avoiding b^2 ~= 4ac catastrophic cancellation",
+      "teleological_intent": "Citardauq / Viete formula avoiding subtraction of nearly equal numbers",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_sigmoid@349d307c",
+      "cid": "cid:ef745a3329aee0df",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952482.233,
+      "dependencies": [],
+      "dimensional_units": "x: nats -> probability",
+      "domain": "numerical_analysis",
+      "fp": "fp:ef745a3329aee0df",
+      "invariants": [
+        "0.0 <= sigmoid(x) <= 1.0",
+        "abs(sigmoid(x) + sigmoid(-x) - 1.0) <= 1e-15"
+      ],
+      "name": "stable_sigmoid",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "-1000.0",
+          "failure_mechanism": "Raises OverflowError when x <= -710.0 because -x >= 710.0",
+          "naive_pattern": "1.0 / (1.0 + math.exp(-x))",
+          "pitfall_id": "sigmoid_neg_overflow",
+          "verified_fix": "Branch on x >= 0 and evaluate exp(x) / (1 + exp(x)) for negative inputs"
+        }
+      ],
+      "pseudocode": "1. if x >= 0: return 1 / (1 + exp(-x)); 2. else: e = exp(x); return e / (1 + e)",
+      "return_type": "float",
+      "sid": "sid:349d307c864f9e2a",
+      "source_code": "\ndef stable_sigmoid(x: float) -> float:\n    if x >= 0.0:\n        z = math.exp(-min(x, 709.0))\n        return 1.0 / (1.0 + z)\n    z = math.exp(max(x, -709.0))\n    return z / (1.0 + z)\n",
+      "summary": "Branch-split numerically stable sigmoid 1 / (1 + exp(-x)) preventing exp(-x) overflow for x <= -710",
+      "teleological_intent": "Bounded logistic probability mapping across the full IEEE-754 float64 range",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "stable_softplus@f0cc652d",
+      "cid": "cid:237b2ff39a67055b",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952482.8345,
+      "dependencies": [],
+      "dimensional_units": "x: dimensionless -> dimensionless",
+      "domain": "numerical_analysis",
+      "fp": "fp:237b2ff39a67055b",
+      "invariants": [
+        "softplus(x) >= max(0.0, x)",
+        "softplus(x) - softplus(-x) == x"
+      ],
+      "name": "stable_softplus",
+      "param_types": [
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "800.0",
+          "failure_mechanism": "OverflowError for x >= 710.0",
+          "naive_pattern": "math.log(1.0 + math.exp(x))",
+          "pitfall_id": "naive_softplus_overflow",
+          "verified_fix": "Use max(x, 0.0) + math.log1p(math.exp(-abs(x)))"
+        }
+      ],
+      "pseudocode": "1. max(x, 0) + log1p(exp(-abs(x)))",
+      "return_type": "float",
+      "sid": "sid:f0cc652d6603c483",
+      "source_code": "\ndef stable_softplus(x: float) -> float:\n    return (x if x > 0.0 else 0.0) + math.log1p(math.exp(-abs(x)))\n",
+      "summary": "Numerically stable Softplus log(1 + exp(x)) with linear asymptotic bypass above threshold",
+      "teleological_intent": "Smooth convex rectifier primitive free of exponential overflow",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "symplectic_leapfrog_step@00dbeefa",
+      "cid": "cid:093bf7ec3b7f4cb6",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952478.684,
+      "dependencies": [],
+      "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
+      "domain": "hamiltonian_dynamics",
+      "fp": "fp:093bf7ec3b7f4cb6",
+      "invariants": [
+        "det(Jacobian) == 1.0",
+        "bounded energy oscillation O(dt^2)"
+      ],
+      "name": "symplectic_leapfrog_step",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
           "counterexample_input": "(1.0, 0.0, 1.0, 0.1) over 1000 steps",
+          "failure_mechanism": "Explicit Euler inflates phase-space area det J = 1 + k*dt^2 > 1",
+          "naive_pattern": "x_new = x + dt*v; v_new = v - dt*k*x",
+          "pitfall_id": "euler_energy_drift",
           "verified_fix": "Use half-step kick-drift-kick symplectic update"
         }
       ],
+      "pseudocode": "1. v_half = v - 0.5*dt*k*x; 2. x_new = x + dt*v_half; 3. v_new = v_half - 0.5*dt*k*x_new",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:00dbeefab078d068",
+      "source_code": "\ndef symplectic_leapfrog_step(x: float, v: float, k: float, dt: float) -> tuple[float, float]:\n    v_half = v - 0.5 * dt * k * x\n    x_new = x + dt * v_half\n    v_new = v_half - 0.5 * dt * k * x_new\n    return (x_new, v_new)\n",
+      "summary": "Symplectic Velocity Verlet / Leapfrog step preserving phase-space volume (det J == 1)",
       "teleological_intent": "Liouville theorem phase-space volume conservation in Hamiltonian mechanics",
-      "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
       "trust_tier": "peer_reviewed",
-      "contributor_agent": "agy-local",
-      "wave": 1,
-      "created_at_ms": 1792060154699.8682
+      "wave": 1
     },
     {
-      "block_id": "welford_variance@fe73ee69",
+      "block_id": "symplectic_leapfrog_step@cdc07209",
+      "cid": "cid:093bf7ec3b7f4cb6",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792060154699.8682,
+      "dependencies": [],
+      "dimensional_units": "x: m, v: m/s, k: 1/s^2, dt: s -> tuple[m, m/s]",
+      "domain": "hamiltonian_dynamics",
+      "fp": "fp:093bf7ec3b7f4cb6",
+      "invariants": [
+        "det(Jacobian) == 1.0",
+        "bounded energy oscillation O(dt^2)"
+      ],
+      "name": "symplectic_leapfrog_step",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 0.0, 1.0, 0.1) over 1000 steps",
+          "failure_mechanism": "Explicit Euler inflates phase-space area det J = 1 + k*dt^2 > 1",
+          "naive_pattern": "x_new = x + dt*v; v_new = v - dt*k*x",
+          "pitfall_id": "euler_energy_drift",
+          "verified_fix": "Use half-step kick-drift-kick symplectic update"
+        }
+      ],
+      "pseudocode": "1. v_half = v - 0.5*dt*k*x; 2. x_new = x + dt*v_half; 3. v_new = v_half - 0.5*dt*k*x_new",
+      "return_type": "tuple[float, float]",
+      "sid": "sid:cdc07209d80b64f9",
+      "source_code": "\ndef symplectic_leapfrog_step(x: float, v: float, k: float, dt: float) -> tuple[float, float]:\n    v_half = v - 0.5 * dt * k * x\n    x_new = x + dt * v_half\n    v_new = v_half - 0.5 * dt * k * x_new\n    return (x_new, v_new)\n",
+      "summary": "Symplectic Velocity Verlet / Leapfrog step preserving phase-space volume (det J == 1)",
+      "teleological_intent": "Liouville theorem phase-space volume conservation in Hamiltonian mechanics",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "token_bucket_step@38f0810a",
+      "cid": "cid:4a0b708f9c036c32",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952496.0796,
+      "dependencies": [],
+      "dimensional_units": "tokens: float, cap: float, rate: 1/s, elapsed: s, cost: float -> tuple[bool, float]",
+      "domain": "distributed_systems",
+      "fp": "fp:4a0b708f9c036c32",
+      "invariants": [
+        "0.0 <= new_tokens <= capacity",
+        "clock skew (now < last) never subtracts tokens"
+      ],
+      "name": "token_bucket_step",
+      "param_types": [
+        "float",
+        "float",
+        "float",
+        "float",
+        "float"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "(5.0, 10.0, 2.0, -3.0, 1.0)",
+          "failure_mechanism": "NTP backward clock step produces negative elapsed time, draining valid tokens",
+          "naive_pattern": "tokens = min(capacity, tokens + (now - last) * rate)",
+          "pitfall_id": "negative_elapsed_clock_skew",
+          "verified_fix": "Clamp elapsed = max(0.0, elapsed) and capacity = max(0.0, capacity)"
+        }
+      ],
+      "pseudocode": "1. elapsed = max(0, now - last); 2. tokens = min(cap, current + elapsed * rate); 3. if tokens >= cost: deduct & allow",
+      "return_type": "tuple[bool, float]",
+      "sid": "sid:38f0810a4103416b",
+      "source_code": "\ndef token_bucket_step(tokens: float, capacity: float, refill_rate: float, elapsed: float, cost: float) -> tuple[bool, float]:\n    cap = max(1.0, abs(capacity))\n    rate = max(0.0, refill_rate)\n    dt = max(0.0, elapsed)\n    req = max(0.0, cost)\n    available = min(cap, max(0.0, tokens) + dt * rate)\n    if available >= req:\n        return (True, available - req)\n    return (False, available)\n",
+      "summary": "Token-bucket rate limiter state transition with monotonic clock clamping",
+      "teleological_intent": "Enforce average throughput rate R with bounded burst size C",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "uleb128_decode@290e4368",
+      "cid": "cid:6d992697cb391b36",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952494.6572,
+      "dependencies": [],
+      "dimensional_units": "encoded: list[int] -> int",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:6d992697cb391b36",
+      "invariants": [
+        "uleb128_decode(uleb128_encode(x)) == abs(x)",
+        "bounded shift <= 63"
+      ],
+      "name": "uleb128_decode",
+      "param_types": [
+        "list[int]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[128] * 10000",
+          "failure_mechanism": "Malformed all-0x80 stream causes arbitrary-precision integer memory exhaustion",
+          "naive_pattern": "shift += 7 without upper bound check",
+          "pitfall_id": "uleb128_unbounded_shift",
+          "verified_fix": "Break or cap shift at 63 bits (10 bytes max for uint64)"
+        }
+      ],
+      "pseudocode": "1. Accumulate (byte & 0x7F) << shift; 2. Break when (byte & 0x80) == 0",
+      "return_type": "int",
+      "sid": "sid:290e436840325750",
+      "source_code": "\ndef uleb128_decode(encoded: list[int]) -> int:\n    result = 0\n    shift = 0\n    for b in encoded:\n        result |= (b & 0x7F) << shift\n        if (b & 0x80) == 0 or shift >= 63:\n            break\n        shift += 7\n    return result\n",
+      "summary": "Unsigned LEB128 variable-length byte array decoder with shift overflow protection",
+      "teleological_intent": "Deterministic inverse decoding of prefix-free varint streams",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "uleb128_encode@9fc78989",
+      "cid": "cid:039fc7c80306149b",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952493.7058,
+      "dependencies": [],
+      "dimensional_units": "value: int -> list[int]",
+      "domain": "cryptography_and_framing",
+      "fp": "fp:039fc7c80306149b",
+      "invariants": [
+        "1 <= len(out) <= 10 for uint64",
+        "last byte has MSB == 0"
+      ],
+      "name": "uleb128_encode",
+      "param_types": [
+        "int"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "0",
+          "failure_mechanism": "Returns empty list [] for value == 0 or loops infinitely on negative signed ints",
+          "naive_pattern": "while value > 0: ... value >>= 7",
+          "pitfall_id": "leb128_negative_infinite_loop",
+          "verified_fix": "Mask non-negative value and use a do-while loop emitting at least one byte for 0"
+        }
+      ],
+      "pseudocode": "1. Extract 7 bits (val & 0x7F); 2. Set MSB 0x80 if more non-zero bits remain; 3. Shift right by 7",
+      "return_type": "list[int]",
+      "sid": "sid:9fc78989c9ba6781",
+      "source_code": "\ndef uleb128_encode(value: int) -> list[int]:\n    v = abs(value)\n    out: list[int] = []\n    while True:\n        byte = v & 0x7F\n        v >>= 7\n        if v != 0:\n            byte |= 0x80\n        out.append(byte)\n        if v == 0:\n            break\n    return out\n",
+      "summary": "Unsigned LEB128 variable-length integer encoding into 7-bit continuation byte array",
+      "teleological_intent": "Prefix-free compact wire framing for WebAssembly, DWARF, and Protobuf varints",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "welford_variance@02ad7ba4",
       "cid": "cid:f71d1b0174ca76bd",
-      "sid": "sid:fe73ee692ca1fcd5",
-      "fp": "fp:f71d1b0174ca76bd",
-      "name": "welford_variance",
+      "contributor_agent": "agy-local",
+      "created_at_ms": 1792063952477.6948,
+      "dependencies": [],
+      "dimensional_units": "xs: [U] -> U^2",
       "domain": "numerical_analysis",
-      "summary": "Welford single-pass online variance avoiding subtractive cancellation at kappa >= 10^8",
-      "pseudocode": "1. Track running mean and M2 = sum((x - mean_old)*(x - mean_new)); 2. return M2 / n",
+      "fp": "fp:f71d1b0174ca76bd",
       "invariants": [
         "Var(X + c) == Var(X)",
         "Var(X) >= 0"
       ],
-      "source_code": "\ndef welford_variance(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    count = 0\n    mean = 0.0\n    m2 = 0.0\n    for x in xs:\n        count += 1\n        delta = x - mean\n        mean += delta / count\n        delta2 = x - mean\n        m2 += delta * delta2\n    return m2 / count\n",
+      "name": "welford_variance",
       "param_types": [
         "list[float]"
       ],
-      "return_type": "float",
-      "dependencies": [],
       "pitfalls": [
         {
-          "pitfall_id": "variance_cancellation",
-          "naive_pattern": "sum(x*x)/n - (sum(x)/n)**2",
-          "failure_mechanism": "Severe precision loss from subtractive cancellation when kappa >= 10^8",
           "counterexample_input": "[1e12 + 1.0, 1e12 + 2.0, 1e12 + 3.0]",
+          "failure_mechanism": "Severe precision loss from subtractive cancellation when kappa >= 10^8",
+          "naive_pattern": "sum(x*x)/n - (sum(x)/n)**2",
+          "pitfall_id": "variance_cancellation",
           "verified_fix": "Use Welford online delta * delta2 update"
         }
       ],
+      "pseudocode": "1. Track running mean and M2 = sum((x - mean_old)*(x - mean_new)); 2. return M2 / n",
+      "return_type": "float",
+      "sid": "sid:02ad7ba4ca47e2da",
+      "source_code": "\ndef welford_variance(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    count = 0\n    mean = 0.0\n    m2 = 0.0\n    for x in xs:\n        count += 1\n        delta = x - mean\n        mean += delta / count\n        delta2 = x - mean\n        m2 += delta * delta2\n    return m2 / count\n",
+      "summary": "Welford single-pass online variance avoiding subtractive cancellation at kappa >= 10^8",
       "teleological_intent": "Orthogonal running residual accumulation preserving mantissa bits on shifted streams",
-      "dimensional_units": "xs: [U] -> U^2",
       "trust_tier": "peer_reviewed",
+      "wave": 1
+    },
+    {
+      "block_id": "welford_variance@fe73ee69",
+      "cid": "cid:f71d1b0174ca76bd",
       "contributor_agent": "agy-local",
-      "wave": 1,
-      "created_at_ms": 1792060154698.738
+      "created_at_ms": 1792060154698.738,
+      "dependencies": [],
+      "dimensional_units": "xs: [U] -> U^2",
+      "domain": "numerical_analysis",
+      "fp": "fp:f71d1b0174ca76bd",
+      "invariants": [
+        "Var(X + c) == Var(X)",
+        "Var(X) >= 0"
+      ],
+      "name": "welford_variance",
+      "param_types": [
+        "list[float]"
+      ],
+      "pitfalls": [
+        {
+          "counterexample_input": "[1e12 + 1.0, 1e12 + 2.0, 1e12 + 3.0]",
+          "failure_mechanism": "Severe precision loss from subtractive cancellation when kappa >= 10^8",
+          "naive_pattern": "sum(x*x)/n - (sum(x)/n)**2",
+          "pitfall_id": "variance_cancellation",
+          "verified_fix": "Use Welford online delta * delta2 update"
+        }
+      ],
+      "pseudocode": "1. Track running mean and M2 = sum((x - mean_old)*(x - mean_new)); 2. return M2 / n",
+      "return_type": "float",
+      "sid": "sid:fe73ee692ca1fcd5",
+      "source_code": "\ndef welford_variance(xs: list[float]) -> float:\n    if not xs:\n        return 0.0\n    count = 0\n    mean = 0.0\n    m2 = 0.0\n    for x in xs:\n        count += 1\n        delta = x - mean\n        mean += delta / count\n        delta2 = x - mean\n        m2 += delta * delta2\n    return m2 / count\n",
+      "summary": "Welford single-pass online variance avoiding subtractive cancellation at kappa >= 10^8",
+      "teleological_intent": "Orthogonal running residual accumulation preserving mantissa bits on shifted streams",
+      "trust_tier": "peer_reviewed",
+      "wave": 1
     }
   ],
+  "peer_review_executions": 33,
   "quarantined_ids": [],
-  "peer_review_executions": 4,
+  "schema_version": "1.0.0",
   "sid_dedup_hits": 0
 }

@@ -425,33 +425,40 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
                 f"[User Task]:\n{args.prompt}"
             )
 
-    async with Agent(config=cfg) as agent:
-        response = await agent.chat(effective_prompt)
+    from agy_local.tui import suppress_noisy_cpp_stderr
 
-        tasks: list[asyncio.Task[None]] = []
-        if args.show_thoughts:
-            async def _stream_thoughts() -> None:
-                async for thought in response.thoughts:
-                    sys.stderr.write(f"[Thinking] {thought}")
-                    sys.stderr.flush()
+    try:
+        with suppress_noisy_cpp_stderr():
+            async with Agent(config=cfg) as agent:
+                response = await agent.chat(effective_prompt)
 
-            tasks.append(asyncio.create_task(_stream_thoughts()))
+                tasks: list[asyncio.Task[None]] = []
+                if args.show_thoughts:
+                    async def _stream_thoughts() -> None:
+                        async for thought in response.thoughts:
+                            sys.stderr.write(f"[Thinking] {thought}")
+                            sys.stderr.flush()
 
-        if args.show_tools:
-            async def _stream_tools() -> None:
-                async for call in response.tool_calls:
-                    sys.stderr.write(f"\n[ToolCall] {call.name}({call.args})\n")
-                    sys.stderr.flush()
+                    tasks.append(asyncio.create_task(_stream_thoughts()))
 
-            tasks.append(asyncio.create_task(_stream_tools()))
+                if args.show_tools:
+                    async def _stream_tools() -> None:
+                        async for call in response.tool_calls:
+                            sys.stderr.write(f"\n[ToolCall] {call.name}({call.args})\n")
+                            sys.stderr.flush()
 
-        async for token in response:
-            sys.stdout.write(token)
-            sys.stdout.flush()
-        print()
+                    tasks.append(asyncio.create_task(_stream_tools()))
 
-        for t in tasks:
-            await asyncio.gather(t, return_exceptions=True)
+                async for token in response:
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                print()
+
+                for t in tasks:
+                    await asyncio.gather(t, return_exceptions=True)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        sys.stderr.write("\n[Interrupted]\n")
+        return 130
 
     return 0
 
@@ -744,39 +751,47 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"agy-local {__version__}{sha_info} [{status.install_mode}]")
         return 0
 
-    if getattr(args, "upgrade", False) or args.command in ("update", "upgrade"):
-        return _cmd_update(args)
-    if args.command == "config":
-        return _cmd_config(args)
-    if args.command == "completions":
-        print(generate_shell_completion(getattr(args, "shell", "bash")))
+    try:
+        if getattr(args, "upgrade", False) or args.command in ("update", "upgrade"):
+            return _cmd_update(args)
+        if args.command == "config":
+            return _cmd_config(args)
+        if args.command == "completions":
+            print(generate_shell_completion(getattr(args, "shell", "bash")))
+            return 0
+        if args.command == "integrate":
+            return _cmd_integrate(args)
+        if args.command == "scout":
+            return _cmd_scout(args)
+        if args.command == "presets":
+            return _cmd_presets(args)
+        if args.command == "models":
+            return _cmd_models(args)
+        if args.command == "doctor":
+            ensure_bin_symlinks()
+            return _cmd_doctor(args)
+        if args.command == "import-litert":
+            return _cmd_import_litert(args)
+        if args.command == "serve":
+            return _cmd_serve(args)
+        if args.command == "mcp":
+            serve_stdio()
+            return 0
+        if args.command == "exec":
+            return asyncio.run(_cmd_exec(args))
+        if args.command == "chat":
+            return asyncio.run(_cmd_chat(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        return 130
+    except BrokenPipeError:
         return 0
-    if args.command == "integrate":
-        return _cmd_integrate(args)
-    if args.command == "scout":
-        return _cmd_scout(args)
-    if args.command == "presets":
-        return _cmd_presets(args)
-    if args.command == "models":
-        return _cmd_models(args)
-    if args.command == "doctor":
-        ensure_bin_symlinks()
-        return _cmd_doctor(args)
-    if args.command == "import-litert":
-        return _cmd_import_litert(args)
-    if args.command == "serve":
-        return _cmd_serve(args)
-    if args.command == "mcp":
-        serve_stdio()
-        return 0
-    if args.command == "exec":
-        return asyncio.run(_cmd_exec(args))
-    if args.command == "chat":
-        return asyncio.run(_cmd_chat(args))
 
     parser.print_help()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        sys.exit(130)

@@ -27,6 +27,7 @@ State-of-the-art interactive agent harness featuring:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import difflib
 import json
 import os
@@ -35,6 +36,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +66,59 @@ from agy_local.harness_hooks import get_harness_telemetry
 from agy_local.integrate import integrate_frontier_agent
 from agy_local.presets import PRESETS, list_presets
 from agy_local.updater import UserConfig, check_for_updates, perform_self_update
+
+_NOISY_STDERR_SUBSTRINGS: tuple[str, ...] = (
+    "maxDynamicUniformBuffersPerPipelineLayout artificially reduced",
+    "maxDynamicStorageBuffersPerPipelineLayout artificially reduced",
+)
+
+
+@contextlib.contextmanager
+def suppress_noisy_cpp_stderr() -> Iterator[None]:
+    """Filters harmless C++ Dawn/WebGPU pipeline layout warnings written directly to fd 2."""
+    try:
+        orig_fd = os.dup(2)
+    except OSError:
+        yield
+        return
+
+    r_fd, w_fd = os.pipe()
+    os.dup2(w_fd, 2)
+    os.close(w_fd)
+
+    def _forward() -> None:
+        buf = b""
+        while True:
+            try:
+                chunk = os.read(r_fd, 4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line_bytes, buf = buf.split(b"\n", 1)
+                    line_str = line_bytes.decode("utf-8", errors="replace")
+                    if not any(pat in line_str for pat in _NOISY_STDERR_SUBSTRINGS):
+                        os.write(orig_fd, line_bytes + b"\n")
+            except OSError:
+                break
+        if buf:
+            line_str = buf.decode("utf-8", errors="replace")
+            if not any(pat in line_str for pat in _NOISY_STDERR_SUBSTRINGS):
+                with contextlib.suppress(OSError):
+                    os.write(orig_fd, buf)
+        with contextlib.suppress(OSError):
+            os.close(r_fd)
+            os.close(orig_fd)
+
+    reader = threading.Thread(target=_forward, daemon=True)
+    reader.start()
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            sys.stderr.flush()
+            os.dup2(orig_fd, 2)
+        reader.join(timeout=0.5)
 
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
@@ -1513,11 +1568,27 @@ class AgyRichTUI:
                 self._restart_requested = False
                 base_cfg = build_agent_config(self.options)
                 cfg = self._upgrade_interactive_config(base_cfg)
-                model_label, _backend_label, ctx_limit = self._active_model_summary(cfg)
+                model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
 
                 self.console.print(self.render_welcome_banner(cfg))
 
-                async with Agent(cfg) as agent:
+                agent_cm = Agent(cfg)
+                try:
+                    with (
+                        self.console.status(
+                            f"[bold cyan]⚡ Initializing {model_label}[/bold cyan] "
+                            f"[dim]({backend_label} · warming up KV cache)...[/dim]",
+                            spinner="dots",
+                        ),
+                        suppress_noisy_cpp_stderr(),
+                    ):
+                        agent = await agent_cm.__aenter__()
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    self.console.print("\n[dim]Startup cancelled.[/dim]")
+                    return 130
+
+                try:
+                    ctrl_c_streak = 0
                     while True:
                         try:
                             branch, dirty = _git_branch_and_dirty(workspace)
@@ -1545,32 +1616,42 @@ class AgyRichTUI:
                                 )
                             else:
                                 user_input = await _nonblocking_input("❯ ")
-                        except (EOFError, KeyboardInterrupt):
-                            self.console.print("\n[dim]Session closed.[/dim]")
-                            return 0
+                            ctrl_c_streak = 0
+                        except KeyboardInterrupt:
+                            ctrl_c_streak += 1
+                            if ctrl_c_streak >= 2:
+                                break
+                            self.console.print(
+                                "  [dim]Press Ctrl+C again, Ctrl+D, or type /exit to quit.[/dim]"
+                            )
+                            continue
+                        except (EOFError, asyncio.CancelledError):
+                            break
 
                         text = user_input.strip()
                         if not text:
                             continue
 
                         if text.lower() in ("exit", "quit"):
-                            self.console.print("[dim]Session closed.[/dim]")
-                            return 0
+                            break
 
                         # Direct !shell shortcut (like Claude Code / Codex CLI)
                         if text.startswith("!"):
                             shell_cmd = text[1:].strip()
                             if shell_cmd:
                                 self.console.print(Rule(f"[bold yellow]$ {shell_cmd}[/bold yellow]", style="yellow"))
-                                proc = await asyncio.to_thread(
-                                    subprocess.run,
-                                    shell_cmd,
-                                    shell=True,
-                                    cwd=workspace,
-                                    check=False,
-                                )
-                                status_color = "green" if proc.returncode == 0 else "red"
-                                self.console.print(f"[{status_color}]↳ exit code {proc.returncode}[/{status_color}]\n")
+                                try:
+                                    proc = await asyncio.to_thread(
+                                        subprocess.run,
+                                        shell_cmd,
+                                        shell=True,
+                                        cwd=workspace,
+                                        check=False,
+                                    )
+                                    status_color = "green" if proc.returncode == 0 else "red"
+                                    self.console.print(f"[{status_color}]↳ exit code {proc.returncode}[/{status_color}]\n")
+                                except (KeyboardInterrupt, asyncio.CancelledError):
+                                    self.console.print("\n[yellow]⚡ Shell command interrupted.[/yellow]\n")
                             continue
 
                         # Slash commands
@@ -1580,10 +1661,27 @@ class AgyRichTUI:
                                 break
                             continue
 
-                        await self._run_turn(agent, text, cfg)
+                        try:
+                            await self._run_turn(agent, text, cfg)
+                        except (KeyboardInterrupt, asyncio.CancelledError):
+                            self.console.print("\n  [yellow]⚡ Turn interrupted by user (Ctrl+C).[/yellow]\n")
+                finally:
+                    with (
+                        self.console.status(
+                            f"[dim]Shutting down {model_label} engine...[/dim]",
+                            spinner="dots",
+                        ),
+                        suppress_noisy_cpp_stderr(),
+                        contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError, Exception),
+                    ):
+                        await asyncio.shield(agent_cm.__aexit__(None, None, None))
+                    if not self._restart_requested:
+                        self.console.print("[dim]✓ Session closed cleanly.[/dim]")
 
                 if not self._restart_requested:
                     break
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            self.console.print("\n[dim]✓ Session closed cleanly.[/dim]")
         finally:
             if _ACTIVE_TUI is self:
                 _ACTIVE_TUI = None

@@ -550,5 +550,16 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     assert (home_mock / ".cursor" / "mcp.json").is_file()
     assert (home_mock / ".codex" / "mcp.json").is_file()
 
+    # 5. C++ Dawn/WebGPU stderr filter
+    import os
+
+    from agy_local.tui import suppress_noisy_cpp_stderr
+
+    with suppress_noisy_cpp_stderr():
+        os.write(
+            2,
+            b"Warning: maxDynamicUniformBuffersPerPipelineLayout artificially reduced from 500000 to 16\n",
+        )
+
 
 

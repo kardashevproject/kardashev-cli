@@ -380,8 +380,8 @@ _register("logit", [], _SIMPLE(_logit))
 _register("gelu", [], _SIMPLE(_gelu))
 _register("silu", ["swish"], _SIMPLE(_silu))
 _register("mean", ["average"], _SIMPLE(_mean))
-_register("variance", ["var"], _variance_candidates)
-_register("std", ["stddev", "standard_deviation"], _std_candidates)
+_register("variance", ["var", "sample_variance", "population_variance"], _variance_candidates)
+_register("std", ["stddev", "standard_deviation", "sample_std", "population_std"], _std_candidates)
 _register("hypot", [], _SIMPLE(_hypot))
 _register("haversine", ["haversine_distance"], _haversine_candidates)
 _register("gcd", ["greatest_common_divisor"], _SIMPLE(_gcd))
@@ -411,7 +411,7 @@ def lookup_oracle(func_name: str, summary: str) -> OracleMatch | None:
     key = ALIASES.get(canonical)
     if key is None:
         return None
-    candidates = REGISTRY[key](summary or "")
+    candidates = REGISTRY[key](f"{func_name} {summary or ''}")
     if len(candidates) == 1:
         ref, note = candidates[0]
         return OracleMatch(key=key, reference=ref, note=note)
@@ -420,12 +420,17 @@ def lookup_oracle(func_name: str, summary: str) -> OracleMatch | None:
 
 
 def candidates_for(func_name: str, summary: str) -> list[tuple[Callable, str]] | None:
-    """Return the list of (reference_fn, note) candidates for a name, or None if unmatched."""
+    """Return the list of (reference_fn, note) candidates for a name, or None if unmatched.
+
+    The declaration text handed to each variant-selector is the function
+    name *and* the summary, so a name like ``sample_variance`` declares its
+    own variant even with a generic summary.
+    """
     canonical = canonicalize_name(func_name)
     key = ALIASES.get(canonical)
     if key is None:
         return None
-    return REGISTRY[key](summary or "")
+    return REGISTRY[key](f"{func_name} {summary or ''}")
 
 
 DEFAULT_ORACLES = REGISTRY

@@ -57,14 +57,20 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
+from agy_local.ast_map import build_workspace_index, render_compact_repo_map, scout_workspace
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
+from agy_local.harness_hooks import get_harness_telemetry
+from agy_local.integrate import integrate_frontier_agent
 from agy_local.presets import PRESETS, list_presets
 from agy_local.updater import UserConfig, check_for_updates, perform_self_update
 
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
     "/status": "Show session token usage, context window utilization bar, turn count, and telemetry",
+    "/ast": "Render or toggle automatic AST Repo-Map context injection (/ast \\[show|on|off])",
+    "/scout": "Run the AST Context Scout on a query to extract surgical code slices (/scout <query>)",
+    "/integrate": "Install agy-local Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
     "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset glm4-9b-ollama)",
     "/model": "Switch model ID or OpenAI base URL (e.g., /model qwen3-vl-8b http://127.0.0.1:8000/v1)",
     "/policy": "Switch tool execution policy mode (/policy allow-all | ask | sandbox)",
@@ -592,6 +598,7 @@ class AgyRichTUI:
         self.options = options
         self.console = console or Console()
         self.show_thoughts = True
+        self.auto_inject_ast_map = True
         self.session_turns = 0
         self.session_tool_calls = 0
         self.total_prompt_tokens = 0
@@ -676,6 +683,8 @@ class AgyRichTUI:
         grid.add_row("Model", f"[bold cyan]{model_label}[/bold cyan]  [dim]· {backend_label}[/dim]")
         grid.add_row("Workspace", f"[bold white]{workspace}[/bold white]{git_badge}")
         mcp_list = ["chronosml"] if self.options.with_chronosml_mcp else []
+        if self.options.with_opencommons_mcp:
+            mcp_list.append("opencommons")
         mcp_list.extend(name for name, _, _ in self.options.extra_mcp_stdio)
         mcp_str = ", ".join(mcp_list) if mcp_list else "none (use --with-chronosml to enable)"
         ralph_badge = (
@@ -687,9 +696,14 @@ class AgyRichTUI:
             "Safety & Context",
             f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [dim]· compaction ceiling:[/dim] {ctx_limit:,} tok  [dim]· MCP:[/dim] {mcp_str}{ralph_badge}",
         )
+        ast_state = "ON" if self.auto_inject_ast_map else "OFF"
+        grid.add_row(
+            "Cognitive Engine",
+            f"[bold green]4-Phase CoT[/bold green] · [bold cyan]AST Repo-Map ({ast_state})[/bold cyan] · [bold yellow]Self-Healing Fuzzy Edits[/bold yellow] · [bold magenta]Loop-Breaker[/bold magenta]",
+        )
         grid.add_row(
             "Shortcuts",
-            "[dim][bold]/help[/bold] commands · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] context · [bold]!cmd[/bold] shell · [bold]/ralph[/bold] auto-verify · [bold]/update[/bold] self-update[/dim]",
+            "[dim][bold]/help[/bold] commands · [bold]/scout[/bold] AST search · [bold]/integrate[/bold] frontier agents · [bold]@file:1-50[/bold] / [bold]@git:diff[/bold] · [bold]!cmd[/bold] shell[/dim]",
         )
         upd = check_for_updates(force=False)
         if upd.update_available:
@@ -701,7 +715,7 @@ class AgyRichTUI:
         return Panel(
             grid,
             title="[bold bright_white]✦ Antigravity Local Studio[/bold bright_white] [dim](agy-local v0.1.0)[/dim]",
-            subtitle="[dim]The Kardashev Project · State-of-the-Art Local Agent Harness[/dim]",
+            subtitle="[dim]The Kardashev Project · Engineered AST, CoT & Self-Healing Agent Harness[/dim]",
             border_style="bright_blue",
             padding=(0, 1),
         )
@@ -829,8 +843,9 @@ class AgyRichTUI:
             t_tok = (usage.thoughts_token_count or 0) if usage else 0
             tot_tok = (usage.total_token_count or 0) if usage and usage.total_token_count else (p_tok + c_tok)
             gauge = render_context_gauge(tot_tok, ctx_limit)
+            htel = get_harness_telemetry()
 
-            tbl = Table(title="Session Telemetry & Harness Status", border_style="cyan")
+            tbl = Table(title="Session Telemetry & Engineered Harness Status", border_style="cyan")
             tbl.add_column("Metric", style="bold dim")
             tbl.add_column("Value", style="white")
             tbl.add_row("Active Model", f"[bold cyan]{model_label}[/bold cyan] ({backend_label})")
@@ -839,6 +854,12 @@ class AgyRichTUI:
             tbl.add_row("Executed Tool Calls", str(self.session_tool_calls))
             tbl.add_row("Prompt / Output / Thought Tokens", f"{p_tok:,} in · {c_tok:,} out · {t_tok:,} thought")
             tbl.add_row("Context Window Utilization", f"{gauge}  ({tot_tok:,} / {ctx_limit:,} tok)")
+            tbl.add_row(
+                "Self-Healing Edits & Loop Blocks",
+                f"[bold green]{htel.healed_edits_count} healed[/bold green] · "
+                f"[bold yellow]{htel.loop_blocks_count} loop(s) blocked[/bold yellow] · "
+                f"[cyan]{htel.ast_maps_injected} AST map(s)[/cyan]",
+            )
             tbl.add_row(
                 "Compaction Events",
                 str(max(len(agent.conversation.compaction_indices), self.compaction_notifications)),
@@ -1173,6 +1194,64 @@ class AgyRichTUI:
             self.console.print("[yellow]Usage: /config [show|save][/yellow]")
             return False
 
+        if cmd == "/ast":
+            sub = args[0].lower() if args else "show"
+            if sub in ("on", "enable"):
+                self.auto_inject_ast_map = True
+                self.console.print("[green]✓ Enabled automatic AST Repo-Map injection.[/green]")
+                return False
+            if sub in ("off", "disable"):
+                self.auto_inject_ast_map = False
+                self.console.print("[yellow]✓ Disabled automatic AST Repo-Map injection.[/yellow]")
+                return False
+            idx = await asyncio.to_thread(build_workspace_index, workspace)
+            rmap = render_compact_repo_map(idx, query=" ".join(args[1:]), max_chars=4000)
+            self.console.print(
+                Panel(
+                    Syntax(rmap, "markdown", theme="monokai", word_wrap=True),
+                    title=f"[bold cyan]AST Repo-Map ({len(idx)} files indexed)[/bold cyan]",
+                    border_style="cyan",
+                )
+            )
+            return False
+
+        if cmd == "/scout":
+            if not args:
+                self.console.print("[yellow]Usage: /scout <query_or_symbol>[/yellow]")
+                return False
+            query_str = " ".join(args)
+            res = await asyncio.to_thread(scout_workspace, workspace, query_str, max_slices=4)
+            tbl = Table(
+                title=(
+                    f"AST Context Scout: '{query_str}' "
+                    f"(~{res.estimated_tokens_saved:,} raw tokens saved)"
+                ),
+                border_style="cyan",
+            )
+            tbl.add_column("File", style="bold cyan")
+            tbl.add_column("Symbol", style="bold yellow")
+            tbl.add_column("Lines", justify="right", style="magenta")
+            tbl.add_column("Score", justify="right", style="green")
+            for sl in res.surgical_slices:
+                tbl.add_row(sl["path"], sl["symbol"], f"L{sl['start_line']}-{sl['end_line']}", str(sl["score"]))
+            self.console.print(tbl)
+            return False
+
+        if cmd == "/integrate":
+            target = args[0].lower() if args else "all"
+            try:
+                int_results = integrate_frontier_agent(target)
+                tbl = Table(title="Frontier Coding Agent Co-Processor Integration", border_style="green")
+                tbl.add_column("Target Agent", style="bold cyan")
+                tbl.add_column("MCP Config", style="white")
+                tbl.add_column("Installed Co-Processor Skill / Rule", style="dim")
+                for r in int_results:
+                    tbl.add_row(r.target, r.mcp_config_path, r.skill_path or "—")
+                self.console.print(tbl)
+            except ValueError as exc:
+                self.console.print(f"[red]✗ {exc}[/red]")
+            return False
+
         self.console.print(f"[yellow]Unknown command '{cmd}'. Type /help for available commands.[/yellow]")
         return False
 
@@ -1183,6 +1262,19 @@ class AgyRichTUI:
             self.console.print(
                 f"  [dim]📎 Attached {', '.join(f'[cyan]{f}[/cyan]' for f in attached)}[/dim]"
             )
+
+        # On Turn 0 (or when AST Repo-Map is enabled), prepend a compact query-ranked AST Repo-Map
+        if self.auto_inject_ast_map and self.session_turns == 0:
+            idx = await asyncio.to_thread(build_workspace_index, workspace)
+            if idx:
+                rmap = render_compact_repo_map(idx, query=user_text, max_chars=2800)
+                augmented_prompt = f"{rmap}\n\n{augmented_prompt}"
+                htel = get_harness_telemetry()
+                htel.ast_maps_injected += 1
+                tot_syms = sum(len(f.symbols) for f in idx)
+                self.console.print(
+                    f"  [dim]🧭 Grounded with AST Repo-Map ({len(idx)} files · {tot_syms} symbols)[/dim]"
+                )
 
         # Auto-snapshot git state before the turn in case the agent edits files
         cp = create_git_checkpoint(

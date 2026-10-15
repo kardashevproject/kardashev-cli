@@ -15,8 +15,10 @@ from google.antigravity import Agent
 from google.antigravity.utils.interactive import run_interactive_loop
 
 from agy_local import __version__
+from agy_local.ast_map import scout_workspace
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
+from agy_local.integrate import integrate_frontier_agent
 from agy_local.mcp_server import serve_stdio
 from agy_local.presets import BackendKind, get_preset, list_presets
 from agy_local.serve import compute_serve_plan
@@ -296,6 +298,30 @@ def _build_parser() -> argparse.ArgumentParser:
         default="bash",
         help="Target shell (default: bash).",
     )
+
+    # 12. integrate (install agy-local Co-Processor MCP & skill into frontier coding agents)
+    int_p = sub.add_parser(
+        "integrate",
+        help="Auto-configure Antigravity, Claude Code, Cursor, or Codex with the agy-local Co-Processor MCP & skill.",
+    )
+    int_p.add_argument(
+        "target",
+        nargs="?",
+        choices=["antigravity", "claude", "cursor", "codex", "all"],
+        default="all",
+        help="Target frontier coding agent (default: all).",
+    )
+    int_p.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    # 13. scout (fast AST Repo-Map & surgical code slice extractor)
+    scout_p = sub.add_parser(
+        "scout",
+        help="Run the AST Repo-Map & surgical code slice extractor on a workspace query.",
+    )
+    scout_p.add_argument("query", nargs="*", help="Search query or symbol names.")
+    scout_p.add_argument("-w", "--workspace", default=os.getcwd(), help="Workspace directory.")
+    scout_p.add_argument("--max-slices", type=int, default=5, help="Max code slices to extract.")
+    scout_p.add_argument("--json", action="store_true", help="Output full ScoutResult as JSON.")
 
     return parser
 
@@ -644,6 +670,42 @@ def _cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_integrate(args: argparse.Namespace) -> int:
+    ensure_bin_symlinks()
+    target = getattr(args, "target", "all") or "all"
+    results = integrate_frontier_agent(target)
+    if getattr(args, "json", False):
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+        return 0
+    print("=== agy-local Frontier Agent Co-Processor Integration ===")
+    for r in results:
+        print(f"  ✓ [{r.target.upper()}]")
+        print(f"      MCP Config : {r.mcp_config_path}")
+        print(f"      Skill/Rule : {r.skill_path}")
+        print(f"      Executable : {r.binary_command}")
+    return 0
+
+
+def _cmd_scout(args: argparse.Namespace) -> int:
+    query = " ".join(getattr(args, "query", []) or [])
+    ws = getattr(args, "workspace", os.getcwd())
+    max_slices = int(getattr(args, "max_slices", 5))
+    res = scout_workspace(ws, query, max_slices=max_slices)
+    if getattr(args, "json", False):
+        print(json.dumps(res.to_dict(), indent=2))
+        return 0
+    print(res.compact_repo_map)
+    if res.surgical_slices:
+        print(
+            f"\n=== Surgical Code Slices ({len(res.surgical_slices)} hit(s) · "
+            f"~{res.estimated_tokens_saved:,} raw tokens saved) ==="
+        )
+        for sl in res.surgical_slices:
+            print(f"\n--- {sl['path']} :: {sl['symbol']} (L{sl['start_line']}-{sl['end_line']}) ---")
+            print(sl["code"])
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args_list = list(argv) if argv is not None else sys.argv[1:]
@@ -674,6 +736,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "completions":
         print(generate_shell_completion(getattr(args, "shell", "bash")))
         return 0
+    if args.command == "integrate":
+        return _cmd_integrate(args)
+    if args.command == "scout":
+        return _cmd_scout(args)
     if args.command == "presets":
         return _cmd_presets(args)
     if args.command == "models":

@@ -19,6 +19,12 @@ from google.antigravity import (
 )
 from google.antigravity.hooks import policy
 
+from agy_local.harness_hooks import (
+    SUPER_INTELLIGENCE_COT_PROMPT,
+    ActionableToolErrorHook,
+    SelfHealingEditHook,
+    SyntaxGatePostToolHook,
+)
 from agy_local.presets import BackendKind, get_preset
 
 
@@ -48,6 +54,8 @@ class HarnessOptions:
     lightweight: bool = True
     token_threshold: int | None = None
     system_instructions: str | None = None
+    enable_cot_harness: bool = True
+    enable_self_healing_edits: bool = True
     skills_paths: list[str] | None = None
     with_chronosml_mcp: bool = False
     with_opencommons_mcp: bool = False
@@ -130,7 +138,7 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
             resolved_model_path = default_preset.resolved_model_path()
 
     policy_mode = (
-         options.policy_mode
+        options.policy_mode
         if isinstance(options.policy_mode, PolicyMode)
         else PolicyMode(options.policy_mode)
     )
@@ -143,12 +151,34 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         else None
     )
 
+    hooks_list: list[Any] = []
+    if options.enable_self_healing_edits:
+        hooks_list.extend(
+            [
+                SelfHealingEditHook(),
+                SyntaxGatePostToolHook(),
+                ActionableToolErrorHook(),
+            ]
+        )
+
+    combined_instructions = ""
+    if options.enable_cot_harness:
+        combined_instructions = SUPER_INTELLIGENCE_COT_PROMPT
+    if options.system_instructions:
+        combined_instructions = (
+            f"{combined_instructions}\n\n{options.system_instructions}".strip()
+            if combined_instructions
+            else options.system_instructions
+        )
+
     common_kwargs: dict[str, Any] = {
         "workspaces": workspaces,
         "policies": policies,
     }
-    if options.system_instructions:
-        common_kwargs["system_instructions"] = options.system_instructions
+    if hooks_list:
+        common_kwargs["hooks"] = hooks_list
+    if combined_instructions:
+        common_kwargs["system_instructions"] = combined_instructions
     if options.skills_paths:
         common_kwargs["skills_paths"] = [
             os.path.abspath(os.path.expanduser(p)) for p in options.skills_paths

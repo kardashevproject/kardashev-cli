@@ -122,7 +122,7 @@ def test_compute_serve_plan_and_cli(capsys: pytest.CaptureFixture[str]) -> None:
     assert serve_out["served_model_name"] == "THUDM/glm-4-9b-chat"
 
 
-def test_mcp_server_jsonrpc() -> None:
+def test_mcp_server_jsonrpc(tmp_path: Path) -> None:
     init_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
     assert init_resp is not None
     assert init_resp["result"]["serverInfo"]["name"] == "agy-local"
@@ -130,7 +130,13 @@ def test_mcp_server_jsonrpc() -> None:
     tools_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     assert tools_resp is not None
     tool_names = {t["name"] for t in tools_resp["result"]["tools"]}
-    assert tool_names == {"run_local_agent_task", "list_local_models"}
+    assert tool_names == {
+        "scout_codebase",
+        "apply_smart_patch",
+        "verify_and_repair",
+        "run_local_agent_task",
+        "list_local_models",
+    }
 
     call_resp = handle_mcp_request(
         {
@@ -144,6 +150,51 @@ def test_mcp_server_jsonrpc() -> None:
     assert call_resp["result"]["isError"] is False
     structured = call_resp["result"]["structuredContent"]
     assert "gemma4-26b" in structured["presets"]
+
+    # Test scout_codebase and apply_smart_patch over MCP JSON-RPC
+    sample = tmp_path / "calc.py"
+    sample.write_text(
+        "class Calculator:\n"
+        "    def compute_value(self, x: int) -> int:\n"
+        "        return x + 1\n",
+        encoding="utf-8",
+    )
+    scout_resp = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "scout_codebase",
+                "arguments": {"query": "compute_value Calculator", "workspace": str(tmp_path)},
+            },
+        }
+    )
+    assert scout_resp is not None
+    assert scout_resp["result"]["isError"] is False
+    ranked_paths = [f["path"] for f in scout_resp["result"]["structuredContent"]["ranked_files"]]
+    assert "calc.py" in ranked_paths
+
+    patch_resp = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "tools/call",
+            "params": {
+                "name": "apply_smart_patch",
+                "arguments": {
+                    "target_file": str(sample),
+                    "target_content": "def compute_value(self, x: int) -> int:\n    return x + 1\n",
+                    "replacement_content": "def compute_value(self, x: int) -> int:\n    return x * 10\n",
+                    "start_line": 99,
+                    "end_line": 100,
+                },
+            },
+        }
+    )
+    assert patch_resp is not None
+    assert patch_resp["result"]["isError"] is False
+    assert "return x * 10" in sample.read_text(encoding="utf-8")
 
 
 def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
@@ -336,6 +387,117 @@ def test_cli_updater_config_and_completions(
     assert root is not None
     assert main(["--version"]) == 0
     assert "agy-local 0.1.0" in capsys.readouterr().out
+
+
+def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
+    import asyncio
+    import copy
+
+    from google.antigravity import types
+    from google.antigravity.hooks import hooks as hooks_mod
+
+    from agy_local.ast_map import parse_python_symbols, render_compact_repo_map, scout_workspace
+    from agy_local.harness_hooks import (
+        SelfHealingEditHook,
+        get_harness_telemetry,
+        heal_replace_file_args,
+        reset_harness_telemetry,
+    )
+    from agy_local.integrate import integrate_frontier_agent
+
+    # 1. AST Repo-Map & Scout
+    py_file = tmp_path / "engine.py"
+    src_text = (
+        "class QuantumRouter:\n"
+        "    \"\"\"Routes quantum states.\"\"\"\n"
+        "    def dispatch_packet(self, payload: bytes) -> bool:\n"
+        "        return len(payload) > 0\n\n"
+        "def helper_fn(a: int, b: int) -> int:\n"
+        "    return a + b\n"
+    )
+    py_file.write_text(src_text, encoding="utf-8")
+    summary = parse_python_symbols(src_text, "engine.py")
+    assert any(s.name == "QuantumRouter" and s.kind == "class" for s in summary.symbols)
+    assert any(s.name == "dispatch_packet" and s.kind == "method" for s in summary.symbols)
+
+    repo_map = render_compact_repo_map(tmp_path)
+    assert "engine.py" in repo_map
+    assert "QuantumRouter" in repo_map
+
+    scout_res = scout_workspace(tmp_path, "dispatch_packet QuantumRouter")
+    assert any(f["path"] == "engine.py" for f in scout_res.ranked_files)
+    assert any("dispatch_packet" in s["symbol"] for s in scout_res.surgical_slices)
+
+    # 2. Self-Healing Edit Engine (Stage A: wrong line numbers, Stage B: indentation shift, Stage C: fuzzy match)
+    # Stage A: exact match at lines 3-4, but model hallucinated lines 50-55
+    args_a = {
+        "TargetFile": str(py_file),
+        "StartLine": 50,
+        "EndLine": 55,
+        "TargetContent": "    def dispatch_packet(self, payload: bytes) -> bool:\n        return len(payload) > 0",
+        "ReplacementContent": "    def dispatch_packet(self, payload: bytes) -> bool:\n        return len(payload) >= 1",
+    }
+    healed_a, reason_a = heal_replace_file_args(args_a)
+    assert healed_a is not None and reason_a is not None
+    assert "exact match" in reason_a
+    assert healed_a["StartLine"] == 3
+    assert healed_a["EndLine"] == 4
+
+    # Stage B: model forgot class method 4-space indentation
+    args_b = {
+        "TargetFile": str(py_file),
+        "StartLine": 1,
+        "EndLine": 2,
+        "TargetContent": "def dispatch_packet(self, payload: bytes) -> bool:\n    return len(payload) > 0",
+        "ReplacementContent": "def dispatch_packet(self, payload: bytes) -> bool:\n    return True",
+    }
+    healed_b, reason_b = heal_replace_file_args(args_b)
+    assert healed_b is not None and reason_b is not None
+    assert "indentation" in reason_b
+    assert healed_b["TargetContent"].startswith("    def dispatch_packet")
+    assert healed_b["ReplacementContent"].startswith("    def dispatch_packet")
+
+    # Stage C: slight typo in target content (fuzzy similarity >= 0.88)
+    args_c = {
+        "TargetFile": str(py_file),
+        "StartLine": 1,
+        "EndLine": 10,
+        "TargetContent": "    def dispatch_packet(self, payload: bytes) -> bool:\n        return len(payload) > 0  #",
+        "ReplacementContent": "    def dispatch_packet(self, payload: bytes) -> bool:\n        return False",
+    }
+    _healed_c, reason_c = heal_replace_file_args(args_c)
+    assert reason_c is not None and "fuzzy block match" in reason_c
+
+    # 3. Verify Hook deepcopy compatibility & Loop-Breaker
+    hook = SelfHealingEditHook()
+    copied_hook = copy.deepcopy(hook)
+    assert isinstance(copied_hook, SelfHealingEditHook)
+
+    async def _test_loop_breaker() -> None:
+        reset_harness_telemetry()
+        ctx = hooks_mod.HookContext()
+        tc = types.ToolCall(name="run_command", args={"CommandLine": "pytest"})
+        r1 = await hook.run(ctx, tc)
+        assert r1.allow is True
+        r2 = await hook.run(ctx, tc)
+        assert r2.allow is True
+        r3 = await hook.run(ctx, tc)
+        assert r3.allow is False
+        assert "Loop-Breaker" in (r3.message or "")
+        assert get_harness_telemetry().loop_blocks_count >= 1
+
+    asyncio.run(_test_loop_breaker())
+
+    # 4. Frontier Agent Integrator
+    home_mock = tmp_path / "mock_home"
+    home_mock.mkdir()
+    statuses = integrate_frontier_agent("all", home_dir=home_mock)
+    assert len(statuses) == 4
+    assert all(s.status == "installed" for s in statuses)
+    assert (home_mock / ".gemini" / "antigravity" / "mcp_config.json").is_file()
+    assert (home_mock / ".claude" / "mcp_servers.json").is_file()
+    assert (home_mock / ".cursor" / "mcp.json").is_file()
+    assert (home_mock / ".codex" / "mcp.json").is_file()
 
 
 

@@ -11,6 +11,10 @@
 - **Curated Open-Weight Presets**: Built-in presets for `gemma4-26b`, `glm4-9b-ollama`, `glm4-vllm`, `glm-zhipu-api`, `qwen3.6-35b-vllm`, `qwen3.8-27b-vllm`, `qwen3-vl-8b-vllm`, `gpt-oss-20b-vllm`, and `lm-studio`.
 - **Zero-Config Local Discovery (`agy-local models` & `agy-local doctor`)**: Automatically scans `~/.litert-lm/models`, `~/.cache/huggingface/hub`, and `~/models`, and probes local ports (`8000`, `11434`, `1234`, `30000`) to detect ready-to-run checkpoints and live servers.
 
+- **4-Phase Super-Intelligence Cognitive Harness (`SUPER_INTELLIGENCE_COT_PROMPT`)**: Replaces generic tool prompts with a strict 4-phase engineering protocol (`[1. LOCATE & GROUND]` $\rightarrow$ `[2. HYPOTHESIZE & INVARIANTS]` $\rightarrow$ `[3. SURGICAL EDIT]` $\rightarrow$ `[4. EMPIRICAL VERIFICATION]`) plus automatic Turn-0 AST Repo-Map injection.
+- **3-Stage Self-Healing Fuzzy Edit Engine (`SelfHealingEditHook` + `SyntaxGatePostToolHook`)**: Automatically heals hallucinated `StartLine`/`EndLine` coordinates (Stage A), class-method indentation drift (Stage B), and minor whitespace/typo divergence $\ge 88\%$ (Stage C) before `replace_file_content` executes, backed by an AST syntax gate and per-turn SHA-256 infinite-loop breaker.
+- **One-Command Frontier Agent Co-Processor (`agy-local integrate`)**: Connects `agy-local-mcp` and installs the `agy-local-coprocessor` skill into **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex CLI**, cutting cloud input tokens by 60–80% via `scout_codebase` and `apply_smart_patch`.
+
 ---
 
 ## Quickstart
@@ -31,20 +35,28 @@ cd agy-local && pip install -e ".[litert]"
 
 This installs **`agy-local`**, the short alias **`agy`**, and **`agy-local-mcp`** into `~/.local/bin`.
 
-### 2. Self-Update Anytime (`agy-local update` or `/update`)
+### 2. Integrate with Frontier Coding Agents (`Antigravity`, `Claude Code`, `Cursor`, `Codex`)
+
+Turn your local GPU/CPU into a high-speed AST Scout, Self-Healing Patch Engine, and Verification Co-Processor for frontier coding agents in one command:
+
+```bash
+agy-local integrate antigravity   # Or: claude, cursor, codex, all
+```
+
+### 3. Self-Update Anytime (`agy-local update` or `/update`)
 
 ```bash
 agy-local update          # Pulls latest commits, upgrades dependencies, refreshes symlinks
 agy-local update --check  # Check if a newer release/commit is available
 ```
 
-### 3. Import the Gemma 4 26B LiteRT Checkpoint (On-Device GPU/NPU)
+### 4. Import the Gemma 4 26B LiteRT Checkpoint (On-Device GPU/NPU)
 
 ```bash
 agy-local import-litert --preset gemma4-26b
 ```
 
-### 4. Launch the Interactive Antigravity Studio TUI (`agy` / `agy-local`)
+### 5. Launch the Interactive Antigravity Studio TUI (`agy` / `agy-local`)
 
 ```bash
 # Launch directly with your saved user defaults (~/.config/agy-local/config.json):
@@ -79,7 +91,10 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 | Shortcut / Command | Description |
 |---|---|
 | `/help` | Display all interactive slash commands, keybindings, `@file` mentions, and `!shell` shortcuts. |
-| `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), turn count, checkpoints, and compactions. |
+| `/status` | Inspect session token usage, Unicode context utilization gauge (`█░`), self-healing edit stats, checkpoints, and compactions. |
+| `/ast [query]` | Render the ranked Aider-style AST Repository Map (`classes`, `methods`, `functions`, `[start-end]` lines). |
+| `/scout <query>` | Run the Surgical Context Scout to extract ranked AST symbols and exact code slices (`<2,000 tokens`). |
+| `/integrate [target]` | Auto-configure `agy-local-mcp` and co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
 | `/preset [key]` | List all presets or hot-swap the active model preset mid-session (e.g., `/preset gemma4-26b`). |
 | `/model <id> [url]` | Hot-swap to any model ID, `.litertlm` path, or OpenAI base URL mid-session. |
 | `/policy <mode>` | Switch safety policy on the fly (`allow-all`, `ask`, `sandbox`) or press `Alt+P`. |
@@ -111,6 +126,8 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 |---|---|
 | `agy` / `agy-local [chat]` | Launch the Rich Terminal UI (`AgyRichTUI`) with full Antigravity coding tools (pass `--plain` for minimal REPL). |
 | `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
+| `agy-local scout "<query>"` | Run the AST Repo-Map & Surgical Context Scout on a workspace (`--json` and `--max-slices` supported). |
+| `agy-local integrate [target]` | Auto-register `agy-local-mcp` & co-processor skills into `antigravity`, `claude`, `cursor`, `codex`, or `all`. |
 | `agy-local update` (`--upgrade`) | Self-update `agy-local` from GitHub `main`, upgrade dependencies, and refresh `~/.local/bin` symlinks (`--check` supported). |
 | `agy-local config [show\|set\|reset]` | View or set persistent user defaults in `~/.config/agy-local/config.json`. |
 | `agy-local completions [bash\|zsh\|fish]` | Output shell tab-completion scripts (`eval "$(agy-local completions zsh)"`). |
@@ -123,20 +140,17 @@ Inspired by **Claude Code** and **OpenAI Codex CLI**, `agy-local chat` launches 
 
 ---
 
-## Plug-and-Play MCP Server (`agy-local-mcp`)
+## Frontier Agent Co-Processor MCP Server (`agy-local-mcp`)
 
-Expose local on-device models (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama`) as a zero-cost subagent tool inside **Antigravity 2.0**, **Claude Code**, or **Cursor**:
+Run `agy-local integrate all` (or configure `agy-local-mcp` manually) to expose 5 zero-cost local tools to **Antigravity 2.0**, **Claude Code**, **Cursor**, and **OpenAI Codex**:
 
-```json
-{
-  "mcpServers": {
-    "agy-local": {
-      "command": "agy-local-mcp",
-      "args": []
-    }
-  }
-}
-```
+| MCP Tool | Purpose for Frontier Agents |
+|---|---|
+| `scout_codebase` | Builds a ranked AST Repository Map + surgical code slices (`<2,000 tokens`) for a natural-language or symbol query, saving 60–80% of frontier input tokens. |
+| `apply_smart_patch` | Applies a code replacement using the 3-stage self-healing fuzzy matcher (exact line-shift, indentation alignment, or $\ge 88\%$ fuzzy block match) with automatic Python AST syntax rollback. |
+| `verify_and_repair` | Runs a test/linter command (`pytest`, `ruff`, `mypy`) and returns structured failure diagnostics or invokes the local agent to repair failures. |
+| `run_local_agent_task` | Delegates boilerplate generation, docstrings, or sub-tasks to an on-device model (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama`) at zero API cost. |
+| `list_local_models` | Lists all built-in presets, discovered local checkpoints, and active localhost OpenAI inference servers. |
 
 ---
 

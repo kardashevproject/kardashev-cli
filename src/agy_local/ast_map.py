@@ -12,10 +12,11 @@ Provides fast, zero-dependency AST & regex symbol indexing across a workspace so
 from __future__ import annotations
 
 import ast
-from dataclasses import asdict, dataclass, field
+import contextlib
 import os
-from pathlib import Path
 import re
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 IGNORED_DIRS: set[str] = {
@@ -156,10 +157,8 @@ def parse_python_symbols(source: str, rel_path: str) -> FileSymbolSummary:
         elif isinstance(node, ast.ClassDef):
             bases = []
             for b in node.bases:
-                try:
+                with contextlib.suppress(Exception):
                     bases.append(ast.unparse(b))
-                except Exception:  # noqa: BLE001
-                    pass
             base_str = f"({', '.join(bases)})" if bases else ""
             sig = f"class {node.name}{base_str}"
             doc = ast.get_docstring(node)
@@ -303,11 +302,13 @@ def _tokenize_query(query: str) -> list[str]:
 
 
 def render_compact_repo_map(
-    index: list[FileSymbolSummary],
+    index: list[FileSymbolSummary] | str | Path,
     query: str = "",
     max_chars: int = 4200,
 ) -> str:
     """Renders an Aider-style compact AST repository map ranked by query relevance."""
+    if isinstance(index, (str, Path)):
+        index = build_workspace_index(index)
     terms = _tokenize_query(query)
     scored: list[tuple[float, FileSymbolSummary]] = []
 

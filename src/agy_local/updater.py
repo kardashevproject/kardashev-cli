@@ -145,6 +145,14 @@ def _is_remote_ahead(repo_root: Path | None, local_sha: str | None, remote_sha: 
     return True
 
 
+def _version_tuple(v: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for p in str(v).lstrip("v").split("."):
+        if p.isdigit():
+            parts.append(int(p))
+    return tuple(parts)
+
+
 def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateStatus:
     """Checks GitHub for newer releases or commits on `main`, caching results for 12 hours."""
     install_mode, repo_root = detect_install_layout()
@@ -156,16 +164,16 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
             cached = json.loads(cache_file.read_text(encoding="utf-8"))
             if time.time() - float(cached.get("checked_at", 0)) < UPDATE_CHECK_TTL_SECONDS:
                 remote_sha = cached.get("remote_commit")
-                latest_ver = cached.get("latest_version", __version__)
+                latest_ver = str(cached.get("latest_version", __version__))
                 up_avail = bool(
                     _is_remote_ahead(repo_root, local_sha, remote_sha)
-                    or (latest_ver != __version__)
+                    or (not local_sha and latest_ver and _version_tuple(latest_ver) > _version_tuple(__version__))
                 )
                 msg = (
                     f"Update available ({local_sha[:7] if local_sha else __version__} -> "
                     f"{remote_sha[:7] if remote_sha else latest_ver}). Run `kardashev update`."
                     if up_avail
-                    else f"kardashev v{__version__} is up to date."
+                    else f"kardashev v{__version__} ({local_sha[:7] if local_sha else 'release'}) is up to date."
                 )
                 return UpdateStatus(
                     current_version=__version__,
@@ -221,7 +229,7 @@ def check_for_updates(*, force: bool = False, timeout: float = 2.5) -> UpdateSta
 
     up_avail = bool(
         _is_remote_ahead(repo_root, local_sha, remote_sha)
-        or (latest_ver and latest_ver != __version__)
+        or (not local_sha and latest_ver and _version_tuple(latest_ver) > _version_tuple(__version__))
     )
     msg = (
         f"Update available ({local_sha[:7] if local_sha else __version__} -> "

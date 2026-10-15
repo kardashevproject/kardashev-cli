@@ -11,7 +11,9 @@ from google.antigravity import LiteRTAgentConfig, LocalOpenAIAgentConfig
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.cli import main
 from agy_local.discovery import discover_local_models
+from agy_local.mcp_server import handle_mcp_request
 from agy_local.presets import BackendKind, get_preset, list_presets
+from agy_local.serve import compute_serve_plan
 
 
 def test_list_and_get_presets() -> None:
@@ -99,3 +101,46 @@ def test_cli_dry_run_and_subcommands(capsys: pytest.CaptureFixture[str]) -> None
     assert rc2 == 0
     presets_out = json.loads(capsys.readouterr().out)
     assert any(p["key"] == "glm4-9b-ollama" for p in presets_out)
+
+
+def test_compute_serve_plan_and_cli(capsys: pytest.CaptureFixture[str]) -> None:
+    plan = compute_serve_plan(preset="qwen3.6-35b-vllm")
+    assert plan.engine == "vllm"
+    assert plan.port == 8000
+    assert 0.25 <= plan.gpu_memory_utilization <= 0.90
+    assert plan.max_model_len >= 4096
+    assert "--gpu-memory-utilization" in plan.command
+
+    with pytest.raises(ValueError, match="LiteRT"):
+        compute_serve_plan(preset="gemma4-26b")
+
+    rc = main(["serve", "--preset", "glm4-vllm", "--dry-run"])
+    assert rc == 0
+    serve_out = json.loads(capsys.readouterr().out)
+    assert serve_out["engine"] == "vllm"
+    assert serve_out["served_model_name"] == "THUDM/glm-4-9b-chat"
+
+
+def test_mcp_server_jsonrpc() -> None:
+    init_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+    assert init_resp is not None
+    assert init_resp["result"]["serverInfo"]["name"] == "agy-local"
+
+    tools_resp = handle_mcp_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+    assert tools_resp is not None
+    tool_names = {t["name"] for t in tools_resp["result"]["tools"]}
+    assert tool_names == {"run_local_agent_task", "list_local_models"}
+
+    call_resp = handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "list_local_models", "arguments": {}},
+        }
+    )
+    assert call_resp is not None
+    assert call_resp["result"]["isError"] is False
+    structured = call_resp["result"]["structuredContent"]
+    assert "gemma4-26b" in structured["presets"]
+

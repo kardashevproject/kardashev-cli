@@ -55,10 +55,29 @@ agy-local chat --backend openai --model glm4:9b --base-url http://127.0.0.1:1143
 |---|---|
 | `agy-local chat` | Launch the interactive terminal REPL (`run_interactive_loop`) with full Antigravity coding tools. |
 | `agy-local exec "<prompt>"` | Execute a single autonomous coding task and stream tokens, thoughts (`--show-thoughts`), and tool calls (`--show-tools`). |
+| `agy-local serve` | Launch a local vLLM or Ollama server (`--preset qwen3.6-35b-vllm`) with ChronosML auto-computed `--gpu-memory-utilization` and `--max-model-len`. |
+| `agy-local mcp` | Run the JSON-RPC 2.0 `stdio` MCP server (`agy-local-mcp`) so frontier agents can delegate tasks to local models at zero API cost. |
 | `agy-local presets` | List all built-in LiteRT, GLM-4, Qwen3, and GPT-OSS presets (`--json` supported). |
 | `agy-local models` | Scan local disk (`~/.litert-lm`, `~/.cache/huggingface`, `~/models`) and probe local inference ports (`8000`, `11434`, `1234`, `30000`). |
 | `agy-local doctor` | Verify Python, `litert-lm`, CUDA GPU availability, `chronosml-mcp`, and active local model endpoints. |
 | `agy-local import-litert` | Download and register a LiteRT checkpoint from HuggingFace. |
+
+---
+
+## Plug-and-Play MCP Server (`agy-local-mcp`)
+
+Expose local on-device models (`gemma4-26b`, `qwen3.6-35b-vllm`, `glm4-9b-ollama`) as a zero-cost subagent tool inside **Antigravity 2.0**, **Claude Code**, or **Cursor**:
+
+```json
+{
+  "mcpServers": {
+    "agy-local": {
+      "command": "agy-local-mcp",
+      "args": []
+    }
+  }
+}
+```
 
 ---
 

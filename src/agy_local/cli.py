@@ -16,7 +16,9 @@ from google.antigravity.utils.interactive import run_interactive_loop
 
 from agy_local.builder import HarnessOptions, PolicyMode, build_agent_config
 from agy_local.discovery import discover_local_models, probe_local_endpoints
+from agy_local.mcp_server import serve_stdio
 from agy_local.presets import BackendKind, get_preset, list_presets
+from agy_local.serve import compute_serve_plan
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -161,6 +163,53 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preset",
         default="gemma4-26b",
         help="LiteRT preset to import (default: gemma4-26b).",
+    )
+
+    # 7. serve (ChronosML-tuned local vLLM / Ollama launcher)
+    serve_p = sub.add_parser(
+        "serve",
+        help="Launch a local vLLM or Ollama server with ChronosML auto-tuned VRAM & context limits.",
+    )
+    serve_p.add_argument(
+        "-p",
+        "--preset",
+        help="OpenAI-compatible preset to serve (e.g. qwen3.6-35b-vllm, glm4-vllm, gpt-oss-20b-vllm).",
+    )
+    serve_p.add_argument(
+        "-m",
+        "--model",
+        help="Explicit HuggingFace repo, local model directory, or Ollama tag.",
+    )
+    serve_p.add_argument(
+        "--engine",
+        choices=["vllm", "ollama"],
+        help="Inference server engine ('vllm' or 'ollama').",
+    )
+    serve_p.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1).")
+    serve_p.add_argument("--port", type=int, help="Bind port (default: 8000 for vLLM, 11434 for Ollama).")
+    serve_p.add_argument("--max-model-len", type=int, help="Override max context length.")
+    serve_p.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help="Override GPU memory utilization fraction (0.1 to 0.98).",
+    )
+    serve_p.add_argument(
+        "--tensor-parallel-size",
+        type=int,
+        default=1,
+        help="Tensor parallel GPU count (default: 1).",
+    )
+    serve_p.add_argument("--enforce-eager", action="store_true", help="Pass --enforce-eager to vLLM.")
+    serve_p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the ChronosML-computed ServePlan JSON and exit without launching.",
+    )
+
+    # 8. mcp (JSON-RPC 2.0 stdio MCP server)
+    sub.add_parser(
+        "mcp",
+        help="Run the agy-local JSON-RPC 2.0 stdio MCP server for zero-cost local agent delegation.",
     )
 
     return parser
@@ -415,6 +464,38 @@ def _cmd_import_litert(args: argparse.Namespace) -> int:
     return proc.returncode
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    plan = compute_serve_plan(
+        preset=args.preset,
+        model=args.model,
+        engine=args.engine,
+        host=args.host,
+        port=args.port,
+        max_model_len=args.max_model_len,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        tensor_parallel_size=args.tensor_parallel_size,
+        enforce_eager=args.enforce_eager,
+    )
+    if args.dry_run:
+        print(json.dumps(plan.to_dict(), indent=2))
+        return 0
+
+    print("============================================================")
+    print(f"  agy-local Server Launcher ({plan.engine})")
+    print(f"  Model Target : {plan.model_target} (as '{plan.served_model_name}')")
+    print(f"  Endpoint     : http://{plan.host}:{plan.port}/v1")
+    print(
+        f"  Memory Guard : ~{plan.estimated_model_gb:.2f} GB model / "
+        f"{plan.available_mem_gb:.2f} GB avail (util={plan.gpu_memory_utilization}, "
+        f"max_len={plan.max_model_len}, oom_risk={plan.oom_risk})"
+    )
+    print(f"  Command      : {' '.join(plan.command)}")
+    print("============================================================")
+
+    proc = subprocess.run(plan.command, check=False)
+    return proc.returncode
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args_list = list(argv) if argv is not None else sys.argv[1:]
@@ -430,6 +511,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _cmd_doctor(args)
     if args.command == "import-litert":
         return _cmd_import_litert(args)
+    if args.command == "serve":
+        return _cmd_serve(args)
+    if args.command == "mcp":
+        serve_stdio()
+        return 0
     if args.command == "exec":
         return asyncio.run(_cmd_exec(args))
     if args.command == "chat":

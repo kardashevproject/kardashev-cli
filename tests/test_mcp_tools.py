@@ -1,14 +1,22 @@
-"""Regression tests for `kardashev_cli.mcp_server` apply_smart_patch and verify_and_repair correctness."""
+"""Regression tests for `kardashev_cli.mcp_server` and `kardashev_cli.ast_map` tool correctness."""
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
 import pytest
 
 from kardashev_cli import mcp_server
-from kardashev_cli.mcp_server import apply_smart_patch, verify_and_repair
+from kardashev_cli.mcp_server import apply_smart_patch, scout_codebase, verify_and_repair
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+# ---------------------------------------------------------------------------
+# apply_smart_patch
+# ---------------------------------------------------------------------------
 
 
 def _write_duplicate_block_file(tmp_path: Path) -> Path:
@@ -190,3 +198,45 @@ def test_verify_and_repair_failing_command_without_auto_repair(tmp_path: Path) -
     assert res["passed"] is False
     assert res["timed_out"] is False
     assert res["exit_code"] == 1
+
+
+# ---------------------------------------------------------------------------
+# scout_codebase
+# ---------------------------------------------------------------------------
+
+
+def test_scout_codebase_exact_symbol_query_ranks_defining_file_first() -> None:
+    res = scout_codebase(query="run_async_peer_review", workspace=str(_REPO_ROOT), max_slices=3)
+
+    assert res["ranked_files"], "expected at least one ranked file"
+    top_path = res["ranked_files"][0]["path"]
+    assert top_path.endswith("kardashev_cli/opencommons.py"), (
+        f"expected opencommons.py (defines run_async_peer_review) to rank first, got {top_path!r}"
+    )
+
+
+def test_scout_codebase_limits_per_file_symbols_to_relevant_matches() -> None:
+    res = scout_codebase(query="run_async_peer_review", workspace=str(_REPO_ROOT), max_slices=1)
+
+    for file_entry in res["ranked_files"]:
+        assert len(file_entry["symbols"]) <= 5
+        if file_entry["path"].endswith("kardashev_cli/opencommons.py"):
+            names = [s["name"] for s in file_entry["symbols"]]
+            assert "run_async_peer_review" in names
+
+
+def test_scout_codebase_estimated_pack_tokens_reflects_actual_response_size() -> None:
+    res = scout_codebase(query="run_async_peer_review", workspace=str(_REPO_ROOT), max_slices=5)
+
+    actual_tokens = len(json.dumps(res)) / 4
+    reported_tokens = res["estimated_pack_tokens"]
+
+    # The reported estimate must be in the same ballpark as reality (previously the response
+    # body was ~4-5x larger than the reported estimate because ranked_files symbol lists and
+    # per-file overhead weren't counted at all).
+    assert reported_tokens > 0
+    ratio = actual_tokens / reported_tokens
+    assert 0.5 <= ratio <= 2.0, (
+        f"estimated_pack_tokens={reported_tokens} is not representative of actual "
+        f"response size (~{actual_tokens:.0f} tokens), ratio={ratio:.2f}"
+    )

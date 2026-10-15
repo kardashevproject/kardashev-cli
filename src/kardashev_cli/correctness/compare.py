@@ -12,6 +12,8 @@ def approx_eq(a, b, rel_tol: float = REL_TOL, abs_tol: float = ABS_TOL) -> bool:
     """Elementwise, tolerant equality. NaN == NaN here (unlike IEEE 754)."""
     if isinstance(a, bool) or isinstance(b, bool):
         return a is b
+    if isinstance(a, int) and isinstance(b, int):
+        return a == b  # exact: avoids float() overflow on arbitrary-precision ints
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
         fa, fb = float(a), float(b)
         if math.isnan(fa) and math.isnan(fb):

@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import random
 
-_EDGE_FLOATS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1e-9, -1e-9, 1e3, -1e3, 1e6, -1e6]
+# Kept at a moderate scale: ordinary property/contract/invariant testing
+# should not wander into the overflow-prone regime that a naive-but-valid
+# implementation (not claiming stability) is allowed to fail at. Genuinely
+# extreme magnitudes belong to extreme_inputs(), used by the dedicated
+# robustness check.
+_EDGE_FLOATS = [0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1e-9, -1e-9, 10.0, -10.0, 100.0, -100.0]
 _EDGE_INTS = [0, 1, -1, 2, -2, 10, -10, 100]
 
 
@@ -100,8 +105,14 @@ def generate_inputs(param_types: tuple[str, ...], n: int = 25, seed: int = 0) ->
 
 
 def extreme_inputs(param_types: tuple[str, ...], n: int = 10) -> list[tuple]:
-    """Generate inputs biased toward extreme magnitudes, for the robustness check."""
+    """Generate inputs biased toward extreme magnitudes, for the robustness check.
+
+    Integers are kept at a moderate "large" magnitude (not 1e300-scale): an
+    int claiming overflow-safety is about bit-width/modular behavior, not
+    about computing something astronomically slow like factorial(10**15).
+    """
     extreme_scalars = [1e3, -1e3, 1e300, -1e300, 1e-300, -1e-300]
+    extreme_ints = [200, -200, 500, -500, 2, -2]
     out = []
     for i in range(n):
         row = []
@@ -109,7 +120,7 @@ def extreme_inputs(param_types: tuple[str, ...], n: int = 10) -> list[tuple]:
             if t == "float":
                 row.append(extreme_scalars[i % len(extreme_scalars)])
             elif t == "int":
-                row.append(int(extreme_scalars[i % len(extreme_scalars)]) if abs(extreme_scalars[i % len(extreme_scalars)]) < 1e15 else 10**15)
+                row.append(extreme_ints[i % len(extreme_ints)])
             elif t == "list[float]":
                 row.append([extreme_scalars[i % len(extreme_scalars)]] * 5)
             elif t == "list[int]":

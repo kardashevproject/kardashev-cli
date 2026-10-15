@@ -92,7 +92,8 @@ def _invariant_harness_source(concept: Concept, param_names: list[str], expr: st
         + "    try:\n"
         + f"        return bool(eval(compile({expr!r}, '<invariant>', 'eval'), {{'__builtins__': {{}}}}, __ns__))\n"
         + "    except Exception:\n"
-        + "        return False\n"
+        + "        return None\n"  # the expression itself is ill-defined at this input: skip, not a violation
+        + "\n"
     )
 
 

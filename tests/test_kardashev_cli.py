@@ -1207,3 +1207,182 @@ def test_tui_multi_step_interleaved_timeline_and_proxy_broken_pipe(tmp_path: Pat
     asyncio.run(_run())
 
 
+def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_path: Path) -> None:
+    """Verifies 200k+ models retain high compaction thresholds under lightweight() and SSE reasoning chunks normalize cleanly."""
+    import json
+
+    from kardashev_cli.builder import normalize_sse_reasoning_line
+
+    # 1. openrouter-glm-5.3-prime (202,752 context) must not be clamped to 40,960 by lightweight()
+    opts_preset = HarnessOptions(
+        preset="openrouter-glm-5.3-prime",
+        workspaces=[str(tmp_path)],
+        lightweight=True,
+    )
+    cfg_preset = build_agent_config(opts_preset)
+    assert cfg_preset.compaction_config is not None
+    assert cfg_preset.compaction_config.token_threshold == 152064
+
+    # Also when specified by model_id directly without preset key
+    opts_model = HarnessOptions(
+        backend="openai",
+        model="z-ai/glm-5.3-prime",
+        base_url="https://openrouter.ai/api/v1",
+        workspaces=[str(tmp_path)],
+        lightweight=True,
+    )
+    cfg_model = build_agent_config(opts_model)
+    assert cfg_model.compaction_config is not None
+    assert cfg_model.compaction_config.token_threshold == 152064
+
+    # 2. SSE delta.reasoning -> delta.content + extra_content.google.thought = True
+    state: dict[str, object] = {}
+    raw_reasoning = (
+        b'data: {"choices":[{"index":0,"delta":{"content":"","reasoning":"Analyzing AST map..."}}]}\n'
+    )
+    norm_line = normalize_sse_reasoning_line(raw_reasoning, state)
+    assert norm_line.startswith(b"data: ")
+    parsed = json.loads(norm_line[6:].decode("utf-8"))
+    delta = parsed["choices"][0]["delta"]
+    assert delta["content"] == "Analyzing AST map..."
+    assert delta["extra_content"]["google"]["thought"] is True
+    assert state.get("saw_visible_content") is not True
+
+    # 3. If stream finishes with finish_reason="stop" and ONLY reasoning (zero visible content/tool_calls),
+    # promote accumulated reasoning to visible content so localharness empty_output_continuation_check succeeds.
+    raw_stop = b'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n'
+    norm_stop = normalize_sse_reasoning_line(raw_stop, state)
+    parsed_stop = json.loads(norm_stop[6:].decode("utf-8"))
+    stop_delta = parsed_stop["choices"][0]["delta"]
+    assert stop_delta["content"] == "Analyzing AST map..."
+    assert not stop_delta.get("extra_content", {}).get("google", {}).get("thought")
+    assert state.get("saw_visible_content") is True
+
+    # 4. If stream emitted tool_calls after reasoning, finish_reason does NOT duplicate reasoning as content
+    state_tc: dict[str, object] = {}
+    _ = normalize_sse_reasoning_line(raw_reasoning, state_tc)
+    raw_tc = (
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"view_file","arguments":"{}"}}]}}]}\n'
+    )
+    _ = normalize_sse_reasoning_line(raw_tc, state_tc)
+    assert state_tc.get("saw_tool_calls") is True
+    norm_tc_stop = normalize_sse_reasoning_line(raw_stop, state_tc)
+    assert norm_tc_stop == raw_stop
+
+
+def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> None:
+    """Verifies SelfHealingEditHook blocks runaway single-turn tool chains and TUI bounds live viewport items."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from google.antigravity import types
+    from rich.console import Console
+
+    from kardashev_cli.harness_hooks import (
+        SelfHealingEditHook,
+        get_harness_telemetry,
+        reset_harness_telemetry,
+        reset_turn_tool_signatures,
+    )
+    from kardashev_cli.tui import KardashevRichTUI
+
+    async def _run() -> None:
+        reset_harness_telemetry()
+        hook = SelfHealingEditHook(workspace=str(tmp_path), max_turn_tool_calls=5)
+        ctx = SimpleNamespace()
+
+        for i in range(5):
+            tc = types.ToolCall(name="view_file", args={"AbsolutePath": f"/tmp/file_{i}.py"})
+            res = await hook.run(ctx, tc)  # type: ignore[arg-type]
+            assert res.allow is True
+
+        # 6th distinct tool call in the same turn exceeds max_turn_tool_calls=5
+        tc_over = types.ToolCall(name="view_file", args={"AbsolutePath": "/tmp/file_6.py"})
+        res_over = await hook.run(ctx, tc_over)  # type: ignore[arg-type]
+        assert res_over.allow is False
+        assert "Harness Turn Budget Reached" in (res_over.message or "")
+        assert get_harness_telemetry().loop_blocks_count == 1
+
+        # Resetting turn signatures clears the per-turn counter for the next user turn
+        reset_turn_tool_signatures()
+        assert get_harness_telemetry().turn_total_tool_calls == 0
+        res_next_turn = await hook.run(ctx, tc_over)  # type: ignore[arg-type]
+        assert res_next_turn.allow is True
+
+        # Verify TUI sliding window during streaming when many tool calls run on a 24-row console
+        mid_stream_frames: list[str] = []
+
+        class _ManyToolsConv:
+            last_turn_usage = None
+            total_usage = None
+
+            async def send(self, prompt: str) -> None:
+                return None
+
+            async def receive_steps(self):  # type: ignore[no-untyped-def]
+                for i in range(18):
+                    yield SimpleNamespace(
+                        id=f"step_tc_{i}",
+                        source=types.StepSource.MODEL,
+                        target=types.StepTarget.USER,
+                        status=types.StepStatus.DONE,
+                        thinking_delta="",
+                        content_delta="",
+                        content="",
+                        is_complete_response=False,
+                        tool_calls=[
+                            SimpleNamespace(
+                                id=f"call_{i}",
+                                step_id=f"step_tc_{i}",
+                                name="view_file",
+                                args={"AbsolutePath": f"/tmp/mod_{i}.py"},
+                                result=f"line {i}",
+                            )
+                        ],
+                    )
+                yield SimpleNamespace(
+                    id="step_final",
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    status=types.StepStatus.DONE,
+                    thinking_delta="",
+                    content_delta="Completed all checks.",
+                    content="Completed all checks.",
+                    is_complete_response=True,
+                    tool_calls=[],
+                )
+
+        class _ManyToolsAgent:
+            def __init__(self) -> None:
+                self.conversation = _ManyToolsConv()
+
+        buf = Console(record=True, width=100, height=24)
+        opts = HarnessOptions(
+            backend="openai",
+            model="z-ai/glm-5.3-prime",
+            base_url="http://127.0.0.1:8000/v1",
+            workspaces=[str(tmp_path)],
+            enable_opencommons=False,
+            enable_ast_repo_map=False,
+        )
+        tui = KardashevRichTUI(options=opts, console=buf)
+        tui.auto_inject_ast_map = False
+
+        orig_render_tool = tui._render_tool_record
+
+        def _spy_render_tool(rec: object, out_list: list[object]) -> None:
+            orig_render_tool(rec, out_list)  # type: ignore[arg-type]
+            for item in out_list:
+                txt = str(item)
+                if "earlier step(s) completed in this turn" in txt:
+                    mid_stream_frames.append(txt)
+
+        tui._render_tool_record = _spy_render_tool  # type: ignore[method-assign]
+        await tui._run_turn(_ManyToolsAgent(), "audit 18 files", opts)  # type: ignore[arg-type]
+        assert len(mid_stream_frames) > 0
+        assert len(tui.transcripts) == 1
+        assert len(tui.transcripts[0].tools) == 18
+
+    asyncio.run(_run())
+
+

@@ -25,7 +25,7 @@ from kardashev_cli.harness_hooks import (
     SelfHealingEditHook,
     SyntaxGatePostToolHook,
 )
-from kardashev_cli.presets import BackendKind, get_preset
+from kardashev_cli.presets import PRESETS, BackendKind, get_preset
 
 
 class PolicyMode(str, enum.Enum):
@@ -194,8 +194,10 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
     resolved_model_path = options.model_path
     resolved_base_url = options.base_url
 
+    matched_preset = None
     if options.preset:
         preset_obj = get_preset(options.preset)
+        matched_preset = preset_obj
         if resolved_backend is None:
             resolved_backend = preset_obj.backend
         if resolved_model is None:
@@ -213,9 +215,16 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         else:
             # Default to gemma4-26b LiteRT preset if nothing specified
             default_preset = get_preset("gemma4-26b")
+            matched_preset = default_preset
             resolved_backend = default_preset.backend
             resolved_model = default_preset.model_id
             resolved_model_path = default_preset.resolved_model_path()
+
+    if matched_preset is None and resolved_model:
+        for candidate_preset in PRESETS.values():
+            if candidate_preset.model_id == resolved_model:
+                matched_preset = candidate_preset
+                break
 
     policy_mode = (
         options.policy_mode
@@ -225,9 +234,16 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
     policies, enable_sandbox = _resolve_policies_and_sandbox(policy_mode)
     workspaces = [os.path.abspath(os.path.expanduser(w)) for w in options.workspaces]
     mcp_servers = _build_mcp_servers(options)
+    effective_token_threshold = options.token_threshold
+    if (
+        effective_token_threshold is None
+        and matched_preset is not None
+        and matched_preset.context_window > 65536
+    ):
+        effective_token_threshold = min(160000, int(matched_preset.context_window * 0.75))
     compaction_cfg = (
-        CompactionConfig(token_threshold=options.token_threshold)
-        if options.token_threshold is not None
+        CompactionConfig(token_threshold=effective_token_threshold)
+        if effective_token_threshold is not None
         else None
     )
 
@@ -465,6 +481,96 @@ def _install_harness_process_isolation() -> None:
 _install_harness_process_isolation()
 
 
+def normalize_sse_reasoning_line(
+    raw_line: bytes,
+    stream_state: dict[str, Any] | None = None,
+) -> bytes:
+    """Normalizes OpenRouter/OpenAI SSE `delta.reasoning` / `delta.reasoning_content` chunks for `localharness`.
+
+    1. Maps `delta.reasoning` / `delta.reasoning_content` (when `delta.content` is empty) to
+       `delta.content` + `delta.extra_content = {"google": {"thought": True}}` so `localharness`
+       streams `thinking_delta` live to the TUI instead of dropping 60-100s of reasoning tokens.
+    2. If a completion reaches `finish_reason` having emitted ONLY reasoning tokens and neither
+       visible `content` nor `tool_calls`, promotes the accumulated reasoning text to visible
+       `delta.content` on the terminal chunk so `localharness`'s `empty_output_continuation_check`
+       does not fail with `model output must contain either output text or tool calls`.
+    """
+    stripped = raw_line.lstrip()
+    if not stripped.startswith(b"data:"):
+        return raw_line
+    payload_bytes = stripped[5:].strip()
+    if not payload_bytes or payload_bytes == b"[DONE]":
+        return raw_line
+
+    import json as _json
+
+    try:
+        obj = _json.loads(payload_bytes.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return raw_line
+    if not isinstance(obj, dict):
+        return raw_line
+    choices = obj.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return raw_line
+
+    state = stream_state if stream_state is not None else {}
+    reasoning_parts: list[str] = state.setdefault("reasoning_parts", [])
+    choice0 = choices[0]
+    delta = choice0.get("delta")
+    modified = False
+
+    if isinstance(delta, dict):
+        if delta.get("tool_calls"):
+            state["saw_tool_calls"] = True
+        existing_content = delta.get("content")
+        extra = delta.get("extra_content")
+        is_thought = bool(
+            isinstance(extra, dict)
+            and isinstance(extra.get("google"), dict)
+            and extra["google"].get("thought")
+        )
+        if isinstance(existing_content, str) and existing_content and not is_thought:
+            state["saw_visible_content"] = True
+
+        reasoning_text = delta.get("reasoning") or delta.get("reasoning_content")
+        if isinstance(reasoning_text, str) and reasoning_text:
+            reasoning_parts.append(reasoning_text)
+            if not existing_content:
+                delta["content"] = reasoning_text
+                extra_dict = delta.setdefault("extra_content", {})
+                if isinstance(extra_dict, dict):
+                    google_dict = extra_dict.setdefault("google", {})
+                    if isinstance(google_dict, dict):
+                        google_dict["thought"] = True
+                modified = True
+
+    finish_reason = choice0.get("finish_reason")
+    if (
+        finish_reason
+        and reasoning_parts
+        and not state.get("saw_visible_content")
+        and not state.get("saw_tool_calls")
+    ):
+        if not isinstance(delta, dict):
+            delta = {}
+            choice0["delta"] = delta
+        delta["content"] = "".join(reasoning_parts)
+        if isinstance(delta.get("extra_content"), dict) and isinstance(
+            delta["extra_content"].get("google"), dict
+        ):
+            delta["extra_content"]["google"].pop("thought", None)
+        state["saw_visible_content"] = True
+        modified = True
+
+    if not modified:
+        return raw_line
+
+    line_ending = b"\r\n" if raw_line.endswith(b"\r\n") else (b"\n" if raw_line.endswith(b"\n") else b"")
+    encoded = _json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return b"data: " + encoded + line_ending
+
+
 class AuthenticatedOpenAIConnectionStrategy(
     types.Any if False else __import__(
         "google.antigravity.connections.local.local_openai_connection",
@@ -552,12 +658,26 @@ class AuthenticatedOpenAIConnectionStrategy(
                             self.send_header("Content-Type", ct)
                             self.end_headers()
                             headers_sent = True
-                            while True:
-                                chunk = resp.read(1024)
-                                if not chunk:
-                                    break
-                                self.wfile.write(chunk)
-                                self.wfile.flush()
+                            if "text/event-stream" in ct.lower():
+                                stream_state: dict[str, Any] = {
+                                    "saw_visible_content": False,
+                                    "saw_tool_calls": False,
+                                    "reasoning_parts": [],
+                                }
+                                while True:
+                                    raw_line = resp.readline()
+                                    if not raw_line:
+                                        break
+                                    out_line = normalize_sse_reasoning_line(raw_line, stream_state)
+                                    self.wfile.write(out_line)
+                                    self.wfile.flush()
+                            else:
+                                while True:
+                                    chunk = resp.read(1024)
+                                    if not chunk:
+                                        break
+                                    self.wfile.write(chunk)
+                                    self.wfile.flush()
                     except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                         # Client (localharness) cancelled or closed the stream mid-flight
                         return

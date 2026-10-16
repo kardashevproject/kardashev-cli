@@ -2611,6 +2611,7 @@ class KardashevRichTUI:
         self._active_turn_tools = []
         seen_tool_ids: set[str] = set()
         self.last_ralph_status = None
+        stream_done = False
 
         def _render_live_frame() -> Group:
             th = self.theme
@@ -2642,21 +2643,47 @@ class KardashevRichTUI:
                 default=-1,
             )
 
+            pre_tail_items: list[tuple[str, Any]] = []
             trailing_text_parts: list[str] = []
             for idx, (kind, payload) in enumerate(timeline):
                 if kind == "tool":
-                    self._render_tool_record(payload, renderables)
+                    pre_tail_items.append(("tool", payload))
                 elif kind == "text":
                     seg_str = "".join(text_segments[payload][1]).strip()
                     if not seg_str:
                         continue
                     if idx < last_tool_idx:
-                        nar = Text()
-                        nar.append("  ⏺ ", style=f"bold {th.assistant_border}")
-                        nar.append(seg_str, style="white")
-                        renderables.append(nar)
+                        pre_tail_items.append(("narration", seg_str))
                     else:
                         trailing_text_parts.append(seg_str)
+
+            # While Live is streaming with vertical_overflow="ellipsis", bound visible items
+            # to a sliding window that fits the terminal height so new tool calls and the
+            # bottom spinner/status line are never clipped off the bottom of the screen.
+            term_h = max(20, getattr(getattr(self.console, "size", None), "height", 40) or 40)
+            visible_items = pre_tail_items
+            if not stream_done:
+                avail_lines = max(8, term_h - 14)
+                lines_per_item = 8 if self.expand_tools else 2
+                max_visible_items = max(3, avail_lines // lines_per_item)
+                if len(pre_tail_items) > max_visible_items:
+                    hidden_count = len(pre_tail_items) - max_visible_items
+                    renderables.append(
+                        Text(
+                            f"  ⋯ +{hidden_count} earlier step(s) completed in this turn",
+                            style=th.muted,
+                        )
+                    )
+                    visible_items = pre_tail_items[-max_visible_items:]
+
+            for item_kind, item_payload in visible_items:
+                if item_kind == "tool":
+                    self._render_tool_record(item_payload, renderables)
+                else:
+                    nar = Text()
+                    nar.append("  ⏺ ", style=f"bold {th.assistant_border}")
+                    nar.append(item_payload, style="white")
+                    renderables.append(nar)
 
             if self.last_ralph_status:
                 ralph_line = Text()
@@ -2665,6 +2692,11 @@ class KardashevRichTUI:
 
             if trailing_text_parts:
                 raw_md = "\n\n".join(trailing_text_parts)
+                if not stream_done:
+                    md_lines = raw_md.splitlines()
+                    max_md_lines = max(6, term_h - 12 - len(visible_items) * 2)
+                    if len(md_lines) > max_md_lines:
+                        raw_md = "…\n" + "\n".join(md_lines[-max_md_lines:])
                 balanced_md = balance_markdown_fences(raw_md)
                 renderables.append(
                     Panel(
@@ -2741,6 +2773,7 @@ class KardashevRichTUI:
         cancelled_by_user = False
 
         async def _consume_steps(live_obj: Live) -> None:
+            nonlocal stream_done
             last_frame_ts = 0.0
             min_frame_interval = 0.033  # ~30fps coalescing to prevent chunk-by-chunk flicker
             async for step in agent.conversation.receive_steps():
@@ -2840,6 +2873,7 @@ class KardashevRichTUI:
                     last_frame_ts = now
 
             # Final frame flush after stream ends
+            stream_done = True
             for _, chunks in text_segments:
                 self.todos.ingest_from_text("".join(chunks))
             live_obj.update(_render_live_frame())
@@ -2850,6 +2884,7 @@ class KardashevRichTUI:
             refresh_per_second=15,
             transient=False,
             vertical_overflow="ellipsis",
+            get_renderable=_render_live_frame,
         ) as live:
             consume_task = asyncio.create_task(_consume_steps(live))
             sigint_installed = False

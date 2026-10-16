@@ -89,6 +89,7 @@ class HarnessTelemetry:
     commons_counterexamples_reported: int = 0
     last_edited_files: list[str] = field(default_factory=list)
     tool_call_counts: dict[str, int] = field(default_factory=dict)
+    turn_total_tool_calls: int = 0
 
 
 _GLOBAL_TELEMETRY = HarnessTelemetry()
@@ -108,6 +109,7 @@ def reset_harness_telemetry() -> None:
 def reset_turn_tool_signatures() -> None:
     """Clears per-turn tool signature counts at the start of a new user turn."""
     _GLOBAL_TELEMETRY.tool_call_counts.clear()
+    _GLOBAL_TELEMETRY.turn_total_tool_calls = 0
 
 
 def _strip_outer_markdown_fences(text: str) -> tuple[str, bool]:
@@ -306,15 +308,42 @@ def check_python_syntax(path_str: str) -> str | None:
 class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
     """Pre-tool hook providing fuzzy self-healing edits and infinite-loop protection."""
 
-    def __init__(self, workspace: str | None = None) -> None:
+    def __init__(
+        self,
+        workspace: str | None = None,
+        max_turn_tool_calls: int | None = None,
+    ) -> None:
         super().__init__()
         self.workspace = workspace
+        if max_turn_tool_calls is not None:
+            self.max_turn_tool_calls = max_turn_tool_calls
+        else:
+            try:
+                self.max_turn_tool_calls = int(os.environ.get("KARDASHEV_MAX_TURN_TOOLS", "40"))
+            except ValueError:
+                self.max_turn_tool_calls = 40
 
     async def run(
         self, context: hooks_mod.HookContext, data: types.ToolCall
     ) -> types.HookResult:
         name = str(data.name)
         args = dict(data.args or {})
+
+        _GLOBAL_TELEMETRY.turn_total_tool_calls += 1
+        if (
+            self.max_turn_tool_calls > 0
+            and _GLOBAL_TELEMETRY.turn_total_tool_calls > self.max_turn_tool_calls
+        ):
+            _GLOBAL_TELEMETRY.loop_blocks_count += 1
+            return types.HookResult(
+                allow=False,
+                message=(
+                    f"[Harness Turn Budget Reached] You have already executed "
+                    f"{self.max_turn_tool_calls} tool calls in this single turn. "
+                    f"Do not invoke any more tools in this turn: synthesize and present "
+                    f"your current progress, findings, and next steps to the user now."
+                ),
+            )
 
         # 1. Infinite-loop breaker: hash (tool_name, canonical_args) inside the current turn context
         call_sig = hashlib.sha256(

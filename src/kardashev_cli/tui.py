@@ -65,7 +65,7 @@ from rich.text import Text
 from kardashev_cli.ast_map import build_workspace_index, render_compact_repo_map, scout_workspace
 from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
 from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
-from kardashev_cli.harness_hooks import get_harness_telemetry
+from kardashev_cli.harness_hooks import drain_live_sse_reasoning, get_harness_telemetry
 from kardashev_cli.integrate import integrate_frontier_agent
 from kardashev_cli.presets import PRESETS, BackendKind, list_presets
 from kardashev_cli.tui_core import (
@@ -2635,6 +2635,10 @@ class KardashevRichTUI:
             renderables: list[Any] = []
             elapsed = time.perf_counter() - t0
 
+            sse_thought = drain_live_sse_reasoning()
+            if sse_thought:
+                thought_buf.append(sse_thought)
+
             if thought_buf and self.show_thoughts:
                 full_thought = "".join(thought_buf).strip()
                 t_lines = full_thought.splitlines()
@@ -2697,9 +2701,14 @@ class KardashevRichTUI:
                 if item_kind == "tool":
                     self._render_tool_record(item_payload, renderables)
                 else:
+                    nar_text = str(item_payload)
+                    if not stream_done:
+                        nar_lines = nar_text.splitlines()
+                        if len(nar_lines) > 3:
+                            nar_text = "… " + "\n  ".join(nar_lines[-3:])
                     nar = Text()
                     nar.append("  ⏺ ", style=f"bold {th.assistant_border}")
-                    nar.append(item_payload, style="white")
+                    nar.append(nar_text, style="white")
                     renderables.append(nar)
 
             if self.last_ralph_status:
@@ -2733,12 +2742,17 @@ class KardashevRichTUI:
 
             # Single status row: activity, model, tokens + gauge, badges, elapsed (styled via theme tokens).
             model_label, _backend, ctx_limit = self._active_model_summary(cfg)
-            streamed_chars = sum(len(p) for _, parts in text_segments for p in parts) + sum(
-                len(p) for p in thought_buf
+            telem = get_harness_telemetry()
+            streamed_chars = (
+                sum(len(p) for _, parts in text_segments for p in parts)
+                + sum(len(p) for p in thought_buf)
+                + telem.streamed_sse_tool_arg_chars
             )
             turn_est = streamed_chars // 4
             session_tokens = self.total_prompt_tokens + self.total_output_tokens
             running = [r.badge for r in self._active_turn_tools if r.completed_at is None]
+            if not running and telem.active_sse_tool_name:
+                running = [f"streaming {telem.active_sse_tool_name}"]
             activity = current_activity(
                 running,
                 thinking=bool(thought_buf) and not trailing_text_parts,

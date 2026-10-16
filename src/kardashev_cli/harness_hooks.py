@@ -34,6 +34,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,9 +91,18 @@ class HarnessTelemetry:
     last_edited_files: list[str] = field(default_factory=list)
     tool_call_counts: dict[str, int] = field(default_factory=dict)
     turn_total_tool_calls: int = 0
+    # Live OpenAI/OpenRouter SSE reasoning & tool-argument stream telemetry
+    live_reasoning_chunks: list[str] = field(default_factory=list)
+    active_sse_tool_name: str | None = None
+    streamed_sse_tool_arg_chars: int = 0
 
 
 _GLOBAL_TELEMETRY = HarnessTelemetry()
+_SSE_STREAM_LOCK = threading.Lock()
+_MAX_LIVE_REASONING_CHUNKS = 256
+_MAX_LIVE_REASONING_CHARS = 65536
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]|\x1b\].*?(?:\x07|\x1b\\)")
+_SAFE_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_.:/-]")
 
 
 def get_harness_telemetry() -> HarnessTelemetry:
@@ -103,13 +113,67 @@ def get_harness_telemetry() -> HarnessTelemetry:
 def reset_harness_telemetry() -> None:
     """Resets global harness telemetry counters (useful for tests)."""
     global _GLOBAL_TELEMETRY
-    _GLOBAL_TELEMETRY = HarnessTelemetry()
+    with _SSE_STREAM_LOCK:
+        _GLOBAL_TELEMETRY = HarnessTelemetry()
 
 
 def reset_turn_tool_signatures() -> None:
-    """Clears per-turn tool signature counts at the start of a new user turn."""
-    _GLOBAL_TELEMETRY.tool_call_counts.clear()
-    _GLOBAL_TELEMETRY.turn_total_tool_calls = 0
+    """Clears per-turn tool signature counts and live SSE stream buffers at the start of a new user turn."""
+    with _SSE_STREAM_LOCK:
+        _GLOBAL_TELEMETRY.tool_call_counts.clear()
+        _GLOBAL_TELEMETRY.turn_total_tool_calls = 0
+        _GLOBAL_TELEMETRY.live_reasoning_chunks.clear()
+        _GLOBAL_TELEMETRY.active_sse_tool_name = None
+        _GLOBAL_TELEMETRY.streamed_sse_tool_arg_chars = 0
+
+
+def record_live_sse_reasoning(text: str) -> None:
+    """Appends a live OpenRouter/OpenAI SSE reasoning delta for the TUI thinking panel without polluting `Step.content`."""
+    if not text:
+        return
+    if len(text) > _MAX_LIVE_REASONING_CHARS:
+        text = text[-_MAX_LIVE_REASONING_CHARS:]
+    with _SSE_STREAM_LOCK:
+        chunks = _GLOBAL_TELEMETRY.live_reasoning_chunks
+        chunks.append(text)
+        if len(chunks) > _MAX_LIVE_REASONING_CHUNKS:
+            del chunks[:-_MAX_LIVE_REASONING_CHUNKS]
+        total_chars = sum(len(c) for c in chunks)
+        while chunks and total_chars > _MAX_LIVE_REASONING_CHARS:
+            removed = chunks.pop(0)
+            total_chars -= len(removed)
+
+
+def drain_live_sse_reasoning() -> str:
+    """Drains and returns accumulated live SSE reasoning deltas since the last TUI frame."""
+    with _SSE_STREAM_LOCK:
+        chunks = _GLOBAL_TELEMETRY.live_reasoning_chunks
+        if not chunks:
+            return ""
+        batch = list(chunks)
+        chunks.clear()
+    return "".join(batch)
+
+
+def update_live_sse_tool_stream(
+    tool_name: str | None = None,
+    arg_chars: int = 0,
+    *,
+    done: bool = False,
+) -> None:
+    """Updates live SSE tool-call argument streaming progress so TUI telemetry stays active during large tool calls."""
+    sanitized_name: str | None = None
+    if tool_name:
+        cleaned = _SAFE_TOOL_NAME_RE.sub("", _ANSI_ESCAPE_RE.sub("", tool_name))[:48]
+        if cleaned:
+            sanitized_name = cleaned
+    with _SSE_STREAM_LOCK:
+        if sanitized_name:
+            _GLOBAL_TELEMETRY.active_sse_tool_name = sanitized_name
+        if arg_chars > 0:
+            _GLOBAL_TELEMETRY.streamed_sse_tool_arg_chars += int(arg_chars)
+        if done:
+            _GLOBAL_TELEMETRY.active_sse_tool_name = None
 
 
 def _strip_outer_markdown_fences(text: str) -> tuple[str, bool]:
@@ -319,9 +383,9 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
             self.max_turn_tool_calls = max_turn_tool_calls
         else:
             try:
-                self.max_turn_tool_calls = int(os.environ.get("KARDASHEV_MAX_TURN_TOOLS", "40"))
+                self.max_turn_tool_calls = int(os.environ.get("KARDASHEV_MAX_TURN_TOOLS", "64"))
             except ValueError:
-                self.max_turn_tool_calls = 40
+                self.max_turn_tool_calls = 64
 
     async def run(
         self, context: hooks_mod.HookContext, data: types.ToolCall

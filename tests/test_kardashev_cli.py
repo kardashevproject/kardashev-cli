@@ -1208,10 +1208,17 @@ def test_tui_multi_step_interleaved_timeline_and_proxy_broken_pipe(tmp_path: Pat
 
 
 def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_path: Path) -> None:
-    """Verifies 200k+ models retain high compaction thresholds under lightweight() and SSE reasoning chunks normalize cleanly."""
+    """Verifies 200k+ models retain high compaction thresholds under lightweight() and SSE reasoning chunks normalize without polluting Step.content."""
     import json
 
     from kardashev_cli.builder import normalize_sse_reasoning_line
+    from kardashev_cli.harness_hooks import (
+        drain_live_sse_reasoning,
+        get_harness_telemetry,
+        reset_harness_telemetry,
+    )
+
+    reset_harness_telemetry()
 
     # 1. openrouter-glm-5.3-prime (202,752 context) must not be clamped to 40,960 by lightweight()
     opts_preset = HarnessOptions(
@@ -1223,7 +1230,7 @@ def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_
     assert cfg_preset.compaction_config is not None
     assert cfg_preset.compaction_config.token_threshold == 152064
 
-    # Also when specified by model_id directly without preset key
+    # Also when specified by model_id directly, preset alias, or dynamic OpenRouter slug
     opts_model = HarnessOptions(
         backend="openai",
         model="z-ai/glm-5.3-prime",
@@ -1235,17 +1242,40 @@ def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_
     assert cfg_model.compaction_config is not None
     assert cfg_model.compaction_config.token_threshold == 152064
 
-    # 2. SSE delta.reasoning -> delta.content + extra_content.google.thought = True
+    opts_dynamic = HarnessOptions(
+        backend="openai",
+        model="z-ai/glm-5.1",
+        base_url="https://openrouter.ai/api/v1",
+        workspaces=[str(tmp_path)],
+        lightweight=True,
+    )
+    cfg_dynamic = build_agent_config(opts_dynamic)
+    assert cfg_dynamic.compaction_config is not None
+    assert cfg_dynamic.compaction_config.token_threshold == 98304
+
+    # Unlisted local vLLM models containing '/' must NOT be treated as OpenRouter presets
+    opts_local_vllm = HarnessOptions(
+        backend="openai",
+        model="meta-llama/Llama-3.1-8B-Instruct",
+        base_url="http://127.0.0.1:8000/v1",
+        workspaces=[str(tmp_path)],
+        lightweight=True,
+    )
+    cfg_local_vllm = build_agent_config(opts_local_vllm)
+    assert cfg_local_vllm.compaction_config is not None
+    assert cfg_local_vllm.compaction_config.token_threshold == 65536
+
+    # 2. Intermediate SSE delta.reasoning chunks must NOT overwrite delta.content (which localharness
+    # would otherwise append into visible Step.content and messages history), while recording live
+    # reasoning deltas for the TUI thinking panel.
     state: dict[str, object] = {}
     raw_reasoning = (
         b'data: {"choices":[{"index":0,"delta":{"content":"","reasoning":"Analyzing AST map..."}}]}\n'
     )
     norm_line = normalize_sse_reasoning_line(raw_reasoning, state)
-    assert norm_line.startswith(b"data: ")
-    parsed = json.loads(norm_line[6:].decode("utf-8"))
-    delta = parsed["choices"][0]["delta"]
-    assert delta["content"] == "Analyzing AST map..."
-    assert delta["extra_content"]["google"]["thought"] is True
+    assert norm_line == raw_reasoning
+    assert drain_live_sse_reasoning() == "Analyzing AST map..."
+    assert drain_live_sse_reasoning() == ""
     assert state.get("saw_visible_content") is not True
 
     # 3. If stream finishes with finish_reason="stop" and ONLY reasoning (zero visible content/tool_calls),
@@ -1255,22 +1285,35 @@ def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_
     parsed_stop = json.loads(norm_stop[6:].decode("utf-8"))
     stop_delta = parsed_stop["choices"][0]["delta"]
     assert stop_delta["content"] == "Analyzing AST map..."
-    assert not stop_delta.get("extra_content", {}).get("google", {}).get("thought")
     assert state.get("saw_visible_content") is True
 
-    # 4. If stream emitted tool_calls after reasoning, finish_reason does NOT duplicate reasoning as content
+    # Also if a provider sends reasoning-only chunks followed directly by data: [DONE] without finish_reason
+    state_done: dict[str, object] = {}
+    _ = normalize_sse_reasoning_line(raw_reasoning, state_done)
+    _ = drain_live_sse_reasoning()
+    norm_done = normalize_sse_reasoning_line(b"data: [DONE]\n", state_done)
+    assert b'"content":"Analyzing AST map..."' in norm_done
+    assert norm_done.endswith(b"data: [DONE]\n")
+
+    # 4. If stream emitted tool_calls after reasoning, track live tool-call argument progress,
+    # clear buffered reasoning_parts, and do NOT duplicate reasoning as content on finish_reason.
     state_tc: dict[str, object] = {}
     _ = normalize_sse_reasoning_line(raw_reasoning, state_tc)
+    _ = drain_live_sse_reasoning()
     raw_tc = (
-        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"view_file","arguments":"{}"}}]}}]}\n'
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"\\u001b[31mview_file\\u001b[0m\\n","arguments":"{\\"AbsolutePath\\":\\"/tmp/a.py\\"}"}}]}}]}\n'
     )
     _ = normalize_sse_reasoning_line(raw_tc, state_tc)
     assert state_tc.get("saw_tool_calls") is True
+    assert state_tc.get("reasoning_parts") == []
+    assert get_harness_telemetry().active_sse_tool_name == "view_file"
+    assert get_harness_telemetry().streamed_sse_tool_arg_chars > 0
     norm_tc_stop = normalize_sse_reasoning_line(raw_stop, state_tc)
     assert norm_tc_stop == raw_stop
+    assert get_harness_telemetry().active_sse_tool_name is None
 
 
-def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> None:
+def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path, monkeypatch: object) -> None:
     """Verifies SelfHealingEditHook blocks runaway single-turn tool chains and TUI bounds live viewport items."""
     import asyncio
     from types import SimpleNamespace
@@ -1280,11 +1323,30 @@ def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> Non
 
     from kardashev_cli.harness_hooks import (
         SelfHealingEditHook,
+        drain_live_sse_reasoning,
         get_harness_telemetry,
+        record_live_sse_reasoning,
         reset_harness_telemetry,
         reset_turn_tool_signatures,
     )
     from kardashev_cli.tui import KardashevRichTUI
+
+    monkeypatch.delenv("KARDASHEV_MAX_TURN_TOOLS", raising=False)  # type: ignore[attr-defined]
+    assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 64
+    monkeypatch.setenv("KARDASHEV_MAX_TURN_TOOLS", "invalid")  # type: ignore[attr-defined]
+    assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 64
+    monkeypatch.setenv("KARDASHEV_MAX_TURN_TOOLS", "0")  # type: ignore[attr-defined]
+    assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 0
+    monkeypatch.delenv("KARDASHEV_MAX_TURN_TOOLS", raising=False)  # type: ignore[attr-defined]
+
+    # Verify live_reasoning_chunks ring-buffer bounds (cap at 256 chunks / 64 KB) when undrained
+    reset_harness_telemetry()
+    for idx in range(300):
+        record_live_sse_reasoning(f"chunk-{idx} ")
+    assert len(get_harness_telemetry().live_reasoning_chunks) == 256
+    drained = drain_live_sse_reasoning()
+    assert "chunk-299" in drained
+    assert "chunk-0 " not in drained
 
     async def _run() -> None:
         reset_harness_telemetry()
@@ -1304,12 +1366,14 @@ def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> Non
         assert get_harness_telemetry().loop_blocks_count == 1
 
         # Resetting turn signatures clears the per-turn counter for the next user turn
+        record_live_sse_reasoning("stale thought")
         reset_turn_tool_signatures()
         assert get_harness_telemetry().turn_total_tool_calls == 0
+        assert get_harness_telemetry().live_reasoning_chunks == []
         res_next_turn = await hook.run(ctx, tc_over)  # type: ignore[arg-type]
         assert res_next_turn.allow is True
 
-        # Verify TUI sliding window during streaming when many tool calls run on a 24-row console
+        # Verify TUI sliding window during streaming when many tool calls and multi-line narration run on a 24-row console
         mid_stream_frames: list[str] = []
 
         class _ManyToolsConv:
@@ -1320,6 +1384,19 @@ def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> Non
                 return None
 
             async def receive_steps(self):  # type: ignore[no-untyped-def]
+                record_live_sse_reasoning("Live SSE reasoning thought line 1\nLine 2")
+                long_narration = "\n".join(f"Narration line {k}" for k in range(12))
+                yield SimpleNamespace(
+                    id="step_nar_0",
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    status=types.StepStatus.DONE,
+                    thinking_delta="",
+                    content_delta=long_narration,
+                    content=long_narration,
+                    is_complete_response=False,
+                    tool_calls=[],
+                )
                 for i in range(18):
                     yield SimpleNamespace(
                         id=f"step_tc_{i}",
@@ -1382,7 +1459,9 @@ def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path) -> Non
         assert len(mid_stream_frames) > 0
         assert len(tui.transcripts) == 1
         assert len(tui.transcripts[0].tools) == 18
+        assert "Live SSE reasoning thought line 1" in tui.transcripts[0].thinking
 
     asyncio.run(_run())
+
 
 

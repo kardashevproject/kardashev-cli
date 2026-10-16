@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import enum
+import json
 import os
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from google.antigravity import (
@@ -24,6 +27,8 @@ from kardashev_cli.harness_hooks import (
     ActionableToolErrorHook,
     SelfHealingEditHook,
     SyntaxGatePostToolHook,
+    record_live_sse_reasoning,
+    update_live_sse_tool_stream,
 )
 from kardashev_cli.presets import PRESETS, BackendKind, get_preset
 
@@ -225,6 +230,18 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
             if candidate_preset.model_id == resolved_model:
                 matched_preset = candidate_preset
                 break
+        if matched_preset is None and (
+            resolved_model.lower().startswith(("openrouter:", "or:"))
+            or (resolved_base_url and "openrouter.ai" in resolved_base_url.lower())
+            or (
+                resolved_base_url is None
+                and resolved_backend == BackendKind.OPENAI
+                and "/" in resolved_model
+                and bool(resolve_api_key("https://openrouter.ai/api/v1"))
+            )
+        ):
+            with contextlib.suppress(KeyError):
+                matched_preset = get_preset(resolved_model)
 
     policy_mode = (
         options.policy_mode
@@ -360,8 +377,6 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
 
 def _read_dotenv_var(var_name: str, dotenv_path: str | os.PathLike[str] = "~/.env") -> str | None:
     """Safely reads a single variable from `~/.env` without mutating global environment."""
-    from pathlib import Path
-
     path = Path(os.path.expanduser(str(dotenv_path)))
     if not path.is_file():
         return None
@@ -481,17 +496,25 @@ def _install_harness_process_isolation() -> None:
 _install_harness_process_isolation()
 
 
+_MAX_REASONING_PARTS = 512
+_MAX_REASONING_PARTS_CHARS = 65536
+
+
 def normalize_sse_reasoning_line(
     raw_line: bytes,
     stream_state: dict[str, Any] | None = None,
 ) -> bytes:
     """Normalizes OpenRouter/OpenAI SSE `delta.reasoning` / `delta.reasoning_content` chunks for `localharness`.
 
-    1. Maps `delta.reasoning` / `delta.reasoning_content` (when `delta.content` is empty) to
-       `delta.content` + `delta.extra_content = {"google": {"thought": True}}` so `localharness`
-       streams `thinking_delta` live to the TUI instead of dropping 60-100s of reasoning tokens.
-    2. If a completion reaches `finish_reason` having emitted ONLY reasoning tokens and neither
-       visible `content` nor `tool_calls`, promotes the accumulated reasoning text to visible
+    1. Records `delta.reasoning` / `delta.reasoning_content` into `HarnessTelemetry.live_reasoning_chunks`
+       so the TUI's `💭 Thinking` panel and token counter update at 15Hz without injecting raw reasoning
+       into `delta.content` (because `localharness`'s `openAIGoogleExtraContent` struct only parses
+       `thought_signature`, not `thought: bool`, and would otherwise append all reasoning into visible
+       `Step.content` and bloat subsequent `messages` history).
+    2. Tracks `delta.tool_calls` argument streaming progress so TUI telemetry stays active during
+       multi-kilobyte `write_to_file` / `replace_file_content` tool calls.
+    3. If a completion reaches `finish_reason` (or `[DONE]`) having emitted ONLY reasoning tokens and
+       neither visible `content` nor `tool_calls`, promotes the accumulated reasoning text to visible
        `delta.content` on the terminal chunk so `localharness`'s `empty_output_continuation_check`
        does not fail with `model output must contain either output text or tool calls`.
     """
@@ -499,13 +522,59 @@ def normalize_sse_reasoning_line(
     if not stripped.startswith(b"data:"):
         return raw_line
     payload_bytes = stripped[5:].strip()
-    if not payload_bytes or payload_bytes == b"[DONE]":
+    if not payload_bytes:
         return raw_line
 
-    import json as _json
+    state = stream_state if stream_state is not None else {}
+    reasoning_parts: list[str] = state.setdefault("reasoning_parts", [])
+    line_ending = (
+        b"\r\n" if raw_line.endswith(b"\r\n") else (b"\n" if raw_line.endswith(b"\n") else b"")
+    )
+
+    if payload_bytes == b"[DONE]":
+        update_live_sse_tool_stream(done=True)
+        if (
+            reasoning_parts
+            and not state.get("saw_visible_content")
+            and not state.get("saw_tool_calls")
+        ):
+            synth_obj = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "".join(reasoning_parts)},
+                        "finish_reason": "stop",
+                    }
+                ]
+            }
+            reasoning_parts.clear()
+            state["saw_visible_content"] = True
+            synth_bytes = json.dumps(
+                synth_obj, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+            sep = line_ending or b"\n"
+            return b"data: " + synth_bytes + sep + sep + raw_line
+        return raw_line
+
+    has_non_null_finish = (
+        b"finish_reason" in payload_bytes
+        and b'"finish_reason":null' not in payload_bytes
+        and b'"finish_reason": null' not in payload_bytes
+    )
+    if (
+        b"reasoning" not in payload_bytes
+        and b"tool_calls" not in payload_bytes
+        and not has_non_null_finish
+        and (
+            state.get("saw_visible_content")
+            or state.get("saw_tool_calls")
+            or b"content" not in payload_bytes
+        )
+    ):
+        return raw_line
 
     try:
-        obj = _json.loads(payload_bytes.decode("utf-8"))
+        obj = json.loads(payload_bytes.decode("utf-8", errors="replace"))
     except Exception:  # noqa: BLE001
         return raw_line
     if not isinstance(obj, dict):
@@ -514,60 +583,78 @@ def normalize_sse_reasoning_line(
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return raw_line
 
-    state = stream_state if stream_state is not None else {}
-    reasoning_parts: list[str] = state.setdefault("reasoning_parts", [])
     choice0 = choices[0]
     delta = choice0.get("delta")
     modified = False
 
     if isinstance(delta, dict):
-        if delta.get("tool_calls"):
+        tool_calls = delta.get("tool_calls")
+        if isinstance(tool_calls, list) and tool_calls:
             state["saw_tool_calls"] = True
+            reasoning_parts.clear()
+            latest_tc_name: str | None = None
+            total_tc_arg_chars = 0
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    fn = tc.get("function")
+                    if isinstance(fn, dict):
+                        tc_name = fn.get("name")
+                        tc_args = fn.get("arguments")
+                        if isinstance(tc_name, str) and tc_name:
+                            latest_tc_name = tc_name
+                        if isinstance(tc_args, str):
+                            total_tc_arg_chars += len(tc_args)
+            if latest_tc_name is not None or total_tc_arg_chars > 0:
+                update_live_sse_tool_stream(
+                    tool_name=latest_tc_name,
+                    arg_chars=total_tc_arg_chars,
+                )
+        elif tool_calls:
+            state["saw_tool_calls"] = True
+            reasoning_parts.clear()
+
         existing_content = delta.get("content")
-        extra = delta.get("extra_content")
-        is_thought = bool(
-            isinstance(extra, dict)
-            and isinstance(extra.get("google"), dict)
-            and extra["google"].get("thought")
-        )
-        if isinstance(existing_content, str) and existing_content and not is_thought:
+        if isinstance(existing_content, str) and existing_content:
             state["saw_visible_content"] = True
+            reasoning_parts.clear()
 
         reasoning_text = delta.get("reasoning") or delta.get("reasoning_content")
         if isinstance(reasoning_text, str) and reasoning_text:
-            reasoning_parts.append(reasoning_text)
-            if not existing_content:
-                delta["content"] = reasoning_text
-                extra_dict = delta.setdefault("extra_content", {})
-                if isinstance(extra_dict, dict):
-                    google_dict = extra_dict.setdefault("google", {})
-                    if isinstance(google_dict, dict):
-                        google_dict["thought"] = True
-                modified = True
+            record_live_sse_reasoning(reasoning_text)
+            if not state.get("saw_visible_content") and not state.get("saw_tool_calls"):
+                clipped = (
+                    reasoning_text[-_MAX_REASONING_PARTS_CHARS:]
+                    if len(reasoning_text) > _MAX_REASONING_PARTS_CHARS
+                    else reasoning_text
+                )
+                reasoning_parts.append(clipped)
+                if len(reasoning_parts) > _MAX_REASONING_PARTS:
+                    del reasoning_parts[:-_MAX_REASONING_PARTS]
+                total_chars = sum(len(p) for p in reasoning_parts)
+                while reasoning_parts and total_chars > _MAX_REASONING_PARTS_CHARS:
+                    removed = reasoning_parts.pop(0)
+                    total_chars -= len(removed)
 
     finish_reason = choice0.get("finish_reason")
-    if (
-        finish_reason
-        and reasoning_parts
-        and not state.get("saw_visible_content")
-        and not state.get("saw_tool_calls")
-    ):
-        if not isinstance(delta, dict):
-            delta = {}
-            choice0["delta"] = delta
-        delta["content"] = "".join(reasoning_parts)
-        if isinstance(delta.get("extra_content"), dict) and isinstance(
-            delta["extra_content"].get("google"), dict
+    if finish_reason:
+        update_live_sse_tool_stream(done=True)
+        if (
+            reasoning_parts
+            and not state.get("saw_visible_content")
+            and not state.get("saw_tool_calls")
         ):
-            delta["extra_content"]["google"].pop("thought", None)
-        state["saw_visible_content"] = True
-        modified = True
+            if not isinstance(delta, dict):
+                delta = {}
+                choice0["delta"] = delta
+            delta["content"] = "".join(reasoning_parts)
+            reasoning_parts.clear()
+            state["saw_visible_content"] = True
+            modified = True
 
     if not modified:
         return raw_line
 
-    line_ending = b"\r\n" if raw_line.endswith(b"\r\n") else (b"\n" if raw_line.endswith(b"\n") else b"")
-    encoded = _json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(obj, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return b"data: " + encoded + line_ending
 
 
@@ -664,13 +751,18 @@ class AuthenticatedOpenAIConnectionStrategy(
                                     "saw_tool_calls": False,
                                     "reasoning_parts": [],
                                 }
-                                while True:
-                                    raw_line = resp.readline()
-                                    if not raw_line:
-                                        break
-                                    out_line = normalize_sse_reasoning_line(raw_line, stream_state)
-                                    self.wfile.write(out_line)
-                                    self.wfile.flush()
+                                try:
+                                    while True:
+                                        raw_line = resp.readline(1048576)
+                                        if not raw_line:
+                                            break
+                                        out_line = normalize_sse_reasoning_line(
+                                            raw_line, stream_state
+                                        )
+                                        self.wfile.write(out_line)
+                                        self.wfile.flush()
+                                finally:
+                                    update_live_sse_tool_stream(done=True)
                             else:
                                 while True:
                                     chunk = resp.read(1024)

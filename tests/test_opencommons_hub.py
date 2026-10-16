@@ -697,7 +697,24 @@ def test_healthz_and_root_dashboard(tmp_path: Path) -> None:
             assert d1["service"] == "opencommons-hub"
             assert "checkpoint_size" in d1
 
-            # 2. GET / (landing page)
+            # 2. GET /v1/health
+            resp_v1h = await client.get("/v1/health")
+            assert resp_v1h.status == 200
+            d_v1h = await resp_v1h.json()
+            assert d_v1h["status"] == "ok"
+
+            # 3. POST /mcp (Streamable HTTP MCP JSON-RPC 2.0)
+            resp_mcp = await client.post(
+                "/mcp",
+                data=json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+            )
+            assert resp_mcp.status == 200
+            d_mcp = await resp_mcp.json()
+            assert d_mcp.get("jsonrpc") == "2.0"
+            assert d_mcp.get("id") == 1
+
+            # 4. GET / (landing page)
             resp2 = await client.get("/")
             assert resp2.status == 200
             html = await resp2.text()

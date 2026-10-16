@@ -4295,7 +4295,7 @@ def execute_commons_record(
             source_code,
             default_domain=domain or "general",
         )
-        if inferred_dom in ("agentic_reasoning", "task_planning_and_execution"):
+        if inferred_dom and inferred_dom != "general":
             domain = inferred_dom
 
     contract: list[tuple[tuple, object]] = []

@@ -44,6 +44,24 @@ def test_concept_extractor_infer_domain() -> None:
     assert len(proposals_p) == 1
     assert proposals_p[0].domain == "task_planning_and_execution"
 
+    # Mixed domain: graph centrality mentioning schedule/topological or numerical root bisection
+    assert (
+        ConceptExtractor.infer_domain(
+            "damped_pagerank_betweenness_centrality",
+            "Compute damped pagerank and betweenness centrality on adjacency graph across schedule steps.",
+            "def damped_pagerank_betweenness_centrality(n: int) -> float:\n    return 0.0\n",
+        )
+        == "graph_and_combinatorial"
+    )
+    assert (
+        ConceptExtractor.infer_domain(
+            "bisect_root_newton_raphson",
+            "Find polynomial root via interval bisect_root and newton_raphson step.",
+            "def bisect_root_newton_raphson(x: float) -> float:\n    return x\n",
+        )
+        == "numerical_analysis"
+    )
+
 
 def test_seed_task_reasoning_catalog_passes_defense_and_sandbox() -> None:
     assert SEED_TASK_REASONING_PATH.exists()
@@ -51,10 +69,24 @@ def test_seed_task_reasoning_catalog_passes_defense_and_sandbox() -> None:
     assert len(catalog) == 15
 
     domains_seen = set()
+    naive_patterns_seen = set()
     for item in catalog:
         domains_seen.add(item["domain"])
         verdict = evaluate_proposal_safety(item)
         assert verdict.is_accepted, f"{item['name']} failed defense: {verdict}"
+
+        # Ensure structured reasoning steps (not generic 3-line placeholder) and distinct pitfalls
+        assert "Receive typed arguments" not in item["pseudocode"]
+        assert len(item["pitfalls"]) >= 1
+        naive_patterns_seen.add(item["pitfalls"][0]["naive_pattern"])
+
+        # Ensure infer_domain matches the declared catalog domain
+        inferred = ConceptExtractor.infer_domain(
+            item["name"],
+            f"{item['summary']} {item['pseudocode']}",
+            item["source_code"],
+        )
+        assert inferred == item["domain"], f"{item['name']}: inferred {inferred} != {item['domain']}"
 
         # Execute in isolated sandbox with default zero/empty args matching param_types
         default_args = []
@@ -78,6 +110,7 @@ def test_seed_task_reasoning_catalog_passes_defense_and_sandbox() -> None:
         assert sb.success is True, f"{item['name']} failed sandbox execution: {sb.error}"
 
     assert domains_seen == {"agentic_reasoning", "task_planning_and_execution"}
+    assert len(naive_patterns_seen) == 15
 
 
 def test_execute_commons_record_and_find_task_reasoning(tmp_path: Path) -> None:

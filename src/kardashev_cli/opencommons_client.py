@@ -449,22 +449,25 @@ class ConceptExtractor:
         return hashlib.sha256(canonical_bytes).hexdigest()
 
     _TASK_PLANNING_KEYWORDS = (
-        "topological",
-        "schedule",
+        "topological_task",
+        "task_wave",
+        "task_priority",
+        "schedule_wave",
         "makespan",
         "critical_path",
         "wsjf",
         "circuit_breaker",
         "context_budget",
         "token_budget",
-        "repair_loop",
-        "task_wave",
-        "task_priority",
+        "fuzzy_line",
+        "anchor_distance",
         "retry_policy",
         "rate_limit",
     )
     _AGENTIC_REASONING_KEYWORDS = (
-        "bisect",
+        "git_bisect",
+        "bisect_midpoint",
+        "regression_bisect",
         "suspiciousness",
         "ochiai",
         "tarantula",
@@ -474,12 +477,229 @@ class ConceptExtractor:
         "tool_select",
         "consensus_verdict",
         "cross_family",
-        "fuzzy_line",
-        "anchor_distance",
+        "repair_loop",
         "rank_fusion",
+        "rrf_rank",
         "information_gain",
         "triage",
         "root_cause",
+    )
+    _DOMAIN_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        (
+            "task_planning_and_execution",
+            (
+                *_TASK_PLANNING_KEYWORDS,
+                "topological",
+                "schedule",
+                "cooldown_elapsed",
+                "failure_threshold",
+                "max_parallel_workers",
+                "serial_bottlenecks",
+                "stage_max_durations",
+            ),
+        ),
+        (
+            "agentic_reasoning",
+            (
+                *_AGENTIC_REASONING_KEYWORDS,
+                "failing_tests",
+                "prev_failing_tests",
+                "total_reviewers",
+                "min_quorum_ratio",
+                "lexical_rank",
+                "semantic_rank",
+                "exploration_c",
+            ),
+        ),
+        (
+            "graph_and_combinatorial",
+            (
+                "centrality",
+                "betweenness",
+                "closeness",
+                "pagerank",
+                "dijkstra",
+                "bellman_ford",
+                "floyd_warshall",
+                "spanning_tree",
+                "kruskal",
+                "bipartite",
+                "chromatic",
+                "clique",
+                "vertex_cover",
+                "adjacency",
+                "laplacian",
+                "jaccard_set",
+                "edit_distance",
+                "hamming",
+            ),
+        ),
+        (
+            "bioinformatics_and_control",
+            (
+                "dna",
+                "rna",
+                "codon",
+                "gc_content",
+                "rev_comp",
+                "phred",
+                "hardy_weinberg",
+                "wright_fisher",
+                "michaelis_menten",
+                "shannon_diversity",
+                "kalman",
+                "pid_discrete",
+                "pid_control",
+            ),
+        ),
+        (
+            "numerical_analysis",
+            (
+                "newton_raphson",
+                "runge_kutta",
+                "rk4",
+                "simpson",
+                "trapezoid",
+                "horner",
+                "chebyshev",
+                "lagrange",
+                "bisect_root",
+                "root_bisect",
+                "secant",
+                "householder",
+                "gram_schmidt",
+            ),
+        ),
+        (
+            "cryptography_and_framing",
+            (
+                "crc32",
+                "crc16",
+                "fnv1a",
+                "adler32",
+                "zigzag",
+                "leb128",
+                "varint",
+                "hkdf",
+                "merkle",
+                "siphash",
+                "chacha",
+            ),
+        ),
+        (
+            "distributed_systems",
+            (
+                "vector_clock",
+                "hlc_",
+                "hybrid_logical_clock",
+                "bloom_optimal",
+                "bloom_filter",
+                "rendezvous_hrw",
+                "consistent_hash",
+                "raft_",
+                "paxos",
+                "quorum_intersection",
+                "littles_law",
+                "mm1_queue",
+            ),
+        ),
+        (
+            "machine_learning",
+            (
+                "softmax",
+                "logsumexp",
+                "cross_entropy",
+                "gelu",
+                "silu",
+                "adamw",
+                "cosine_similarity",
+                "attention",
+                "kl_divergence",
+                "focal_loss",
+                "huber_loss",
+            ),
+        ),
+        (
+            "statistics_and_information",
+            (
+                "welford",
+                "wilson_score",
+                "wasserstein",
+                "mahalanobis",
+                "shannon_entropy",
+                "spearman",
+                "kendall_tau",
+                "mann_whitney",
+                "wilcoxon",
+            ),
+        ),
+        (
+            "quantitative_finance",
+            (
+                "black_scholes",
+                "kelly_optimal",
+                "sharpe_ratio",
+                "sortino",
+                "value_at_risk",
+                "cvar",
+                "merton",
+                "vasicek",
+                "cox_ingersoll",
+            ),
+        ),
+        (
+            "signal_processing",
+            (
+                "hamming_window",
+                "hann_window",
+                "blackman",
+                "goertzel",
+                "biquad",
+                "butterworth",
+                "nyquist",
+                "ema_step",
+                "moving_average",
+                "zero_crossing",
+            ),
+        ),
+        (
+            "geodesy_and_spatial",
+            (
+                "haversine",
+                "vincenty",
+                "mercator",
+                "ecef",
+                "geodetic",
+                "bbox_iou",
+                "Barycentric",
+                "shoelace",
+            ),
+        ),
+        (
+            "hamiltonian_dynamics",
+            (
+                "verlet",
+                "leapfrog",
+                "symplectic",
+                "kepler",
+                "vis_viva",
+                "roche_limit",
+                "hohmann",
+            ),
+        ),
+        (
+            "number_theory_and_algebra",
+            (
+                "totient",
+                "mobius",
+                "legendre_symbol",
+                "jacobi_symbol",
+                "extended_gcd",
+                "chinese_remainder",
+                "mod_inverse",
+                "Catalan",
+            ),
+        ),
     )
 
     @classmethod
@@ -490,17 +710,31 @@ class ConceptExtractor:
         source_code: str = "",
         default_domain: str = "general",
     ) -> str:
-        """Infer a canonical v1 domain for task-reasoning, planning, or domain functions."""
+        """Infer a canonical v1 domain using weighted multi-domain keyword scoring across name, docstring, and code."""
         if default_domain in VALID_DOMAINS and default_domain not in ("general", "workspace_discovery"):
             return default_domain
-        blob = f"{name} {docstring}".lower()
-        for kw in cls._TASK_PLANNING_KEYWORDS:
-            if kw in blob:
-                return "task_planning_and_execution"
-        for kw in cls._AGENTIC_REASONING_KEYWORDS:
-            if kw in blob:
-                return "agentic_reasoning"
-        return default_domain if default_domain in VALID_DOMAINS else "general"
+        name_l = name.lower()
+        doc_l = docstring.lower()
+        code_l = source_code.lower()
+
+        best_domain = default_domain if default_domain in VALID_DOMAINS else "general"
+        best_score = 0
+
+        for dom, keywords in cls._DOMAIN_KEYWORDS:
+            score = 0
+            for kw in keywords:
+                kw_l = kw.lower()
+                if kw_l in name_l:
+                    score += 4 if "_" in kw_l else 3
+                if kw_l in doc_l:
+                    score += 3 if "_" in kw_l else 2
+                if kw_l in code_l:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_domain = dom
+
+        return best_domain
 
     @classmethod
     def extract_from_source(

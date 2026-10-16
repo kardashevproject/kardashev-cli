@@ -1421,8 +1421,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute bayesian_hypothesis_posterior over float, float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.5, 0.0, 0.0)",
+          "failure_mechanism": "Raises ZeroDivisionError when an unexpected observation has zero likelihood under both hypotheses.",
+          "naive_pattern": "(prior * likelihood_if_true) / (prior * likelihood_if_true + (1.0 - prior) * likelihood_if_false)",
+          "pitfall_id": "pf_bayesian_hypothesis_posterior_1",
+          "verified_fix": "Guard marginal denominator <= 0.0 and return 0.0."
+        }
+      ],
+      "pseudocode": "1. Clamp prior, likelihood_if_true, and likelihood_if_false to [0.0, 1.0].\n2. Compute numerator = prior * likelihood_if_true and marginal evidence denom = numerator + (1 - prior) * likelihood_if_false.\n3. Return 0.0 if denom <= 0.0 else numerator / denom.",
       "return_type": "float",
       "sid": "sid:320e578ca23e12a8",
       "source_code": "def bayesian_hypothesis_posterior(prior: float, likelihood_if_true: float, likelihood_if_false: float) -> float:\n    p = max(0.0, min(1.0, float(prior)))\n    lt = max(0.0, min(1.0, float(likelihood_if_true)))\n    lf = max(0.0, min(1.0, float(likelihood_if_false)))\n    num = p * lt\n    denom = num + (1.0 - p) * lf\n    if denom <= 0.0:\n        return 0.0\n    return num / denom",
@@ -3762,8 +3770,16 @@
         "int",
         "bool"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute circuit_breaker_next_state over int, int, int, bool",
+      "pitfalls": [
+        {
+          "counterexample_input": "(2, 5, 3, True)",
+          "failure_mechanism": "Jumps directly from OPEN (2) to CLOSED (0) on cooldown expiry without a single-probe HALF_OPEN (1) check, allowing a still-broken tool to flood errors.",
+          "naive_pattern": "return 0 if cooldown_elapsed else (2 if consecutive_failures >= failure_threshold else 0)",
+          "pitfall_id": "pf_circuit_breaker_next_state_1",
+          "verified_fix": "Transition OPEN (2) -> HALF_OPEN (1) when cooldown_elapsed is True, and require fails == 0 in HALF_OPEN to close."
+        }
+      ],
+      "pseudocode": "1. Normalize current_state in {0=CLOSED, 1=HALF_OPEN, 2=OPEN} and failure_threshold >= 1.\n2. If OPEN (2), transition to HALF_OPEN (1) iff cooldown_elapsed else remain OPEN (2).\n3. If HALF_OPEN (1), trip to OPEN (2) on any failure (fails > 0) else reset to CLOSED (0); if CLOSED (0), trip to OPEN (2) iff fails >= failure_threshold.",
       "return_type": "int",
       "sid": "sid:7196ecb697d071a0",
       "source_code": "def circuit_breaker_next_state(current_state: int, consecutive_failures: int, failure_threshold: int, cooldown_elapsed: bool) -> int:\n    state = max(0, min(2, int(current_state)))\n    fails = max(0, int(consecutive_failures))\n    thresh = max(1, int(failure_threshold))\n    if state == 2:\n        return 1 if cooldown_elapsed else 2\n    if state == 1:\n        return 2 if fails > 0 else 0\n    return 2 if fails >= thresh else 0",
@@ -4533,8 +4549,16 @@
         "float",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute context_budget_proportional_alloc over int, float, float, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(100, 5.0, 2.0, 200)",
+          "failure_mechanism": "Exceeds total_budget when min_floor > total_budget or when item_weight > sum_weights due to unnormalized relevance scores.",
+          "naive_pattern": "max(min_floor, int(total_budget * (item_weight / sum_weights)))",
+          "pitfall_id": "pf_context_budget_proportional_alloc_1",
+          "verified_fix": "Clamp floor_val = min(budget, min_floor) and sw = max(item_weight, sum_weights)."
+        }
+      ],
+      "pseudocode": "1. Clamp total_budget >= 0 and min_floor in [0, total_budget].\n2. Clamp item_weight >= 0.0 and sum_weights >= item_weight; return min_floor if sum_weights <= 0.0.\n3. Compute proportional share round(total_budget * (item_weight / sum_weights)) clamped to [min_floor, total_budget].",
       "return_type": "int",
       "sid": "sid:a4f25af8709421b7",
       "source_code": "def context_budget_proportional_alloc(total_budget: int, item_weight: float, sum_weights: float, min_floor: int) -> int:\n    budget = max(0, int(total_budget))\n    floor_val = max(0, min(budget, int(min_floor)))\n    w = max(0.0, float(item_weight))\n    sw = max(w, float(sum_weights))\n    if sw <= 0.0:\n        return floor_val\n    raw = int(round(budget * (w / sw)))\n    return max(floor_val, min(budget, raw))",
@@ -5302,8 +5326,16 @@
         "list[float]",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute critical_path_duration over list[float], float",
+      "pitfalls": [
+        {
+          "counterexample_input": "([], 2.5)",
+          "failure_mechanism": "Adds handoff overhead only once instead of per sequential stage and returns non-zero duration on an empty stage list.",
+          "naive_pattern": "sum(stage_max_durations) + overhead_per_stage",
+          "pitfall_id": "pf_critical_path_duration_1",
+          "verified_fix": "Return 0.0 when stage_max_durations is empty, otherwise add len(pos) * ov."
+        }
+      ],
+      "pseudocode": "1. Clamp per-stage orchestration overhead ov = max(0.0, overhead_per_stage).\n2. Clamp each stage duration in stage_max_durations to >= 0.0; return 0.0 if stage list is empty.\n3. Return sum(stage_durations) + len(stage_durations) * ov.",
       "return_type": "float",
       "sid": "sid:c8f019fbc7127970",
       "source_code": "def critical_path_duration(stage_max_durations: list[float], overhead_per_stage: float) -> float:\n    ov = max(0.0, float(overhead_per_stage))\n    pos = [max(0.0, float(d)) for d in stage_max_durations]\n    if not pos:\n        return 0.0\n    return sum(pos) + len(pos) * ov",
@@ -5368,8 +5400,16 @@
         "int",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute cross_family_consensus_verdict over int, int, int, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(3, 4, 1, 0.5)",
+          "failure_mechanism": "Approves a release when majority quorum passes even though a reviewer raised a critical security/correctness blocker (critical_flags > 0).",
+          "naive_pattern": "(approvals / total_reviewers) >= min_quorum_ratio",
+          "pitfall_id": "pf_cross_family_consensus_verdict_1",
+          "verified_fix": "Enforce fail-closed veto: return False whenever critical_flags > 0 prior to checking quorum ratio."
+        }
+      ],
+      "pseudocode": "1. Fail closed immediately (return False) if critical_flags > 0.\n2. Clamp total_reviewers >= 1, approvals in [0, total_reviewers], and min_quorum_ratio in [0.0, 1.0].\n3. Return True iff approvals / total_reviewers >= min_quorum_ratio.",
       "return_type": "bool",
       "sid": "sid:a0fb27eae5a19aeb",
       "source_code": "def cross_family_consensus_verdict(approvals: int, total_reviewers: int, critical_flags: int, min_quorum_ratio: float) -> bool:\n    if int(critical_flags) > 0:\n        return False\n    tot = max(1, abs(int(total_reviewers)))\n    app = max(0, min(tot, int(approvals)))\n    q = max(0.0, min(1.0, float(min_quorum_ratio)))\n    return (app / float(tot)) >= q",
@@ -5552,8 +5592,16 @@
         "float",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute damped_pagerank_node_update over float, float, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.0, 0.85, 0)",
+          "failure_mechanism": "Raises ZeroDivisionError on empty graph (num_nodes == 0) or negative rank when damping > 1.0.",
+          "naive_pattern": "(1.0 - damping) / num_nodes + damping * inbound_rank_sum",
+          "pitfall_id": "pf_damped_pagerank_node_update_1",
+          "verified_fix": "Clamp num_nodes >= 1 and damping in [0.0, 1.0]."
+        }
+      ],
+      "pseudocode": "1. Clamp damping factor d in [0.0, 1.0], num_nodes N >= 1, and inbound_rank_sum >= 0.0.\n2. Compute teleportation base (1.0 - d) / N.\n3. Return (1.0 - d) / N + d * inbound_rank_sum.",
       "return_type": "float",
       "sid": "sid:4106a25c614f8cf2",
       "source_code": "def damped_pagerank_node_update(inbound_sum: float, damping: float, num_nodes: int) -> float:\n    d = max(0.0, min(1.0, float(damping)))\n    n = max(1, abs(int(num_nodes)))\n    inb = max(0.0, float(inbound_sum))\n    return (1.0 - d) / float(n) + d * inb",
@@ -6502,8 +6550,16 @@
         "str",
         "str"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute edit_distance_hamming_padded over str, str",
+      "pitfalls": [
+        {
+          "counterexample_input": "('abc', 'abcdef')",
+          "failure_mechanism": "Silently ignores trailing characters when strings have different lengths, returning 0 for ('abc', 'abcdef').",
+          "naive_pattern": "sum(1 for x, y in zip(a, b) if x != y)",
+          "pitfall_id": "pf_edit_distance_hamming_padded_1",
+          "verified_fix": "Add length difference abs(len(a) - len(b)) to the zipped mismatch count."
+        }
+      ],
+      "pseudocode": "1. Compute shared prefix length m = min(len(a), len(b)) and length mismatch penalty abs(len(a) - len(b)).\n2. Count character mismatches across indices 0..m-1.\n3. Return mismatch_count + abs(len(a) - len(b)).",
       "return_type": "int",
       "sid": "sid:79127109543124b9",
       "source_code": "def edit_distance_hamming_padded(s1: str, s2: str) -> int:\n    common = min(len(s1), len(s2))\n    mismatches = sum(1 for i in range(common) if s1[i] != s2[i])\n    return mismatches + abs(len(s1) - len(s2))",
@@ -6975,8 +7031,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute exponential_moving_average_step over float, float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(10.0, 20.0, 1.5)",
+          "failure_mechanism": "Produces extrapolated instability outside [min(prev, obs), max(prev, obs)] when alpha > 1.0 or alpha < 0.0.",
+          "naive_pattern": "alpha * observation + (1.0 - alpha) * prev_ema",
+          "pitfall_id": "pf_exponential_moving_average_step_1",
+          "verified_fix": "Clamp alpha to [0.0, 1.0] before computing convex combination."
+        }
+      ],
+      "pseudocode": "1. Clamp smoothing factor alpha to [0.0, 1.0].\n2. Compute convex combination alpha * observation + (1.0 - alpha) * prev_ema.\n3. Return updated EMA value.",
       "return_type": "float",
       "sid": "sid:e24e5a9ab04a8c13",
       "source_code": "def exponential_moving_average_step(current_val: float, prev_ema: float, alpha: float) -> float:\n    a = max(0.0, min(1.0, float(alpha)))\n    return a * float(current_val) + (1.0 - a) * float(prev_ema)",
@@ -7941,8 +8005,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute fuzzy_line_anchor_distance over int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(100, 10, 20)",
+          "failure_mechanism": "Returns negative similarity scores when candidate_line drifts beyond max_drift, corrupting composite patch-anchor ranking.",
+          "naive_pattern": "1.0 - abs(candidate_line - expected_line) / max_drift",
+          "pitfall_id": "pf_fuzzy_line_anchor_distance_1",
+          "verified_fix": "Return 0.0 whenever drift >= max(1, abs(max_drift))."
+        }
+      ],
+      "pseudocode": "1. Compute absolute line offset drift = abs(candidate_line - expected_line).\n2. Clamp tolerance window limit = max(1, abs(max_drift)).\n3. Return 0.0 if drift >= limit else 1.0 - drift / limit.",
       "return_type": "float",
       "sid": "sid:58945bef05ff1947",
       "source_code": "def fuzzy_line_anchor_distance(candidate_line: int, expected_line: int, max_drift: int) -> float:\n    drift = abs(int(candidate_line) - int(expected_line))\n    limit = max(1, abs(int(max_drift)))\n    if drift >= limit:\n        return 0.0\n    return 1.0 - (drift / float(limit))",
@@ -8225,8 +8297,16 @@
       "param_types": [
         "str"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute gc_content_fraction over str",
+      "pitfalls": [
+        {
+          "counterexample_input": "''",
+          "failure_mechanism": "Raises ZeroDivisionError on empty strings and undercounts lowercase g/c or diluted whitespace/N characters.",
+          "naive_pattern": "(seq.count('G') + seq.count('C')) / len(seq)",
+          "pitfall_id": "pf_gc_content_fraction_1",
+          "verified_fix": "Normalize to uppercase, filter valid bases, and guard total == 0."
+        }
+      ],
+      "pseudocode": "1. Scan sequence characters (case-insensitive) for valid DNA/RNA bases in {A, C, G, T, U}.\n2. Count G and C bases among valid bases; return 0.0 if valid base count is zero.\n3. Return gc_count / valid_base_count.",
       "return_type": "float",
       "sid": "sid:afe7540fa7d86a27",
       "source_code": "def gc_content_fraction(seq: str) -> float:\n    cleaned = [ch.upper() for ch in seq if not ch.isspace()]\n    if not cleaned:\n        return 0.0\n    gc_count = sum(1 for ch in cleaned if ch in (\"G\", \"C\"))\n    return gc_count / float(len(cleaned))",
@@ -8611,8 +8691,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute git_bisect_midpoint_step over int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0, 1)",
+          "failure_mechanism": "Returns lo when hi - lo == 1, causing an infinite bisection loop that re-tests the already-known good commit.",
+          "naive_pattern": "(good_idx + bad_idx) // 2",
+          "pitfall_id": "pf_git_bisect_midpoint_step_1",
+          "verified_fix": "Return hi when hi - lo <= 1 and normalize lo = min(good_idx, bad_idx), hi = max(good_idx, bad_idx)."
+        }
+      ],
+      "pseudocode": "1. Normalize lo = min(good_idx, bad_idx) and hi = max(good_idx, bad_idx).\n2. If hi - lo <= 1, the regression boundary is converged; return hi.\n3. Return integer midpoint lo + (hi - lo) // 2.",
       "return_type": "int",
       "sid": "sid:4f195d90a6a999e4",
       "source_code": "def git_bisect_midpoint_step(good_idx: int, bad_idx: int) -> int:\n    lo = min(int(good_idx), int(bad_idx))\n    hi = max(int(good_idx), int(bad_idx))\n    if hi - lo <= 1:\n        return hi\n    return lo + (hi - lo) // 2",
@@ -9401,8 +9489,16 @@
       "param_types": [
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute hardy_weinberg_heterozygote_freq over float",
+      "pitfalls": [
+        {
+          "counterexample_input": "1.5",
+          "failure_mechanism": "Returns negative frequency when unnormalized allele frequency p > 1.0 or p < 0.0.",
+          "naive_pattern": "2.0 * p * (1.0 - p)",
+          "pitfall_id": "pf_hardy_weinberg_heterozygote_freq_1",
+          "verified_fix": "Clamp p to [0.0, 1.0] before computing 2 * p * (1 - p)."
+        }
+      ],
+      "pseudocode": "1. Clamp minor allele frequency p to [0.0, 1.0].\n2. Compute complementary allele frequency q = 1.0 - p.\n3. Return expected heterozygote genotype frequency 2 * p * q in [0.0, 0.5].",
       "return_type": "float",
       "sid": "sid:e52ef696ab6fa0c3",
       "source_code": "def hardy_weinberg_heterozygote_freq(p: float) -> float:\n    p_clamped = max(0.0, min(1.0, float(p)))\n    q = 1.0 - p_clamped\n    return 2.0 * p_clamped * q",
@@ -10463,8 +10559,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute information_gain_split_score over int, int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(9, 1, 0, 1)",
+          "failure_mechanism": "Uses unweighted average of child impurities instead of weighting by branch sizes n_left/n_total and n_right/n_total, producing negative gain on skewed splits.",
+          "naive_pattern": "gini_parent - 0.5 * (gini_left + gini_right)",
+          "pitfall_id": "pf_information_gain_split_score_1",
+          "verified_fix": "Weight child Gini impurities by n_left / n_total and n_right / n_total and clamp result >= 0.0."
+        }
+      ],
+      "pseudocode": "1. Clamp child positive/negative hypothesis counts pl, nl, pr, nr >= 0.\n2. Compute parent Gini impurity 2 * p_all * (1 - p_all) over n_total = n_left + n_right.\n3. Compute weighted child Gini impurity and return max(0.0, gini_parent - weighted_child).",
       "return_type": "float",
       "sid": "sid:b3879214210db098",
       "source_code": "def information_gain_split_score(pos_left: int, neg_left: int, pos_right: int, neg_right: int) -> float:\n    pl = max(0, int(pos_left))\n    nl = max(0, int(neg_left))\n    pr = max(0, int(pos_right))\n    nr = max(0, int(neg_right))\n    n_left = pl + nl\n    n_right = pr + nr\n    n_total = n_left + n_right\n    if n_total == 0:\n        return 0.0\n    p_all = (pl + pr) / float(n_total)\n    gini_parent = 2.0 * p_all * (1.0 - p_all)\n    gini_l = 2.0 * (pl / float(n_left)) * (1.0 - pl / float(n_left)) if n_left > 0 else 0.0\n    gini_r = 2.0 * (pr / float(n_right)) * (1.0 - pr / float(n_right)) if n_right > 0 else 0.0\n    weighted_child = (n_left / float(n_total)) * gini_l + (n_right / float(n_total)) * gini_r\n    return max(0.0, gini_parent - weighted_child)",
@@ -10969,8 +11073,16 @@
         "list[int]",
         "list[int]"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute jaccard_set_similarity_int over list[int], list[int]",
+      "pitfalls": [
+        {
+          "counterexample_input": "([], [])",
+          "failure_mechanism": "Raises ZeroDivisionError when comparing two empty sets ([] and []).",
+          "naive_pattern": "len(set(a) & set(b)) / len(set(a) | set(b))",
+          "pitfall_id": "pf_jaccard_set_similarity_int_1",
+          "verified_fix": "Return 1.0 when both sets are empty (union size == 0)."
+        }
+      ],
+      "pseudocode": "1. Convert integer lists a and b into unique sets sa and sb.\n2. If both sets are empty, return 1.0.\n3. Return len(sa & sb) / len(sa | sb) in [0.0, 1.0].",
       "return_type": "float",
       "sid": "sid:bb7a573b344fb910",
       "source_code": "def jaccard_set_similarity_int(a: list[int], b: list[int]) -> float:\n    sa = set(a)\n    sb = set(b)\n    if not sa and not sb:\n        return 1.0\n    union_len = len(sa | sb)\n    return len(sa & sb) / float(union_len)",
@@ -11369,8 +11481,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute kalman_scalar_gain over float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.0, 0.0)",
+          "failure_mechanism": "Raises ZeroDivisionError when both prior and measurement variances are 0.0.",
+          "naive_pattern": "p_prior / (p_prior + r_meas)",
+          "pitfall_id": "pf_kalman_scalar_gain_1",
+          "verified_fix": "Guard denom <= 0.0 and return 0.0."
+        }
+      ],
+      "pseudocode": "1. Clamp prior estimate variance p_prior >= 0.0 and measurement noise variance r_meas >= 0.0.\n2. If p_prior + r_meas <= 0.0, return 0.0.\n3. Return optimal scalar Kalman gain K = p_prior / (p_prior + r_meas) in [0.0, 1.0].",
       "return_type": "float",
       "sid": "sid:f8ef3e3c32777e91",
       "source_code": "def kalman_scalar_gain(est_var: float, meas_var: float) -> float:\n    p = max(0.0, float(est_var))\n    r = max(0.0, float(meas_var))\n    if p + r == 0.0:\n        return 0.0\n    return p / (p + r)",
@@ -12740,8 +12860,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute littles_law_mean_wip over float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(-2.0, 5.0)",
+          "failure_mechanism": "Returns negative queue occupancy when noisy telemetry reports negative arrival or latency deltas.",
+          "naive_pattern": "arrival_rate * mean_sojourn_time",
+          "pitfall_id": "pf_littles_law_mean_wip_1",
+          "verified_fix": "Clamp arrival_rate >= 0.0 and mean_sojourn_time >= 0.0."
+        }
+      ],
+      "pseudocode": "1. Clamp arrival_rate >= 0.0 and mean_sojourn_time >= 0.0.\n2. Multiply L = lambda * W.\n3. Return non-negative mean work-in-progress L.",
       "return_type": "float",
       "sid": "sid:bc36b95e2b577a9b",
       "source_code": "def littles_law_mean_wip(arrival_rate: float, residence_time: float) -> float:\n    lam = max(0.0, float(arrival_rate))\n    w = max(0.0, float(residence_time))\n    return lam * w",
@@ -13997,8 +14125,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute michaelis_menten_velocity over float, float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(10.0, 0.0, 0.0)",
+          "failure_mechanism": "Raises ZeroDivisionError when substrate == 0.0 and km == 0.0.",
+          "naive_pattern": "(vmax * substrate) / (km + substrate)",
+          "pitfall_id": "pf_michaelis_menten_velocity_1",
+          "verified_fix": "Return 0.0 when substrate <= 0.0 and clamp km >= 1e-9."
+        }
+      ],
+      "pseudocode": "1. Clamp vmax >= 0.0, substrate s >= 0.0, and Michaelis constant km >= 1e-9.\n2. If s == 0.0 or vmax == 0.0, return 0.0.\n3. Return (vmax * s) / (km + s).",
       "return_type": "float",
       "sid": "sid:7d1dded08c4ef95f",
       "source_code": "def michaelis_menten_velocity(v_max: float, substrate: float, k_m: float) -> float:\n    vm = max(0.0, float(v_max))\n    s = max(0.0, float(substrate))\n    km = max(1e-9, abs(float(k_m)))\n    return (vm * s) / (km + s)",
@@ -14167,8 +14303,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute mm1_queue_utilization over float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(10.0, 0.0)",
+          "failure_mechanism": "Raises ZeroDivisionError when service_rate == 0.0 or returns utilization > 1.0 on saturated queues.",
+          "naive_pattern": "arrival_rate / service_rate",
+          "pitfall_id": "pf_mm1_queue_utilization_1",
+          "verified_fix": "Guard service_rate <= 0.0 and clamp utilization to [0.0, 1.0]."
+        }
+      ],
+      "pseudocode": "1. Clamp arrival_rate >= 0.0 and service_rate > 0.0.\n2. If arrival_rate <= 0.0, return 0.0; if arrival_rate >= service_rate, saturate at 1.0.\n3. Return traffic intensity rho = arrival_rate / service_rate in [0.0, 1.0].",
       "return_type": "float",
       "sid": "sid:4d42ac2bc4bd3fc9",
       "source_code": "def mm1_queue_utilization(arrival_rate: float, service_rate: float) -> float:\n    lam = max(0.0, float(arrival_rate))\n    mu = max(1e-6, abs(float(service_rate)))\n    return min(1.0, lam / mu)",
@@ -14883,8 +15027,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute ochiai_fault_suspiciousness over int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0, 0, 0)",
+          "failure_mechanism": "Raises ZeroDivisionError when a line is never executed (ef + ep == 0) or when zero tests fail (ef + nf == 0).",
+          "naive_pattern": "ef / ((ef + nf) * (ef + ep)) ** 0.5",
+          "pitfall_id": "pf_ochiai_fault_suspiciousness_1",
+          "verified_fix": "Guard ef == 0 or total_failed == 0 or total_executed == 0 and return 0.0 before dividing."
+        }
+      ],
+      "pseudocode": "1. Clamp failed/passed spectrum counts ef, nf, ep to non-negative integers.\n2. Compute total_failed = ef + nf and total_executed = ef + ep; return 0.0 if any is zero.\n3. Return ef / sqrt(total_failed * total_executed).",
       "return_type": "float",
       "sid": "sid:8bfc14620c405723",
       "source_code": "def ochiai_fault_suspiciousness(ef: int, nf: int, ep: int) -> float:\n    e_f = max(0, int(ef))\n    n_f = max(0, int(nf))\n    e_p = max(0, int(ep))\n    total_failed = e_f + n_f\n    total_executed = e_f + e_p\n    if e_f == 0 or total_failed == 0 or total_executed == 0:\n        return 0.0\n    denom = (float(total_failed) * float(total_executed)) ** 0.5\n    return e_f / denom",
@@ -15689,8 +15841,16 @@
       "param_types": [
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute phred_quality_to_error_prob over float",
+      "pitfalls": [
+        {
+          "counterexample_input": "-10",
+          "failure_mechanism": "Returns probability > 1.0 when negative Phred scores are passed.",
+          "naive_pattern": "10.0 ** (-phred_q / 10.0)",
+          "pitfall_id": "pf_phred_quality_to_error_prob_1",
+          "verified_fix": "Clamp phred_q >= 0 before exponentiation."
+        }
+      ],
+      "pseudocode": "1. Clamp Phred quality score q = max(0, min(93, phred_q)).\n2. Compute basecall error probability P = 10 ** (-q / 10.0).\n3. Return P in (0.0, 1.0].",
       "return_type": "float",
       "sid": "sid:a466225c08e399a1",
       "source_code": "def phred_quality_to_error_prob(q_score: float) -> float:\n    q = max(0.0, min(100.0, float(q_score)))\n    return 10.0 ** (-q / 10.0)",
@@ -15801,8 +15961,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute pid_discrete_control_output over float, float, float, float, float, float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(1.0, 0.1, 0.05, 2.0, 1.0, 0.0, 0.0)",
+          "failure_mechanism": "Raises ZeroDivisionError when dt == 0.0 and omits current step error * dt from integral accumulation.",
+          "naive_pattern": "kp * error + ki * integral_sum + kd * (error - prev_error) / dt",
+          "pitfall_id": "pf_pid_discrete_control_output_1",
+          "verified_fix": "Clamp dt = max(1e-6, abs(dt)) and include error * dt in the integral term."
+        }
+      ],
+      "pseudocode": "1. Clamp timestep dt >= 1e-6.\n2. Compute proportional term kp * error, integral term ki * (integral_sum + error * dt), and derivative term kd * ((error - prev_error) / dt).\n3. Return sum of P + I + D terms.",
       "return_type": "float",
       "sid": "sid:71098da0f1f592c7",
       "source_code": "def pid_discrete_control_output(kp: float, ki: float, kd: float, error: float, integral: float, prev_error: float, dt: float) -> float:\n    step = max(1e-6, abs(float(dt)))\n    deriv = (float(error) - float(prev_error)) / step\n    return float(kp) * float(error) + float(ki) * float(integral) + float(kd) * deriv",
@@ -17521,8 +17689,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute repair_loop_termination_decide over int, int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(5, 2, 5, 3)",
+          "failure_mechanism": "Continues burning repair turns when a patch increases or stalls failing_tests on attempt > 1 instead of triggering early rollback/re-plan.",
+          "naive_pattern": "return 1 if failing_tests == 0 else (-1 if attempt >= max_attempts else 0)",
+          "pitfall_id": "pf_repair_loop_termination_decide_1",
+          "verified_fix": "Check attempt > 1 and failing_tests >= prev_failing_tests to return -2 (oscillation/regression halt)."
+        }
+      ],
+      "pseudocode": "1. If failing_tests <= 0, return 1 (CONVERGED_PASS).\n2. If attempt >= max(1, max_attempts), return -1 (HALT_MAX_BUDGET).\n3. If attempt > 1 and failing_tests >= prev_failing_tests, return -2 (HALT_NON_IMPROVING); else return 0 (CONTINUE_REPAIR).",
       "return_type": "int",
       "sid": "sid:7b8031086cce18d4",
       "source_code": "def repair_loop_termination_decide(failing_tests: int, attempt: int, max_attempts: int, prev_failing_tests: int) -> int:\n    if int(failing_tests) <= 0:\n        return 1\n    if int(attempt) >= max(1, int(max_attempts)):\n        return -1\n    if int(attempt) > 1 and int(failing_tests) >= int(prev_failing_tests):\n        return -2\n    return 0",
@@ -17643,8 +17819,16 @@
       "param_types": [
         "str"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute rev_comp_dna over str",
+      "pitfalls": [
+        {
+          "counterexample_input": "'ATGC'",
+          "failure_mechanism": "Computes complement without reversing the 5-prime to 3-prime strand orientation.",
+          "naive_pattern": "seq.translate(str.maketrans('ACGT', 'TGCA'))",
+          "pitfall_id": "pf_rev_comp_dna_1",
+          "verified_fix": "Reverse the sequence before or after base complementation."
+        }
+      ],
+      "pseudocode": "1. Map each nucleotide in reverse order using complement table A<->T, C<->G (preserving case or normalizing to uppercase).\n2. Map ambiguous/unknown bases to N.\n3. Join and return the reversed complement string.",
       "return_type": "str",
       "sid": "sid:672d77e6575d6b99",
       "source_code": "def rev_comp_dna(seq: str) -> str:\n    comp = {\"A\": \"T\", \"T\": \"A\", \"G\": \"C\", \"C\": \"G\", \"N\": \"N\", \"a\": \"t\", \"t\": \"a\", \"g\": \"c\", \"c\": \"g\", \"n\": \"n\"}\n    return \"\".join(comp.get(ch, ch) for ch in reversed(seq))",
@@ -18940,8 +19124,16 @@
       "param_types": [
         "list[int]"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute shannon_diversity_index over list[int]",
+      "pitfalls": [
+        {
+          "counterexample_input": "[10, 0, 5]",
+          "failure_mechanism": "Raises ValueError (math domain error) when any species count c == 0 or ZeroDivisionError on empty list.",
+          "naive_pattern": "-sum((c / sum(counts)) * math.log(c / sum(counts)) for c in counts)",
+          "pitfall_id": "pf_shannon_diversity_index_1",
+          "verified_fix": "Filter strictly positive counts c > 0 before taking logarithms."
+        }
+      ],
+      "pseudocode": "1. Filter positive species counts c > 0 and compute total abundance N = sum(counts); return 0.0 if N <= 0.\n2. For each positive count c, compute proportion p = c / N and accumulate -p * ln(p).\n3. Return non-negative Shannon diversity index H.",
       "return_type": "float",
       "sid": "sid:60e7ba0bfcb24ab2",
       "source_code": "def shannon_diversity_index(counts: list[int]) -> float:\n    pos = [abs(int(c)) for c in counts if int(c) != 0]\n    total = sum(pos)\n    if total <= 0:\n        return 0.0\n    h = 0.0\n    for c in pos:\n        p = c / float(total)\n        y = (p - 1.0) / (p + 1.0)\n        y2 = y * y\n        ln_p = 2.0 * y * (1.0 + y2 / 3.0 + (y2 * y2) / 5.0 + (y2 * y2 * y2) / 7.0 + (y2 * y2 * y2 * y2) / 9.0 + (y2 ** 5) / 11.0 + (y2 ** 6) / 13.0 + (y2 ** 7) / 15.0 + (y2 ** 8) / 17.0 + (y2 ** 9) / 19.0)\n        h -= p * ln_p\n    return max(0.0, h)",
@@ -20615,8 +20807,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute tarantula_fault_suspiciousness over int, int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(3, 1, 0, 0)",
+          "failure_mechanism": "Raises ZeroDivisionError when all tests in the suite fail (ep + np_count == 0) even though ef > 0.",
+          "naive_pattern": "(ef / (ef + nf)) / ((ef / (ef + nf)) + (ep / (ep + np_count)))",
+          "pitfall_id": "pf_tarantula_fault_suspiciousness_1",
+          "verified_fix": "Return 1.0 immediately when total_p == 0 and ef > 0."
+        }
+      ],
+      "pseudocode": "1. Clamp spectrum counts ef, nf, ep, np_count >= 0.\n2. Compute fail_ratio = ef / (ef + nf); return 0.0 if ef == 0.\n3. If total_p == ep + np_count == 0, return 1.0; else compute pass_ratio = ep / total_p and return fail_ratio / (fail_ratio + pass_ratio).",
       "return_type": "float",
       "sid": "sid:621a8dba931e8ba7",
       "source_code": "def tarantula_fault_suspiciousness(ef: int, nf: int, ep: int, np_count: int) -> float:\n    e_f = max(0, int(ef))\n    n_f = max(0, int(nf))\n    e_p = max(0, int(ep))\n    n_p = max(0, int(np_count))\n    total_f = e_f + n_f\n    total_p = e_p + n_p\n    if total_f == 0 or e_f == 0:\n        return 0.0\n    fail_ratio = e_f / float(total_f)\n    if total_p == 0:\n        return 1.0\n    pass_ratio = e_p / float(total_p)\n    if fail_ratio + pass_ratio == 0.0:\n        return 0.0\n    return fail_ratio / (fail_ratio + pass_ratio)",
@@ -20681,8 +20881,16 @@
         "float",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute task_priority_wsjf_score over float, float, float, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(5.0, 3.0, 2.0, 0.0)",
+          "failure_mechanism": "Zero or near-zero job_duration estimates cause WSJF priority to explode to infinity or raise ZeroDivisionError.",
+          "naive_pattern": "(user_value + time_criticality + risk_reduction) / job_duration",
+          "pitfall_id": "pf_task_priority_wsjf_score_1",
+          "verified_fix": "Clamp job_duration with max(0.1, abs(float(job_duration)))."
+        }
+      ],
+      "pseudocode": "1. Clamp cost-of-delay components user_value, time_criticality, and risk_reduction to >= 0.0.\n2. Clamp job_duration to at least 0.1 to prevent sub-unit duration explosion.\n3. Return (user_value + time_criticality + risk_reduction) / job_duration.",
       "return_type": "float",
       "sid": "sid:c692c3d8fc6111fe",
       "source_code": "def task_priority_wsjf_score(user_value: float, time_criticality: float, risk_reduction: float, job_duration: float) -> float:\n    uv = max(0.0, float(user_value))\n    tc = max(0.0, float(time_criticality))\n    rr = max(0.0, float(risk_reduction))\n    dur = max(0.1, abs(float(job_duration)))\n    return (uv + tc + rr) / dur",
@@ -20825,8 +21033,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute topological_task_waves over int, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(6, 4, 3)",
+          "failure_mechanism": "Ignores sequential dependency bottlenecks that cannot be parallelized across workers, underestimating minimum wave count.",
+          "naive_pattern": "(num_tasks + max_parallel_workers - 1) // max_parallel_workers",
+          "pitfall_id": "pf_topological_task_waves_1",
+          "verified_fix": "Separate serial_bottlenecks from parallelizable = tasks - serial and add serial + ceil(parallelizable / workers)."
+        }
+      ],
+      "pseudocode": "1. Return 0 if num_tasks <= 0; clamp max_parallel_workers >= 1 and serial_bottlenecks in [0, num_tasks].\n2. Subtract serial_bottlenecks from num_tasks to obtain parallelizable tasks.\n3. Return serial_bottlenecks + ceil(parallelizable / max_parallel_workers).",
       "return_type": "int",
       "sid": "sid:650aa216189cec42",
       "source_code": "def topological_task_waves(num_tasks: int, max_parallel_workers: int, serial_bottlenecks: int) -> int:\n    tasks = max(0, int(num_tasks))\n    if tasks == 0:\n        return 0\n    workers = max(1, abs(int(max_parallel_workers)))\n    serial = max(0, min(tasks, int(serial_bottlenecks)))\n    parallelizable = tasks - serial\n    parallel_waves = (parallelizable + workers - 1) // workers\n    return serial + parallel_waves",
@@ -21224,8 +21440,16 @@
         "int",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute ucb1_tool_selection_score over int, int, int, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(10, 2, 10, 0.0)",
+          "failure_mechanism": "Allows successes > pulls from unnormalized reward counters, inflating mean_reward above 1.0 and starving exploration.",
+          "naive_pattern": "(successes / pulls) + exploration_c * (ln_t / pulls) ** 0.5",
+          "pitfall_id": "pf_ucb1_tool_selection_score_1",
+          "verified_fix": "Clamp successes to [0, pulls] and pulls >= 1 before computing mean_reward."
+        }
+      ],
+      "pseudocode": "1. Clamp pulls >= 1, successes in [0, pulls], total_pulls >= 1, exploration_c >= 0.0.\n2. Compute empirical mean_reward = successes / pulls.\n3. Approximate ln(total_pulls) via Pade/series expansion of (t-1)/(t+1) and return mean_reward + exploration_c * sqrt(ln(t) / pulls).",
       "return_type": "float",
       "sid": "sid:15295d58fa595dc5",
       "source_code": "def ucb1_tool_selection_score(successes: int, pulls: int, total_pulls: int, exploration_c: float) -> float:\n    n = max(1, abs(int(pulls)))\n    s = max(0, min(n, abs(int(successes))))\n    t = max(1, abs(int(total_pulls)))\n    c = max(0.0, float(exploration_c))\n    mean_reward = s / float(n)\n    y = (float(t) - 1.0) / (float(t) + 1.0)\n    y2 = y * y\n    ln_t = 2.0 * y * (1.0 + y2 / 3.0 + (y2 * y2) / 5.0 + (y2 ** 3) / 7.0 + (y2 ** 4) / 9.0 + (y2 ** 5) / 11.0)\n    return mean_reward + c * ((max(0.0, ln_t) / float(n)) ** 0.5)",
@@ -22280,8 +22504,16 @@
         "int",
         "float"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute weighted_rrf_rank_fusion over int, int, int, float",
+      "pitfalls": [
+        {
+          "counterexample_input": "(1, 100, 60, 0.5)",
+          "failure_mechanism": "Omitting RRF smoothing constant k causes rank-1 outliers in a single modality to dominate consensus hits across both retrievers.",
+          "naive_pattern": "(1.0 - semantic_weight) / lexical_rank + semantic_weight / semantic_rank",
+          "pitfall_id": "pf_weighted_rrf_rank_fusion_1",
+          "verified_fix": "Add smoothing constant k >= 1 in denominator: (1 - w) / (k + r_lex) + w / (k + r_sem)."
+        }
+      ],
+      "pseudocode": "1. Clamp 1-indexed ranks r_lex >= 1, r_sem >= 1, smoothing constant k >= 1, and weight w in [0.0, 1.0].\n2. Compute lexical reciprocal score (1 - w) / (k + r_lex) and semantic reciprocal score w / (k + r_sem).\n3. Return their convex sum.",
       "return_type": "float",
       "sid": "sid:eb116f2c6f121a55",
       "source_code": "def weighted_rrf_rank_fusion(lexical_rank: int, semantic_rank: int, k_constant: int, semantic_weight: float) -> float:\n    r_lex = max(1, abs(int(lexical_rank)))\n    r_sem = max(1, abs(int(semantic_rank)))\n    k = max(1, abs(int(k_constant)))\n    w = max(0.0, min(1.0, float(semantic_weight)))\n    return (1.0 - w) / float(k + r_lex) + w / float(k + r_sem)",
@@ -22527,8 +22759,16 @@
         "int",
         "int"
       ],
-      "pitfalls": [],
-      "pseudocode": "Compute wright_fisher_het_decay over float, int, int",
+      "pitfalls": [
+        {
+          "counterexample_input": "(0.5, 0, 10)",
+          "failure_mechanism": "Raises ZeroDivisionError when pop_size == 0 or diverges when generations < 0.",
+          "naive_pattern": "h0 * ((1.0 - 1.0 / (2.0 * pop_size)) ** generations)",
+          "pitfall_id": "pf_wright_fisher_het_decay_1",
+          "verified_fix": "Clamp pop_size >= 1 and generations >= 0."
+        }
+      ],
+      "pseudocode": "1. Clamp initial heterozygosity h0 in [0.0, 1.0], diploid population size ne >= 1, and generations t >= 0.\n2. Compute per-generation retention factor (1.0 - 1.0 / (2.0 * ne)).\n3. Return h0 * (retention ** t).",
       "return_type": "float",
       "sid": "sid:b2a87143e71e1ba2",
       "source_code": "def wright_fisher_het_decay(h0: float, n_eff: int, generations: int) -> float:\n    h_init = max(0.0, min(1.0, float(h0)))\n    ne = max(1, abs(int(n_eff)))\n    gen = max(0, min(1000, abs(int(generations))))\n    return h_init * ((1.0 - 1.0 / (2.0 * float(ne))) ** gen)",

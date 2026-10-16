@@ -636,6 +636,36 @@ async def handle_healthz(request: web.Request) -> web.Response:
     )
 
 
+async def handle_mcp_request(request: web.Request) -> web.Response:
+    """Streamable HTTP JSON-RPC 2.0 MCP endpoint (/mcp and /v1/mcp)."""
+    from kardashev_cli.opencommons import handle_opencommons_mcp_request
+
+    raw_bytes = await request.read()
+    decompressed, err = safe_decompress_payload(
+        raw_bytes, request.headers.get("Content-Encoding")
+    )
+    if err or decompressed is None:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": err or "Invalid body"}},
+            status=400,
+        )
+    try:
+        req_data = json.loads(decompressed.decode("utf-8")) if decompressed else {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}},
+            status=400,
+        )
+
+    loop = asyncio.get_running_loop()
+    mcp_resp = await loop.run_in_executor(
+        None, lambda: handle_opencommons_mcp_request(req_data)
+    )
+    if mcp_resp is None:
+        return web.Response(status=202)
+    return web.json_response(mcp_resp, status=200)
+
+
 async def handle_index(request: web.Request) -> web.Response:
     """Landing dashboard and endpoint overview."""
     hub = _get_hub(request.app)
@@ -658,6 +688,7 @@ async def handle_index(request: web.Request) -> web.Response:
     <li><code>GET /v1/checkpoint</code> — Signed C2SP Checkpoint</li>
     <li><code>GET /v1/tiles/...</code> — C2SP Transparency Log Tiles</li>
     <li><code>GET /v1/stream?since=N</code> — Live SSE Hints Streaming</li>
+    <li><code>POST /mcp</code> — Streamable HTTP MCP JSON-RPC 2.0 Endpoint</li>
   </ul>
 </body>
 </html>
@@ -700,6 +731,7 @@ def create_hub_app(
     # Routes
     app.router.add_get("/", handle_index)
     app.router.add_get("/healthz", handle_healthz)
+    app.router.add_get("/v1/health", handle_healthz)
     app.router.add_post("/v1/proposals", handle_post_proposal)
     app.router.add_get("/v1/proposals/{id}", handle_get_proposal_status)
     app.router.add_get("/v1/concepts", handle_get_concepts)
@@ -707,6 +739,8 @@ def create_hub_app(
     app.router.add_get("/v1/checkpoint", handle_get_checkpoint)
     app.router.add_get("/v1/tiles/{path:.*}", handle_get_tiles)
     app.router.add_get("/v1/stream", handle_sse_stream)
+    app.router.add_post("/mcp", handle_mcp_request)
+    app.router.add_post("/v1/mcp", handle_mcp_request)
 
     # Retired legacy sync routes
     app.router.add_post("/v1/sync", handle_legacy_sync_cutover)
@@ -730,5 +764,6 @@ def run_hub_server(
     print("  • GET  /v1/checkpoint (Signed C2SP checkpoint)")
     print("  • GET  /v1/tiles/...  (C2SP transparency tiles & delta packs)")
     print("  • GET  /v1/stream     (Live Server-Sent Events stream)")
+    print("  • POST /mcp           (Streamable HTTP MCP JSON-RPC 2.0 endpoint)")
     print("  • POST /v1/sync       (410 Gone cutover)")
     web.run_app(app, host=host, port=port)

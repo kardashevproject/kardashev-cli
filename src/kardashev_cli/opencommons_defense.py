@@ -795,7 +795,7 @@ SECRET_AND_PII_RULES = {
     "L4_PEM_PRIVATE_KEY": re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----"),
     "L4_EMAIL": re.compile(r"\b[a-zA-Z0-9_.+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b"),
     "L4_PHONE_US": re.compile(
-        r"(?<!\d)(?:\+?1[-. ]?)?\(?[2-9]\d{2}\)?[-. ]?\d{3}[-. ]?\d{4}\b"
+        r"(?<!\d)(?:\+?1[-. ]?\(?[2-9]\d{2}\)?[-. ]?\d{3}[-. ]?\d{4}|\([2-9]\d{2}\)[-. ]?\d{3}[-. ]?\d{4}|[2-9]\d{2}[-. ]\d{3}[-. ]\d{4})\b"
     ),
     "L4_IPV4": re.compile(
         r"\b(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b"
@@ -803,7 +803,7 @@ SECRET_AND_PII_RULES = {
     "L4_IPV6": re.compile(
         r"\b(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}\b|\b2001:0db8:[0-9a-fA-F:]+\b"
     ),
-    "L4_CREDIT_CARD": re.compile(r"\b(?:\d{4}[ -]?){3}\d{4}\b"),
+    "L4_CREDIT_CARD": re.compile(r"(?<!\.)\b(?:\d{4}[ -]?){3}\d{4}\b"),
     "L4_SSN": re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
     "L4_USER_PATH_POSIX": re.compile(
         r"/(?:home|Users|var/home|root)/[a-zA-Z0-9_.-]+"

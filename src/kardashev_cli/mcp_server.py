@@ -798,7 +798,7 @@ def agent_task_status(task_id: str | None = None) -> dict[str, Any]:
     return {
         "found": bool(tasks),
         "count": len(tasks),
-        "statuses": {t["status"] for t in tasks} if tasks else set(),
+        "statuses": sorted({t["status"] for t in tasks}),
         "tasks": tasks,
     }
 

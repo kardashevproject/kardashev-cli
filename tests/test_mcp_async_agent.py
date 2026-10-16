@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-import kardashev_cli.mcp_server as mcp_server
+from kardashev_cli import mcp_server
 
 
 @pytest.fixture(autouse=True)
@@ -114,3 +114,18 @@ def test_status_of_unknown_task_is_honest() -> None:
     status = mcp_server.agent_task_status("lat_missing")
     assert status["found"] is False
     assert status["task_id"] == "lat_missing"
+
+def test_mcp_list_all_agent_tasks_is_json_serializable() -> None:
+    resp = mcp_server.handle_mcp_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "local_agent_task_status",
+                "arguments": {},
+            },
+        }
+    )
+    assert resp is not None and resp["result"]["isError"] is False
+    assert resp["result"]["structuredContent"]["statuses"] == []

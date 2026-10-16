@@ -53,6 +53,7 @@ from prompt_toolkit.styles import Style as PtStyle
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.rule import Rule
 from rich.syntax import Syntax
@@ -65,6 +66,7 @@ from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
 from kardashev_cli.harness_hooks import get_harness_telemetry
 from kardashev_cli.integrate import integrate_frontier_agent
 from kardashev_cli.presets import PRESETS, BackendKind, list_presets
+from kardashev_cli.tui_input import TerminalTypeAhead, TypeAheadBuffer
 from kardashev_cli.updater import UserConfig, check_for_updates, perform_self_update
 
 _NOISY_STDERR_SUBSTRINGS: tuple[str, ...] = (
@@ -825,9 +827,17 @@ async def _nonblocking_input(prompt_text: str) -> str:
             if not fut.cancelled():
                 loop.call_soon_threadsafe(fut.set_exception, exc)
 
+    # A blocking prompt needs the terminal in cooked mode: pause type-ahead capture around it.
+    type_ahead = getattr(_ACTIVE_TUI, "type_ahead", None)
+    if type_ahead is not None:
+        type_ahead.suspend()
     t = threading.Thread(target=_read, daemon=True)
     t.start()
-    return await fut
+    try:
+        return await fut
+    finally:
+        if type_ahead is not None:
+            type_ahead.resume()
 
 
 async def _confirm_tool_handler(tc: types.ToolCall, reason: str = "") -> bool:
@@ -881,6 +891,9 @@ class KardashevRichTUI:
         self._pending_retry_prompt: str | None = None
         self._synced_transcript_count = 0
         self._initial_banner_shown = False
+        # Keystrokes typed while a turn streams are buffered here and flushed after it.
+        self.input_queue = TypeAheadBuffer()
+        self.type_ahead: TerminalTypeAhead | None = None
 
     def record_tool_result(self, result: types.ToolResult) -> None:
         """Matches a `PostToolCallHook` result to the corresponding in-flight `ToolEventRecord`."""
@@ -2088,6 +2101,10 @@ class KardashevRichTUI:
                 spinner_line.append(f"Processing on {self._active_model_summary(cfg)[0]} ({elapsed:.1f}s)...", style="dim")
                 renderables.append(spinner_line)
 
+            queued_line = self.input_queue.display_line(self.console.width)
+            if queued_line:
+                renderables.append(Text(f"  ⏎ {queued_line}", style="dim"))
+
             return Group(*renderables)
 
         try:
@@ -2197,6 +2214,16 @@ class KardashevRichTUI:
                 loop.add_signal_handler(_signal.SIGINT, _on_turn_sigint)
                 sigint_installed = True
 
+            # Buffer keystrokes typed while the turn streams (flushed by run() afterwards).
+            self.type_ahead = None
+            if TerminalTypeAhead.available():
+                candidate = TerminalTypeAhead(
+                    self.input_queue,
+                    on_change=lambda: live.update(_render_live_frame()),
+                )
+                if candidate.start(loop):
+                    self.type_ahead = candidate
+
             try:
                 await consume_task
             except (KeyboardInterrupt, asyncio.CancelledError, types.AntigravityCancelledError):
@@ -2222,11 +2249,17 @@ class KardashevRichTUI:
                 self._render_connection_error(exc, cfg)
                 return
             finally:
+                if self.type_ahead is not None:
+                    with contextlib.suppress(Exception):
+                        self.type_ahead.stop()
+                    self.type_ahead = None
                 if sigint_installed:
                     with contextlib.suppress(Exception):
                         loop.remove_signal_handler(_signal.SIGINT)
 
             if cancelled_by_user:
+                # The user stopped the turn: hand buffered text back for editing, never auto-send it.
+                self.input_queue.demote_to_draft()
                 live.update(_render_live_frame())
                 live.stop()
                 await self._cancel_and_settle_turn(agent)
@@ -2406,12 +2439,21 @@ class KardashevRichTUI:
                             )
                             prompt_html = HTML(f"<model_tag>[{model_label}]</model_tag> <prompt>❯ </prompt>")
 
-                            if prompt_session is not None:
+                            queued_line = self.input_queue.pop_next()
+                            if queued_line is not None:
+                                # Typed while the previous turn streamed: submit it now, nothing lost.
+                                self.console.print(f"[dim]❯ {escape(queued_line)}[/dim]")
+                                user_input = queued_line
+                            elif prompt_session is not None:
                                 user_input = await prompt_session.prompt_async(
                                     prompt_html,
                                     bottom_toolbar=toolbar_html,
+                                    default=self.input_queue.take_draft(),
                                 )
                             else:
+                                leftover = self.input_queue.take_draft()
+                                if leftover:
+                                    self.console.print(f"[dim]  (unsent draft: {escape(leftover)})[/dim]")
                                 user_input = await _nonblocking_input("❯ ")
                             ctrl_c_streak = 0
                         except KeyboardInterrupt:

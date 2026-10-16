@@ -640,6 +640,11 @@ async def handle_mcp_request(request: web.Request) -> web.Response:
     """Streamable HTTP JSON-RPC 2.0 MCP endpoint (/mcp and /v1/mcp)."""
     from kardashev_cli.opencommons import handle_opencommons_mcp_request
 
+    if request.content_length and request.content_length > 262144:
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Request payload too large"}},
+            status=413,
+        )
     raw_bytes = await request.read()
     decompressed, err = safe_decompress_payload(
         raw_bytes, request.headers.get("Content-Encoding")
@@ -649,11 +654,21 @@ async def handle_mcp_request(request: web.Request) -> web.Response:
             {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": err or "Invalid body"}},
             status=400,
         )
-    try:
-        req_data = json.loads(decompressed.decode("utf-8")) if decompressed else {}
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    if not decompressed.strip():
         return web.json_response(
-            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": str(exc)}},
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: empty payload"}},
+            status=400,
+        )
+    try:
+        req_data = json.loads(decompressed.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error: malformed JSON"}},
+            status=400,
+        )
+    if not isinstance(req_data, dict):
+        return web.json_response(
+            {"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request: expected JSON object"}},
             status=400,
         )
 

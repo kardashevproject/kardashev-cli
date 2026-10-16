@@ -4806,8 +4806,21 @@ def handle_opencommons_mcp_request(
     pending_path: Path | str | None = None,
 ) -> dict[str, Any] | None:
     """Process a single JSON-RPC 2.0 request for the standalone `opencommons-mcp` server."""
-    method = req.get("method", "")
+    if not isinstance(req, dict):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {"code": -32600, "message": "Invalid Request: expected JSON object"},
+        }
+    raw_method = req.get("method", "")
     req_id = req.get("id")
+    if not isinstance(raw_method, str) or not raw_method:
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32600, "message": "Invalid Request: method must be a non-empty string"},
+        }
+    method = raw_method
 
     if method.startswith("notifications/"):
         return None
@@ -4834,9 +4847,23 @@ def handle_opencommons_mcp_request(
         }
 
     if method == "tools/call":
-        params = req.get("params", {}) or {}
+        raw_params = req.get("params")
+        if raw_params is not None and not isinstance(raw_params, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid params: expected JSON object"},
+            }
+        params = raw_params or {}
         tool_name = params.get("name", "")
-        arguments = params.get("arguments", {}) or {}
+        raw_arguments = params.get("arguments")
+        if raw_arguments is not None and not isinstance(raw_arguments, dict):
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32602, "message": "Invalid params: arguments must be a JSON object"},
+            }
+        arguments = raw_arguments or {}
         try:
             if tool_name in ("find", "commons_find"):
                 res_payload = execute_commons_find(arguments, store_path=store_path)

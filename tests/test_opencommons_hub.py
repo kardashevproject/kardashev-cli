@@ -714,6 +714,17 @@ def test_healthz_and_root_dashboard(tmp_path: Path) -> None:
             assert d_mcp.get("jsonrpc") == "2.0"
             assert d_mcp.get("id") == 1
 
+            # 3b. POST /mcp with non-object JSON (null, [], number) -> 400 Invalid Request (-32600)
+            for non_obj in (b"null", b"[]", b"123", b""):
+                resp_bad = await client.post(
+                    "/mcp",
+                    data=non_obj,
+                    headers={"Content-Type": "application/json"},
+                )
+                assert resp_bad.status == 400
+                d_bad = await resp_bad.json()
+                assert d_bad["error"]["code"] == -32600
+
             # 4. GET / (landing page)
             resp2 = await client.get("/")
             assert resp2.status == 200

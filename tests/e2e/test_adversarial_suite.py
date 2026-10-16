@@ -160,7 +160,7 @@ def get_defense_pipeline() -> Callable[[dict[str, Any]], bool]:
             r"\b\d{3}-\d{2}-\d{4}\b",
             r"\b(?:\d{4}-){3}\d{4}\b",
             r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b",
-            r"\bsk_live_[0-9a-zA-Z]{24,}\b"
+            r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"
         ]
         full_text = f"{summary} {pseudo} {code}"
         for sp in secret_patterns:

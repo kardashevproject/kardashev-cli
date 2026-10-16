@@ -44,9 +44,12 @@ REJECTION_DECAY_WINDOW_SECONDS = 86400  # 24 hours
 
 VALID_DOMAINS = frozenset(
     {
+        "agentic_reasoning",
+        "bioinformatics_and_control",
         "cryptography_and_framing",
         "distributed_systems",
         "geodesy_and_spatial",
+        "graph_and_combinatorial",
         "hamiltonian_dynamics",
         "machine_learning",
         "number_theory_and_algebra",
@@ -54,6 +57,7 @@ VALID_DOMAINS = frozenset(
         "quantitative_finance",
         "signal_processing",
         "statistics_and_information",
+        "task_planning_and_execution",
         "general",
     }
 )
@@ -444,11 +448,66 @@ class ConceptExtractor:
         canonical_bytes = cls.canonicalize_json(proposal_dict)
         return hashlib.sha256(canonical_bytes).hexdigest()
 
+    _TASK_PLANNING_KEYWORDS = (
+        "topological",
+        "schedule",
+        "makespan",
+        "critical_path",
+        "wsjf",
+        "circuit_breaker",
+        "context_budget",
+        "token_budget",
+        "repair_loop",
+        "task_wave",
+        "task_priority",
+        "retry_policy",
+        "rate_limit",
+    )
+    _AGENTIC_REASONING_KEYWORDS = (
+        "bisect",
+        "suspiciousness",
+        "ochiai",
+        "tarantula",
+        "fault_local",
+        "hypothesis",
+        "ucb1",
+        "tool_select",
+        "consensus_verdict",
+        "cross_family",
+        "fuzzy_line",
+        "anchor_distance",
+        "rank_fusion",
+        "information_gain",
+        "triage",
+        "root_cause",
+    )
+
+    @classmethod
+    def infer_domain(
+        cls,
+        name: str,
+        docstring: str = "",
+        source_code: str = "",
+        default_domain: str = "general",
+    ) -> str:
+        """Infer a canonical v1 domain for task-reasoning, planning, or domain functions."""
+        if default_domain in VALID_DOMAINS and default_domain not in ("general", "workspace_discovery"):
+            return default_domain
+        blob = f"{name} {docstring}".lower()
+        for kw in cls._TASK_PLANNING_KEYWORDS:
+            if kw in blob:
+                return "task_planning_and_execution"
+        for kw in cls._AGENTIC_REASONING_KEYWORDS:
+            if kw in blob:
+                return "agentic_reasoning"
+        return default_domain if default_domain in VALID_DOMAINS else "general"
+
     @classmethod
     def extract_from_source(
         cls,
         source_code: str,
         default_domain: str = "general",
+        auto_infer_domain: bool = False,
     ) -> list[Proposal]:
         if not cls.check_nesting_depth(source_code):
             return []
@@ -457,7 +516,7 @@ class ConceptExtractor:
         except SyntaxError:
             return []
 
-        domain = default_domain if default_domain in VALID_DOMAINS else "general"
+        base_domain = default_domain if default_domain in VALID_DOMAINS else "general"
         proposals: list[Proposal] = []
 
         for node in tree.body:
@@ -471,6 +530,12 @@ class ConceptExtractor:
 
             param_types = [ast.unparse(a.annotation) for a in node.args.args]
             return_type = ast.unparse(node.returns)
+
+            domain = (
+                cls.infer_domain(node.name, docstring, canonical_src, default_domain=base_domain)
+                if auto_infer_domain
+                else base_domain
+            )
 
             # Extract or synthesize summary
             lines = [l.strip() for l in docstring.splitlines() if l.strip()]

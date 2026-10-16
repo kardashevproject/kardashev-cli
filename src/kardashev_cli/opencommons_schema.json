@@ -111,9 +111,12 @@
     "domain": {
       "type": "string",
       "enum": [
+        "agentic_reasoning",
+        "bioinformatics_and_control",
         "cryptography_and_framing",
         "distributed_systems",
         "geodesy_and_spatial",
+        "graph_and_combinatorial",
         "hamiltonian_dynamics",
         "machine_learning",
         "number_theory_and_algebra",
@@ -121,9 +124,10 @@
         "quantitative_finance",
         "signal_processing",
         "statistics_and_information",
+        "task_planning_and_execution",
         "general"
       ],
-      "description": "Target domain classification."
+      "description": "Target domain classification, including domain science and agentic task-reasoning/execution."
     }
   }
 }

@@ -791,7 +791,7 @@ SECRET_AND_PII_RULES = {
     "L4_GOOGLE_KEY": re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     "L4_HUGGINGFACE_TOKEN": re.compile(r"\bhf_[A-Za-z0-9]{20,}\b"),
     "L4_SLACK_TOKEN": re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
-    "L4_STRIPE_KEY": re.compile(r"\b(?:sk|rk)_live_[0-9a-zA-Z]{24,}\b"),
+    "L4_STRIPE_KEY": re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9a-zA-Z]{24,}\b"),
     "L4_PEM_PRIVATE_KEY": re.compile(r"-----BEGIN (?:[A-Z ]+)?PRIVATE KEY-----"),
     "L4_EMAIL": re.compile(r"\b[a-zA-Z0-9_.+-]+@(?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}\b"),
     "L4_PHONE_US": re.compile(

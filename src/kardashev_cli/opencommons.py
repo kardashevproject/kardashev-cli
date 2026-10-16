@@ -4286,18 +4286,40 @@ def execute_commons_record(
     from kardashev_cli import correctness
 
     sid, func_name, inferred_param_types, inferred_return_type, _deps = compute_structural_sid(source_code)
+    if domain in ("general", "workspace_discovery", ""):
+        from kardashev_cli.opencommons_client import ConceptExtractor
+
+        inferred_dom = ConceptExtractor.infer_domain(
+            func_name,
+            f"{summary} {pseudocode}",
+            source_code,
+            default_domain=domain or "general",
+        )
+        if inferred_dom in ("agentic_reasoning", "task_planning_and_execution"):
+            domain = inferred_dom
 
     contract: list[tuple[tuple, object]] = []
-    if arguments.get("contract"):
-        try:
-            parsed_contract = ast.literal_eval(str(arguments["contract"]))
-        except (ValueError, SyntaxError, TypeError) as exc:
-            return {"error": f"could not parse contract: {exc}"}
+    raw_contract = (
+        arguments.get("contract")
+        or arguments.get("examples")
+        or arguments.get("examples_json")
+    )
+    if raw_contract:
+        if isinstance(raw_contract, list):
+            parsed_contract = raw_contract
+        else:
+            try:
+                parsed_contract = ast.literal_eval(str(raw_contract))
+            except (ValueError, SyntaxError, TypeError) as exc:
+                return {"error": f"could not parse contract: {exc}"}
         if not isinstance(parsed_contract, list):
             return {"error": "contract must be a Python literal list of ((args...), expected) pairs."}
         for pair in parsed_contract:
             try:
-                pair_args, pair_expected = pair
+                if isinstance(pair, dict) and "args" in pair and "expected" in pair:
+                    pair_args, pair_expected = pair["args"], pair["expected"]
+                else:
+                    pair_args, pair_expected = pair
                 if isinstance(pair_args, list):
                     if (
                         len(inferred_param_types) == 1
@@ -4498,6 +4520,8 @@ def extract_candidate_functions_from_source(
     except SyntaxError:
         return []
 
+    from kardashev_cli.opencommons_client import ConceptExtractor
+
     results: list[dict[str, Any]] = []
     for node in tree.body:
         if not isinstance(node, ast.FunctionDef):
@@ -4521,14 +4545,23 @@ def extract_candidate_functions_from_source(
 
         fn_src = ast.unparse(node)
         doc = ast.get_docstring(node) or ""
-        first_doc_line = doc.strip().splitlines()[0] if doc.strip() else f"Verified function {node.name}"
+        doc_lines = [ln.strip() for ln in doc.strip().splitlines() if ln.strip()]
+        first_doc_line = doc_lines[0] if doc_lines else f"Verified function {node.name}"
+        pseudocode = "\n".join(doc_lines[1:]) if len(doc_lines) > 1 else ""
+        resolved_domain = ConceptExtractor.infer_domain(
+            node.name,
+            doc,
+            fn_src,
+            default_domain=domain,
+        )
 
         with contextlib.suppress(Exception):
             res = execute_commons_record(
                 {
                     "source_code": fn_src,
-                    "domain": domain,
+                    "domain": resolved_domain,
                     "summary": first_doc_line[:140],
+                    "pseudocode": pseudocode[:2000],
                     "contributor_agent": contributor_agent,
                 },
                 store_path=store_path,
@@ -4539,12 +4572,13 @@ def extract_candidate_functions_from_source(
 
 
 _CONTRIBUTION_INSTRUCTIONS = (
-    "When you write or verify a small, reusable, pure function during this work (numerics, "
-    "parsing, algorithms -- not project-specific glue), call `record` with: the function source, "
-    "a one-line summary, 3+ contract examples, and 1+ executable invariants (Python boolean "
-    "expressions over the parameters, `out`, and `f`). Never include project names, paths, "
-    "personal data, or secrets. Use `find` with io_examples before writing a common algorithm, in "
-    "case it already exists."
+    "When you write or verify a small, reusable, pure function during this work—including both "
+    "domain/mathematical algorithms AND executable task-reasoning, planning, debugging, fault-localization, "
+    "tool-routing, or self-healing repair primitives (domains: `agentic_reasoning`, `task_planning_and_execution`)—"
+    "call `record` with: the function source, a one-line summary, structured reasoning/execution steps (`pseudocode`), "
+    "3+ contract examples, 1+ executable invariants (Python boolean expressions over the parameters, `out`, and `f`), "
+    "and any known pitfalls. Never include project names, paths, personal data, or secrets. Use `find` with "
+    "io_examples before writing a common algorithm or reasoning primitive, in case it already exists."
 )
 
 

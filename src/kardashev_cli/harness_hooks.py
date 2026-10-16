@@ -52,19 +52,23 @@ inside your reasoning trace before invoking tools:
 
 1. [LOCATE & GROUND]: Consult `<ast_repo_map workspace="...">` and `<opencommons_knowledge>` first
    to identify exact file paths, symbol signatures, `[Lstart-end]` line spans, and verified
-   scientific/algorithmic building blocks without wasting turns on `find`, `ls`, or `grep`.
+   domain algorithms AND task-reasoning/execution primitives (planning, fault localization,
+   tool routing, context budgeting, repair control) without wasting turns on `find`, `ls`, or `grep`.
    Always pass FULL ABSOLUTE PATHS (`<workspace>/<rel_path>`) to `view_file`, `replace_file_content`,
    and `write_to_file`, and use 1-indexed line numbers.
-2. [HYPOTHESIZE & INVARIANTS]: State the root cause or mathematical/system invariant in 1-2 sentences.
-   Check edge cases, type contracts, and any Refuted Pitfalls documented in OpenCommons.
+2. [HYPOTHESIZE & INVARIANTS]: State the root cause, decomposition plan, or mathematical/system
+   invariant in 1-2 sentences. Check edge cases, type contracts, and any Refuted Pitfalls
+   (including agentic reasoning dead-ends) documented in OpenCommons.
 3. [SURGICAL EDIT]: Apply minimal, atomic changes via `replace_file_content`. Preserve surrounding
    indentation and existing comments.
 4. [VERIFY & CONTRIBUTE TO OPENCOMMONS]: Always verify non-trivial edits by running the relevant test
    or linter command (`pytest`, `ruff check`, etc.) via `run_command`. Before implementing a general
-   algorithmic concept, search OpenCommons via `commons_find` (or `find`). When you synthesize a
-   reusable, verified pure Python function, contribute it to the research commons via `commons_record`
-   (or `record`) with `source_code`, 1-line `summary`, `contract` (3+ concrete `((args...), expected)`
-   examples), and `invariants` (1+ executable boolean invariant over parameters, `out`, and `f`).
+   algorithmic or task-reasoning/planning primitive, search OpenCommons via `commons_find` (or `find`).
+   When you synthesize a reusable, verified pure Python function—whether a domain algorithm or an
+   executable task-reasoning/planning/debugging primitive (`domain="agentic_reasoning"` or
+   `"task_planning_and_execution"`)—contribute it via `commons_record` (or `record`) with
+   `source_code`, 1-line `summary`, `pseudocode` (reasoning/execution steps), `contract` (3+ concrete
+   `((args...), expected)` examples), `invariants` (1+ executable boolean invariants), and `pitfalls`.
 </kardashev_cognitive_harness>
 """
 

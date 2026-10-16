@@ -1,0 +1,384 @@
+[
+  {
+    "name": "ochiai_fault_suspiciousness",
+    "param_types": [
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "float",
+    "summary": "Compute Ochiai spectrum-based fault localization (SBFL) suspiciousness score for a code line.",
+    "pseudocode": "Algorithm ochiai_fault_suspiciousness(int, int, int) -> float:\n1. Receive typed arguments (int, int, int)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 <= out <= 1.0 + 1e-9",
+      "f(0, nf, ep) == 0.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def ochiai_fault_suspiciousness(ef: int, nf: int, ep: int) -> float:\n    e_f = max(0, int(ef))\n    n_f = max(0, int(nf))\n    e_p = max(0, int(ep))\n    total_failed = e_f + n_f\n    total_executed = e_f + e_p\n    if e_f == 0 or total_failed == 0 or total_executed == 0:\n        return 0.0\n    denom = (float(total_failed) * float(total_executed)) ** 0.5\n    return e_f / denom",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "tarantula_fault_suspiciousness",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "float",
+    "summary": "Compute Tarantula spectrum-based fault localization suspiciousness score from test pass/fail counts.",
+    "pseudocode": "Algorithm tarantula_fault_suspiciousness(int, int, int, int) -> float:\n1. Receive typed arguments (int, int, int, int)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 <= out <= 1.0",
+      "f(0, nf, ep, np_count) == 0.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def tarantula_fault_suspiciousness(ef: int, nf: int, ep: int, np_count: int) -> float:\n    e_f = max(0, int(ef))\n    n_f = max(0, int(nf))\n    e_p = max(0, int(ep))\n    n_p = max(0, int(np_count))\n    total_f = e_f + n_f\n    total_p = e_p + n_p\n    if total_f == 0 or e_f == 0:\n        return 0.0\n    fail_ratio = e_f / float(total_f)\n    if total_p == 0:\n        return 1.0\n    pass_ratio = e_p / float(total_p)\n    if fail_ratio + pass_ratio == 0.0:\n        return 0.0\n    return fail_ratio / (fail_ratio + pass_ratio)",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "bayesian_hypothesis_posterior",
+    "param_types": [
+      "float",
+      "float",
+      "float"
+    ],
+    "return_type": "float",
+    "summary": "Update root-cause hypothesis probability via Bayes rule given prior and diagnostic test likelihoods.",
+    "pseudocode": "Algorithm bayesian_hypothesis_posterior(float, float, float) -> float:\n1. Receive typed arguments (float, float, float)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 <= out <= 1.0",
+      "f(0.0, likelihood_if_true, likelihood_if_false) == 0.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def bayesian_hypothesis_posterior(prior: float, likelihood_if_true: float, likelihood_if_false: float) -> float:\n    p = max(0.0, min(1.0, float(prior)))\n    lt = max(0.0, min(1.0, float(likelihood_if_true)))\n    lf = max(0.0, min(1.0, float(likelihood_if_false)))\n    num = p * lt\n    denom = num + (1.0 - p) * lf\n    if denom <= 0.0:\n        return 0.0\n    return num / denom",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "git_bisect_midpoint_step",
+    "param_types": [
+      "int",
+      "int"
+    ],
+    "return_type": "int",
+    "summary": "Compute the next binary-search commit index to test during automated regression bisection.",
+    "pseudocode": "Algorithm git_bisect_midpoint_step(int, int) -> int:\n1. Receive typed arguments (int, int)\n2. Execute canonical calculation\n3. Return int",
+    "invariants": [
+      "min(good_idx, bad_idx) <= out <= max(good_idx, bad_idx)",
+      "out == f(bad_idx, good_idx)"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def git_bisect_midpoint_step(good_idx: int, bad_idx: int) -> int:\n    lo = min(int(good_idx), int(bad_idx))\n    hi = max(int(good_idx), int(bad_idx))\n    if hi - lo <= 1:\n        return hi\n    return lo + (hi - lo) // 2",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "ucb1_tool_selection_score",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "float"
+    ],
+    "return_type": "float",
+    "summary": "Compute Upper Confidence Bound (UCB1) bandit score for routing between candidate agent tools.",
+    "pseudocode": "Algorithm ucb1_tool_selection_score(int, int, int, float) -> float:\n1. Receive typed arguments (int, int, int, float)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "out >= 0.0",
+      "f(successes, pulls, total_pulls, 0.0) <= 1.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def ucb1_tool_selection_score(successes: int, pulls: int, total_pulls: int, exploration_c: float) -> float:\n    n = max(1, abs(int(pulls)))\n    s = max(0, min(n, abs(int(successes))))\n    t = max(1, abs(int(total_pulls)))\n    c = max(0.0, float(exploration_c))\n    mean_reward = s / float(n)\n    y = (float(t) - 1.0) / (float(t) + 1.0)\n    y2 = y * y\n    ln_t = 2.0 * y * (1.0 + y2 / 3.0 + y2 * y2 / 5.0 + y2 ** 3 / 7.0 + y2 ** 4 / 9.0 + y2 ** 5 / 11.0)\n    return mean_reward + c * (max(0.0, ln_t) / float(n)) ** 0.5",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "cross_family_consensus_verdict",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "float"
+    ],
+    "return_type": "bool",
+    "summary": "Determine whether multi-agent verification passes quorum and has zero critical blockers.",
+    "pseudocode": "Algorithm cross_family_consensus_verdict(int, int, int, float) -> bool:\n1. Receive typed arguments (int, int, int, float)\n2. Execute canonical calculation\n3. Return bool",
+    "invariants": [
+      "not (critical_flags > 0) or (out == False)",
+      "out == True or out == False"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def cross_family_consensus_verdict(approvals: int, total_reviewers: int, critical_flags: int, min_quorum_ratio: float) -> bool:\n    if int(critical_flags) > 0:\n        return False\n    tot = max(1, abs(int(total_reviewers)))\n    app = max(0, min(tot, int(approvals)))\n    q = max(0.0, min(1.0, float(min_quorum_ratio)))\n    return app / float(tot) >= q",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "repair_loop_termination_decide",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "int",
+    "summary": "Decide whether an automated test-fix-verify loop should halt due to success, budget exhaustion, or oscillation.",
+    "pseudocode": "Algorithm repair_loop_termination_decide(int, int, int, int) -> int:\n1. Receive typed arguments (int, int, int, int)\n2. Execute canonical calculation\n3. Return int",
+    "invariants": [
+      "-2 <= out <= 1",
+      "not (failing_tests <= 0) or (out == 1)"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def repair_loop_termination_decide(failing_tests: int, attempt: int, max_attempts: int, prev_failing_tests: int) -> int:\n    if int(failing_tests) <= 0:\n        return 1\n    if int(attempt) >= max(1, int(max_attempts)):\n        return -1\n    if int(attempt) > 1 and int(failing_tests) >= int(prev_failing_tests):\n        return -2\n    return 0",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "information_gain_split_score",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "float",
+    "summary": "Compute Gini impurity reduction achieved by a diagnostic probe splitting candidate hypotheses.",
+    "pseudocode": "Algorithm information_gain_split_score(int, int, int, int) -> float:\n1. Receive typed arguments (int, int, int, int)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 <= out <= 0.5 + 1e-9",
+      "isclose(out, f(pos_right, neg_right, pos_left, neg_left))"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def information_gain_split_score(pos_left: int, neg_left: int, pos_right: int, neg_right: int) -> float:\n    pl = max(0, int(pos_left))\n    nl = max(0, int(neg_left))\n    pr = max(0, int(pos_right))\n    nr = max(0, int(neg_right))\n    n_left = pl + nl\n    n_right = pr + nr\n    n_total = n_left + n_right\n    if n_total == 0:\n        return 0.0\n    p_all = (pl + pr) / float(n_total)\n    gini_parent = 2.0 * p_all * (1.0 - p_all)\n    gini_l = 2.0 * (pl / float(n_left)) * (1.0 - pl / float(n_left)) if n_left > 0 else 0.0\n    gini_r = 2.0 * (pr / float(n_right)) * (1.0 - pr / float(n_right)) if n_right > 0 else 0.0\n    weighted_child = n_left / float(n_total) * gini_l + n_right / float(n_total) * gini_r\n    return max(0.0, gini_parent - weighted_child)",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "weighted_rrf_rank_fusion",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "float"
+    ],
+    "return_type": "float",
+    "summary": "Compute weighted Reciprocal Rank Fusion (RRF) score combining lexical and AST/semantic search ranks.",
+    "pseudocode": "Algorithm weighted_rrf_rank_fusion(int, int, int, float) -> float:\n1. Receive typed arguments (int, int, int, float)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 < out <= 1.0",
+      "isclose(f(lexical_rank, lexical_rank, k_constant, semantic_weight), 1.0 / (max(1, abs(k_constant)) + max(1, abs(lexical_rank))))"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def weighted_rrf_rank_fusion(lexical_rank: int, semantic_rank: int, k_constant: int, semantic_weight: float) -> float:\n    r_lex = max(1, abs(int(lexical_rank)))\n    r_sem = max(1, abs(int(semantic_rank)))\n    k = max(1, abs(int(k_constant)))\n    w = max(0.0, min(1.0, float(semantic_weight)))\n    return (1.0 - w) / float(k + r_lex) + w / float(k + r_sem)",
+    "domain": "agentic_reasoning"
+  },
+  {
+    "name": "fuzzy_line_anchor_distance",
+    "param_types": [
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "float",
+    "summary": "Compute normalized line-offset penalty for fuzzy self-healing file patch anchoring.",
+    "pseudocode": "Algorithm fuzzy_line_anchor_distance(int, int, int) -> float:\n1. Receive typed arguments (int, int, int)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "0.0 <= out <= 1.0",
+      "out == f(expected_line, candidate_line, max_drift)"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def fuzzy_line_anchor_distance(candidate_line: int, expected_line: int, max_drift: int) -> float:\n    drift = abs(int(candidate_line) - int(expected_line))\n    limit = max(1, abs(int(max_drift)))\n    if drift >= limit:\n        return 0.0\n    return 1.0 - drift / float(limit)",
+    "domain": "task_planning_and_execution"
+  },
+  {
+    "name": "context_budget_proportional_alloc",
+    "param_types": [
+      "int",
+      "float",
+      "float",
+      "int"
+    ],
+    "return_type": "int",
+    "summary": "Allocate token budget to a context segment proportionally to its relevance weight with a floor reserve.",
+    "pseudocode": "Algorithm context_budget_proportional_alloc(int, float, float, int) -> int:\n1. Receive typed arguments (int, float, float, int)\n2. Execute canonical calculation\n3. Return int",
+    "invariants": [
+      "0 <= out <= max(0, total_budget)",
+      "out >= max(0, min(max(0, total_budget), min_floor))"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def context_budget_proportional_alloc(total_budget: int, item_weight: float, sum_weights: float, min_floor: int) -> int:\n    budget = max(0, int(total_budget))\n    floor_val = max(0, min(budget, int(min_floor)))\n    w = max(0.0, float(item_weight))\n    sw = max(w, float(sum_weights))\n    if sw <= 0.0:\n        return floor_val\n    raw = int(round(budget * (w / sw)))\n    return max(floor_val, min(budget, raw))",
+    "domain": "task_planning_and_execution"
+  },
+  {
+    "name": "circuit_breaker_next_state",
+    "param_types": [
+      "int",
+      "int",
+      "int",
+      "bool"
+    ],
+    "return_type": "int",
+    "summary": "Compute next state (0=CLOSED, 1=HALF_OPEN, 2=OPEN) of an agent tool circuit breaker.",
+    "pseudocode": "Algorithm circuit_breaker_next_state(int, int, int, bool) -> int:\n1. Receive typed arguments (int, int, int, bool)\n2. Execute canonical calculation\n3. Return int",
+    "invariants": [
+      "0 <= out <= 2",
+      "not (current_state == 2 and not cooldown_elapsed) or (out == 2)"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def circuit_breaker_next_state(current_state: int, consecutive_failures: int, failure_threshold: int, cooldown_elapsed: bool) -> int:\n    state = max(0, min(2, int(current_state)))\n    fails = max(0, int(consecutive_failures))\n    thresh = max(1, int(failure_threshold))\n    if state == 2:\n        return 1 if cooldown_elapsed else 2\n    if state == 1:\n        return 2 if fails > 0 else 0\n    return 2 if fails >= thresh else 0",
+    "domain": "task_planning_and_execution"
+  },
+  {
+    "name": "task_priority_wsjf_score",
+    "param_types": [
+      "float",
+      "float",
+      "float",
+      "float"
+    ],
+    "return_type": "float",
+    "summary": "Compute Weighted Shortest Job First (WSJF) scheduling priority score for agent task queues.",
+    "pseudocode": "Algorithm task_priority_wsjf_score(float, float, float, float) -> float:\n1. Receive typed arguments (float, float, float, float)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "out >= 0.0",
+      "f(0.0, 0.0, 0.0, job_duration) == 0.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def task_priority_wsjf_score(user_value: float, time_criticality: float, risk_reduction: float, job_duration: float) -> float:\n    uv = max(0.0, float(user_value))\n    tc = max(0.0, float(time_criticality))\n    rr = max(0.0, float(risk_reduction))\n    dur = max(0.1, abs(float(job_duration)))\n    return (uv + tc + rr) / dur",
+    "domain": "task_planning_and_execution"
+  },
+  {
+    "name": "critical_path_duration",
+    "param_types": [
+      "list[float]",
+      "float"
+    ],
+    "return_type": "float",
+    "summary": "Compute total critical-path latency across sequential dependency stages with parallel stage max durations.",
+    "pseudocode": "Algorithm critical_path_duration(list[float], float) -> float:\n1. Receive typed arguments (list[float], float)\n2. Execute canonical calculation\n3. Return float",
+    "invariants": [
+      "out >= 0.0",
+      "f([], overhead_per_stage) == 0.0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def critical_path_duration(stage_max_durations: list[float], overhead_per_stage: float) -> float:\n    ov = max(0.0, float(overhead_per_stage))\n    pos = [max(0.0, float(d)) for d in stage_max_durations]\n    if not pos:\n        return 0.0\n    return sum(pos) + len(pos) * ov",
+    "domain": "task_planning_and_execution"
+  },
+  {
+    "name": "topological_task_waves",
+    "param_types": [
+      "int",
+      "int",
+      "int"
+    ],
+    "return_type": "int",
+    "summary": "Compute minimum parallel execution waves required for n tasks given maximum concurrency width.",
+    "pseudocode": "Algorithm topological_task_waves(int, int, int) -> int:\n1. Receive typed arguments (int, int, int)\n2. Execute canonical calculation\n3. Return int",
+    "invariants": [
+      "out >= 0",
+      "f(0, max_parallel_workers, serial_bottlenecks) == 0"
+    ],
+    "pitfalls": [
+      {
+        "naive_pattern": "Unclamped division or unguarded zero/negative denominator in agent telemetry.",
+        "failure_mechanism": "ZeroDivisionError or out-of-bounds score on degenerate inputs.",
+        "counterexample_input": "0",
+        "verified_fix": "Clamp denominator and domain boundaries before arithmetic evaluation."
+      }
+    ],
+    "source_code": "def topological_task_waves(num_tasks: int, max_parallel_workers: int, serial_bottlenecks: int) -> int:\n    tasks = max(0, int(num_tasks))\n    if tasks == 0:\n        return 0\n    workers = max(1, abs(int(max_parallel_workers)))\n    serial = max(0, min(tasks, int(serial_bottlenecks)))\n    parallelizable = tasks - serial\n    parallel_waves = (parallelizable + workers - 1) // workers\n    return serial + parallel_waves",
+    "domain": "task_planning_and_execution"
+  }
+]

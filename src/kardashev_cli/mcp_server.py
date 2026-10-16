@@ -22,6 +22,9 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -168,8 +171,31 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "enum": ["allow-all", "sandbox", "ask"],
                     "default": "allow-all",
                 },
+                "async_start": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": (
+                        "Return a task id immediately and poll with local_agent_task_status "
+                        "instead of blocking until the agent finishes (long runs would "
+                        "otherwise exceed client call timeouts). Direct library callers "
+                        "default to False."
+                    ),
+                },
             },
             "required": ["prompt"],
+        },
+    },
+    {
+        "name": "local_agent_task_status",
+        "description": "Poll a started run_local_agent_task by task id, or list all agent tasks with their status.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task id returned by run_local_agent_task (async_start). Omit to list all tasks.",
+                },
+            },
         },
     },
     {
@@ -664,14 +690,86 @@ async def _execute_local_agent_async(
     }
 
 
-def run_local_agent_task(
+_AGENT_TASKS: dict[str, dict[str, Any]] = {}
+_AGENT_TASKS_LOCK = threading.Lock()
+
+
+def _start_agent_task(
     prompt: str,
     preset: str = "gemma4-26b",
     workspace: str | None = None,
     policy: str = "allow-all",
     model: str | None = None,
 ) -> dict[str, Any]:
-    """Synchronous entrypoint for MCP tool 4: `run_local_agent_task`."""
+    """Starts `run_local_agent_task` on a background thread and returns immediately.
+
+    The MCP tool previously blocked for the whole agent run, so any caller with
+    a client-side timeout lost the result (a long task exited the client's call
+    window even though the server was still working). Started tasks are polled
+    with the `local_agent_task_status` tool instead.
+    """
+    task_id = "lat_" + uuid.uuid4().hex[:12]
+    entry: dict[str, Any] = {
+        "task_id": task_id,
+        "status": "running",
+        "started_at": time.time(),
+        "preset": preset,
+        "model": model,
+        "workspace": workspace,
+        "result": None,
+        "error": None,
+    }
+    with _AGENT_TASKS_LOCK:
+        _AGENT_TASKS[task_id] = entry
+
+    def _worker() -> None:
+        try:
+            outcome = asyncio.run(
+                _execute_local_agent_async(
+                    prompt=prompt,
+                    preset=preset,
+                    workspace=workspace,
+                    policy=policy,
+                    model=model,
+                )
+            )
+            entry["status"] = "succeeded"
+            entry["result"] = outcome
+        except BaseException as exc:  # noqa: BLE001 - daemon thread boundary
+            entry["status"] = "failed"
+            entry["error"] = f"{type(exc).__name__}: {exc}"
+
+    threading.Thread(target=_worker, name=task_id, daemon=True).start()
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "note": "poll with local_agent_task_status; results survive caller timeouts",
+    }
+
+
+def run_local_agent_task(
+    prompt: str,
+    preset: str = "gemma4-26b",
+    workspace: str | None = None,
+    policy: str = "allow-all",
+    model: str | None = None,
+    async_start: bool = False,
+) -> dict[str, Any]:
+    """Entrypoint for MCP tool 4: `run_local_agent_task`.
+
+    With `async_start=False` (the default for direct library callers) this blocks
+    until the agent finishes, as before. The MCP dispatch layer passes
+    `async_start=True` so tool calls return a task id immediately instead of
+    exceeding client call timeouts.
+    """
+    if async_start:
+        return _start_agent_task(
+            prompt=prompt,
+            preset=preset,
+            workspace=workspace,
+            policy=policy,
+            model=model,
+        )
     return asyncio.run(
         _execute_local_agent_async(
             prompt=prompt,
@@ -681,6 +779,28 @@ def run_local_agent_task(
             model=model,
         )
     )
+
+
+def agent_task_status(task_id: str | None = None) -> dict[str, Any]:
+    """Synchronous entrypoint for MCP tool `local_agent_task_status`.
+
+    `task_id` returns one task; omitting it returns every task this server
+    process knows about (newest last).
+    """
+    with _AGENT_TASKS_LOCK:
+        snapshot = {k: dict(v) for k, v in _AGENT_TASKS.items()}
+    if task_id is not None:
+        entry = snapshot.get(task_id)
+        if entry is None:
+            return {"found": False, "task_id": task_id}
+        return {"found": True, **entry}
+    tasks = list(snapshot.values())
+    return {
+        "found": bool(tasks),
+        "count": len(tasks),
+        "statuses": {t["status"] for t in tasks} if tasks else set(),
+        "tasks": tasks,
+    }
 
 
 def list_local_models() -> dict[str, Any]:
@@ -755,7 +875,10 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
             elif tool_name == "verify_and_repair":
                 res = verify_and_repair(**args)
             elif tool_name == "run_local_agent_task":
+                args.setdefault("async_start", True)
                 res = run_local_agent_task(**args)
+            elif tool_name in ("local_agent_task_status", "agent_task_status"):
+                res = agent_task_status(task_id=args.get("task_id"))
             elif tool_name == "list_local_models":
                 res = list_local_models()
             elif tool_name in ("commons_find", "find"):

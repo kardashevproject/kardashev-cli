@@ -1,8 +1,26 @@
 # Changelog
 
-All notable changes to `agy-local` will be documented in this file.
+All notable changes to `kardashev-cli` are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Changed
+- Renamed the project from `agy-local` to `kardashev-cli`. The Python package is now `kardashev_cli`. The commands are `kardashev` and `ksh`, plus `kardashev-mcp` and `opencommons-mcp`.
+- Rewrote `CONTRIBUTING.md` and `SECURITY.md` for this project. Both were copied from another repository and pointed at it.
+- Fixed `Makefile` targets that still called `agy-local`, and added `make benchmark`.
+
+## [0.2.0] - 2026-10-15
+
+### Added
+- OpenCommons concept store: structural hashing (`sid`), probe-based behavioral fingerprints (`fp`/`cid`), a pending-review queue, counterexample reports, and pull/push sync with a hub (`kardashev commons ...`).
+- `opencommons-mcp`, an MCP server with `find`, `record`, `sync` and `status`.
+- 52 seed concepts in `commons/store.json`, and `benchmarks/evaluate_opencommons.py`, which CI runs.
+- A Docker bundle for the OpenCommons hub in `deploy/opencommons-hub/`.
+- `kardashev serve`, a vLLM/Ollama launcher.
 
 ## [0.1.0] - 2026-10-15
+
+Released as `agy-local`. Module paths below use the old package name.
 
 ### Added
 - **4-Phase Super-Intelligence Cognitive Harness (`src/agy_local/harness_hooks.py`)**:

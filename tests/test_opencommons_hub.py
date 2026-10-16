@@ -735,3 +735,37 @@ def test_healthz_and_root_dashboard(tmp_path: Path) -> None:
             storage.close()
 
     asyncio.run(_test())
+
+
+def test_hub_persists_signing_key_across_restarts(tmp_path: Path) -> None:
+    """Verifies that file-backed SQLiteConceptStorage persists its Ed25519 signing key in hub_metadata."""
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    from kardashev_cli.opencommons_storage import SignedCheckpoint, verify_checkpoint_signature
+
+    db_file = tmp_path / "persistent_hub.db"
+    storage1 = SQLiteConceptStorage(db_path=db_file)
+    pub_hex_1 = storage1.public_key_hex
+    proposal = make_valid_proposal(name="persisted_key_func")
+    storage1.append_accepted_concept(
+        ConceptRecord(
+            content_hash=compute_hash(proposal),
+            name="persisted_key_func",
+            domain="numerical_analysis",
+            json_body=proposal,
+            status="accepted",
+        )
+    )
+    storage1.close()
+
+    # Re-open without passing signing_key (simulating process restart)
+    storage2 = SQLiteConceptStorage(db_path=db_file)
+    try:
+        assert storage2.public_key_hex == pub_hex_1
+        cp = storage2.get_latest_checkpoint()
+        parsed_cp = SignedCheckpoint.from_note(cp.format_note())
+        pub_key = ed25519.Ed25519PublicKey.from_public_bytes(bytes.fromhex(storage2.public_key_hex))
+        assert verify_checkpoint_signature(parsed_cp, pub_key) is True
+    finally:
+        storage2.close()
+

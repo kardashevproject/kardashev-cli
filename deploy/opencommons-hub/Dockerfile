@@ -2,29 +2,25 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    OPENCOMMONS_DB_PATH=/data/opencommons/opencommons.db \
-    OPENCOMMONS_HOST=0.0.0.0 \
-    OPENCOMMONS_PORT=7860
+    OPENCOMMONS_HUB_DB=/data/opencommons_hub.db \
+    PORT=7860
 
 WORKDIR /app
 
-# Install system dependencies if required
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Create non-root runtime user and persistent volume directory
+RUN useradd -m -u 1000 opencommons && \
+    mkdir -p /data && \
+    chown -R opencommons:opencommons /data /app
 
-COPY pyproject.toml README.md ./
-COPY src ./src
-COPY commons ./commons
+COPY pyproject.toml README.md /app/
+COPY src/ /app/src/
+COPY commons/ /app/commons/
 
-RUN pip install --no-cache-dir -e . && \
-    mkdir -p /data/opencommons && \
-    chmod -R 777 /data/opencommons
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir .
+
+USER opencommons
 
 EXPOSE 7860
-VOLUME ["/data/opencommons"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7860/healthz')" || exit 1
-
-CMD ["kardashev", "commons", "serve-hub", "--host", "0.0.0.0", "--port", "7860", "--store", "/data/opencommons/opencommons.db"]
+CMD ["python3", "-c", "import os; from kardashev_cli.opencommons_hub import run_hub_server; run_hub_server(host='0.0.0.0', port=int(os.environ.get('PORT', '7860')), db_path=os.environ.get('OPENCOMMONS_HUB_DB', '/data/opencommons_hub.db'))"]

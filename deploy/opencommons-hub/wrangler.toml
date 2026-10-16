@@ -1,0 +1,13 @@
+name = "opencommons-hub"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "opencommons-db"
+database_id = "c1b97d36-d3ca-4e54-8443-059ba339d71e"
+
+[[routes]]
+pattern = "commons.kardashevproject.org"
+custom_domain = true

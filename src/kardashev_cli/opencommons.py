@@ -73,9 +73,13 @@ DEFAULT_PENDING_PATH = Path(
     os.environ.get("OPENCOMMONS_PENDING_PATH", "~/.opencommons/pending_queue.json")
 ).expanduser()
 
+DEFAULT_CDN_FALLBACK_URL = (
+    "https://raw.githubusercontent.com/kardashevproject/kardashev-cli/main/commons/store.json"
+)
+
 DEFAULT_HUB_URL = os.environ.get(
     "OPENCOMMONS_HUB_URL",
-    "https://raw.githubusercontent.com/kardashevproject/kardashev-cli/main/commons/store.json",
+    "https://commons.kardashevproject.org",
 )
 
 MAX_AST_NODES = 500
@@ -3496,8 +3500,22 @@ def pull_from_remote_hub(
                 "merkle_root": local_manifest["merkle_root"],
                 "elapsed_ms": round((time.perf_counter() - t0) * 1000.0, 2),
             }
+        if hub_url is None and store_url != DEFAULT_CDN_FALLBACK_URL:
+            return pull_from_remote_hub(
+                hub_url=DEFAULT_CDN_FALLBACK_URL,
+                store_path=store_path,
+                timeout=timeout,
+                force=force,
+            )
         return {"ok": False, "hub_url": store_url, "error": f"HTTP {http_err.code}: {http_err.reason}"}
     except (urllib.error.URLError, OSError, ValueError) as exc:
+        if hub_url is None and store_url != DEFAULT_CDN_FALLBACK_URL:
+            return pull_from_remote_hub(
+                hub_url=DEFAULT_CDN_FALLBACK_URL,
+                store_path=store_path,
+                timeout=timeout,
+                force=force,
+            )
         return {"ok": False, "hub_url": store_url, "error": str(exc)}
 
 

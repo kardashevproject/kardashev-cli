@@ -772,6 +772,7 @@ def run_hub_server(
 ) -> None:
     """Starts the production async HTTP hub server."""
     storage = SQLiteConceptStorage(db_path=db_path)
+    storage.seed_default_concepts_if_empty()
     app = create_hub_app(storage=storage)
     print(f"=== OpenCommons Production Hub listening on http://{host}:{port} ===")
     print("  • POST /v1/proposals  (32KB cap, safe decompression, Ed25519 auth & PoW)")

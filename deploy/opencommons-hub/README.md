@@ -1,73 +1,42 @@
----
-title: Kardashev OpenCommons Production Hub
-emoji: 🧬
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: true
-license: apache-2.0
----
+# OpenCommons Production Hub Deployment (`opencommons-hub`)
 
-# Kardashev OpenCommons — Production Transparency Log & Ingestion Hub
+The OpenCommons Production Hub serves the append-only transparency log, FTS5-indexed concept catalog, C2SP Merkle tiles, SSE live hint stream, and Streamable HTTP MCP endpoint for coding agents and developers worldwide.
 
-This directory contains deployment assets for the **OpenCommons Production Transparency Log & Ingestion Hub** (`kardashev commons serve-hub`).
+- **Public Cloud Endpoint**: `https://commons.kardashevproject.org`
+- **Transparency Log Origin**: `opencommons.kardashevproject.org/tlog/v1`
+- **Public Verification Key (Ed25519)**: `1171c0c7070ed279dad0cab8be637614a537af9381260dc8f7028c36d416ad73`
 
-OpenCommons is The Kardashev Project's decentralized, privacy-preserving, and tamper-resistant open-science concept commons.
+## 1. Public HTTP & MCP Endpoints
 
-## Architecture
+| Endpoint | Method | Description |
+| --- | --- | --- |
+| `/v1/health` (or `/healthz`) | `GET` | Hub liveness, Ed25519 public key, checkpoint size, and Merkle root hash |
+| `/v1/checkpoint` | `GET` | C2SP signed-note checkpoint (`text/plain` or `?format=json`) |
+| `/v1/concepts` | `GET` | FTS5 BM25 search (`?q=...&domain=...&limit=50&offset=0`) |
+| `/v1/concepts/{content_hash}` | `GET` | Full verified concept record (`ETag` cached) |
+| `/v1/tiles/tile/{L}/{N}` | `GET` | C2SP 32-byte Merkle tree hash tiles (`application/octet-stream`) |
+| `/v1/tiles/entries/{N}` | `GET` | C2SP transparency log entry bundle (256 entries per bundle) |
+| `/v1/tiles/packs/{from}-{to}` | `GET` | Compressed delta pack between log indices |
+| `/v1/proposals` | `POST` | Submit a verified concept (`X-OpenCommons-Key` + `X-OpenCommons-PoW`) |
+| `/v1/proposals/{id}` | `GET` | Poll submission status (`accepted` / `pending` / `rejected`) |
+| `/v1/stream?since=N` | `GET` | Live Server-Sent Events (SSE) stream of newly sequenced concepts |
+| `/mcp` (or `/v1/mcp`) | `POST` | Streamable HTTP JSON-RPC 2.0 MCP server (`find`, `record`, `status`) |
 
-The production hub runs an asynchronous HTTP server powered by SQLite in Write-Ahead Logging (WAL) mode, implementing:
-- **C2SP Append-Only Transparency Log (tlog-tiles)**: immutable Merkle hash tiles, data tiles, and signed checkpoints.
-- **Fail-Closed Async Ingestion**: 32KB payload cap, safe decompression guard (64KB, 5x ratio), Ed25519 key authentication, Hashcash Proof-of-Work, and bounded job queue with `429 Retry-After` backpressure.
-- **Live Streaming**: Server-Sent Events (SSE) broadcasting sequential `log_index` hints to connected client agents.
-- **Immediate Cutover**: Retired legacy sync (`/v1/sync`) returns `410 Gone`.
+## 2. Cloudflare Worker + D1 Edge Deployment
 
-## Exposed Endpoints (Port `7860`)
-
-| Endpoint | Method | Purpose |
-|---|---|---|
-| `/` | `GET` | Landing dashboard showing checkpoint size, root hash, and status. |
-| `/healthz` | `GET` | Liveness & health probe (`{"status": "ok", "service": "opencommons-hub"}`). |
-| `/v1/proposals` | `POST` | Asynchronous submission ingestion (enforces 32KB body cap, safe decompression, Ed25519 auth, PoW, and queue backpressure). Returns `202 Accepted`. |
-| `/v1/proposals/{id}` | `GET` | Opaque submission status query (`pending`, `accepted`, `rejected`). |
-| `/v1/concepts` | `GET` | Searchable concept catalog using FTS5 full-text indexing, domain filtering, and pagination. |
-| `/v1/concepts/{content_hash}` | `GET` | Full verified concept body by RFC 8785 content hash. |
-| `/v1/checkpoint` | `GET` | Latest signed C2SP checkpoint (`text/plain` signed-note or JSON). |
-| `/v1/tiles/{path:.*}` | `GET` | Static transparency log hash tiles (`tile/<L>/<N>`), data tiles (`entries/<N>`), and delta packs (`packs/<from>-<to>`). |
-| `/v1/stream?since=N` | `GET` | Live Server-Sent Events (SSE) streaming broadcasting log hints. |
-| `/v1/sync` | `POST`/`GET` | Retired legacy sync endpoint (returns `410 Gone`). |
-
-## Deployment Options
-
-### 1. Systemd Service (Linux Server / VM)
-
-1. Create application user and data directory:
-   ```bash
-   sudo useradd -r -s /bin/false opencommons
-   sudo mkdir -p /var/lib/opencommons
-   sudo chown -R opencommons:opencommons /var/lib/opencommons
-   ```
-2. Copy systemd unit file:
-   ```bash
-   sudo cp deploy/opencommons-hub/opencommons-hub.service /etc/systemd/system/
-   sudo systemctl daemon-reload
-   sudo systemctl enable --now opencommons-hub
-   ```
-3. Check status:
-   ```bash
-   sudo systemctl status opencommons-hub
-   ```
-
-### 2. Docker Container
+`worker.js` and `wrangler.toml` deploy the global edge Hub backed by Cloudflare D1 (`opencommons-db`):
 
 ```bash
-docker build -f deploy/opencommons-hub/Dockerfile -t opencommons-hub .
-docker run -d -p 7860:7860 -v opencommons_data:/data/opencommons --name opencommons-hub opencommons-hub
+npx wrangler deploy
 ```
 
-### 3. Hugging Face Spaces / Container Cloud
+## 3. Container / Self-Hosted Deployment
 
-1. Create a new **Docker** Space at `https://huggingface.co/new-space`.
-2. Push repository using `deploy/opencommons-hub/Dockerfile` as root Dockerfile.
-3. Hub automatically initializes and serves on port `7860`.
+Build and run the self-contained Python `aiohttp` + SQLite WAL container from the repository root:
+
+```bash
+docker build -f deploy/opencommons-hub/Dockerfile -t opencommons-hub:latest .
+docker run -d -p 7860:7860 -v opencommons-data:/data opencommons-hub:latest
+```
+
+On first startup, `run_hub_server()` automatically persists the Ed25519 checkpoint signing key in `hub_metadata` and seeds all 601 verified concepts if the database is empty.

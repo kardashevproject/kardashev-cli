@@ -848,7 +848,7 @@ class OpenCommonsClient:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 status = resp.status
                 body = json.loads(resp.read().decode("utf-8"))
-                if status == 202:
+                if status == 202 or (status == 200 and body.get("status") == "accepted"):
                     self.key_manager.record_acceptance(self.key_path)
                     return SubmissionReceipt(
                         status="accepted",

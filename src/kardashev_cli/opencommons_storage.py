@@ -430,18 +430,18 @@ class SQLiteConceptStorage:
         self._lock = threading.RLock()
         self._local = threading.local()
 
-        # Checkpoint signing key (online signing key)
-        if signing_key is None:
-            self._signing_key = ed25519.Ed25519PrivateKey.generate()
-        else:
-            self._signing_key = signing_key
-        self._public_key = self._signing_key.public_key()
-
         # Ensure directory exists if not memory
         if self.db_path != ":memory:":
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        # Initialize schema and verify WAL mode
+        self._explicit_signing_key = signing_key
+        if signing_key is not None:
+            self._signing_key = signing_key
+        else:
+            self._signing_key = ed25519.Ed25519PrivateKey.generate()
+        self._public_key = self._signing_key.public_key()
+
+        # Initialize schema, load or persist signing key in hub_metadata, and verify WAL mode
         self._init_db()
 
     @property
@@ -500,6 +500,43 @@ class SQLiteConceptStorage:
     def _init_db(self) -> None:
         """Initializes tables, FTS5 virtual index, and transparency structures."""
         def _do_init(conn: sqlite3.Connection) -> None:
+            # 0. Hub metadata table (persists signing key and origin across restarts)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS hub_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                );
+                """
+            )
+            if self._explicit_signing_key is None:
+                row = conn.execute(
+                    "SELECT value FROM hub_metadata WHERE key = 'signing_key_seed_hex';"
+                ).fetchone()
+                if row and row["value"] and len(row["value"]) == 64:
+                    with contextlib.suppress(ValueError):
+                        self._signing_key = ed25519.Ed25519PrivateKey.from_private_bytes(
+                            bytes.fromhex(row["value"])
+                        )
+                        self._public_key = self._signing_key.public_key()
+                seed_hex = self._signing_key.private_bytes(
+                    encoding=serialization.Encoding.Raw,
+                    format=serialization.PrivateFormat.Raw,
+                    encryption_algorithm=serialization.NoEncryption(),
+                ).hex()
+                conn.execute(
+                    "INSERT OR REPLACE INTO hub_metadata (key, value) VALUES ('signing_key_seed_hex', ?);",
+                    (seed_hex,),
+                )
+            conn.execute(
+                "INSERT OR REPLACE INTO hub_metadata (key, value) VALUES ('public_key_hex', ?);",
+                (self.public_key_hex,),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO hub_metadata (key, value) VALUES ('origin', ?);",
+                (self.origin,),
+            )
+
             # 1. Main concepts table
             conn.execute(
                 """
@@ -595,6 +632,47 @@ class SQLiteConceptStorage:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_status ON submission_jobs(status);")
 
         self._execute_write_transaction(_do_init)
+
+    def seed_default_concepts_if_empty(self) -> int:
+        """Seeds the SQLite database with the default verified OpenCommons catalog if empty."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT COUNT(*) AS cnt FROM concepts;").fetchone()
+        if row and int(row["cnt"]) > 0:
+            return int(row["cnt"])
+
+        from kardashev_cli.opencommons import load_persistent_store
+
+        store = load_persistent_store()
+        count = 0
+        for cid, bid in sorted(store.canonical_block_by_cid.items()):
+            block = store.blocks_by_id.get(bid)
+            if block is None:
+                continue
+            body_dict = {
+                "name": block.name,
+                "domain": block.domain,
+                "summary": block.summary,
+                "pseudocode": block.pseudocode,
+                "invariants": list(block.invariants),
+                "pitfalls": [p.to_dict() for p in block.pitfalls],
+                "param_types": list(block.param_types),
+                "return_type": block.return_type,
+                "source_code": block.source_code,
+            }
+            content_hash = cid if len(cid) == 64 else hashlib.sha256(
+                json.dumps(body_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            self.append_accepted_concept(
+                ConceptRecord(
+                    content_hash=content_hash,
+                    name=block.name,
+                    domain=block.domain,
+                    json_body=body_dict,
+                    status="accepted",
+                )
+            )
+            count += 1
+        return count
 
     def close(self) -> None:
         """Closes all active database connections."""

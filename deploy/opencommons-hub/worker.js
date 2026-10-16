@@ -342,6 +342,379 @@ const MCP_TOOLS_SCHEMA = [
   },
 ];
 
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
+
+function bytesToBase64(bytes) {
+  let bin = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(bin);
+}
+
+/**
+ * Reads a request body incrementally, aborting immediately if MAX_BODY_BYTES is exceeded.
+ * @param {Request} request
+ * @param {number} maxBytes
+ * @returns {Promise<{ok: boolean, text: string}>}
+ */
+async function readBoundedBody(request, maxBytes) {
+  const cl = parseInt(request.headers.get("content-length") || "0", 10);
+  if (cl > maxBytes) {
+    return { ok: false, text: "" };
+  }
+  if (!request.body) {
+    return { ok: true, text: "" };
+  }
+  const reader = request.body.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        total += value.byteLength;
+        if (total > maxBytes) {
+          await reader.cancel();
+          return { ok: false, text: "" };
+        }
+        chunks.push(value);
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) {
+    merged.set(c, offset);
+    offset += c.byteLength;
+  }
+  return { ok: true, text: TEXT_DECODER.decode(merged) };
+}
+
+async function computeLeafHash(dataBytes) {
+  const buf = new Uint8Array(1 + dataBytes.length);
+  buf[0] = 0x00;
+  buf.set(dataBytes, 1);
+  return await sha256Bytes(buf);
+}
+
+/**
+ * Signs a C2SP transparency log checkpoint using WebCrypto Ed25519.
+ * @param {string} origin - Transparency log origin identifier.
+ * @param {number} size - Tree size (1-based entry count).
+ * @param {Uint8Array} rootHashBytes - 32-byte Merkle root hash.
+ * @param {string} seedHex - 64-char hex Ed25519 private key seed.
+ * @param {string} pubHex - 64-char hex Ed25519 public key.
+ * @param {number} tsSeconds - Unix timestamp in seconds.
+ */
+async function signCheckpointWebCrypto(origin, size, rootHashBytes, seedHex, pubHex, tsSeconds) {
+  if (!/^[0-9a-fA-F]{64}$/.test(seedHex) || !/^[0-9a-fA-F]{64}$/.test(pubHex)) {
+    throw new Error("Invalid Ed25519 signing seed or public key hex format");
+  }
+  const rootB64 = bytesToBase64(rootHashBytes);
+  const header = `${origin}\n${size}\n${rootB64}\nTimestamp: ${tsSeconds}\n`;
+
+  const prefix = new Uint8Array([
+    0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06,
+    0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20,
+  ]);
+  const seedBytes = hexToBytes(seedHex);
+  const pkcs8 = new Uint8Array(48);
+  pkcs8.set(prefix, 0);
+  pkcs8.set(seedBytes, 16);
+
+  let privKey;
+  try {
+    privKey = await crypto.subtle.importKey(
+      "pkcs8",
+      pkcs8,
+      { name: "Ed25519" },
+      false,
+      ["sign"]
+    );
+  } finally {
+    pkcs8.fill(0);
+    seedBytes.fill(0);
+  }
+
+  const sigBuf = await crypto.subtle.sign(
+    "Ed25519",
+    privKey,
+    TEXT_ENCODER.encode(header)
+  );
+  const sigB64 = bytesToBase64(new Uint8Array(sigBuf));
+
+  const pubBytes = hexToBytes(pubHex);
+  const originBytes = TEXT_ENCODER.encode(origin + "\n");
+  const hintInput = new Uint8Array(originBytes.length + pubBytes.length);
+  hintInput.set(originBytes, 0);
+  hintInput.set(pubBytes, originBytes.length);
+  const hintDigest = (await sha256Bytes(hintInput)).slice(0, 4);
+  const hintB64 = bytesToBase64(hintDigest);
+  const rawText = `${header}\n— ${origin} ${hintB64} ${sigB64}\n`;
+
+  return {
+    origin,
+    size,
+    rootHash: rootB64,
+    timestamp: tsSeconds,
+    signature: sigB64,
+    keyHint: hintB64,
+    rawText,
+  };
+}
+
+/**
+ * Reconciles any accepted concepts missing from log_entries so that
+ * log_entries and concepts.log_index form a contiguous 1..N sequence.
+ */
+async function reconcileMissingLogEntries(db, now) {
+  const { results: missingRows } = await db
+    .prepare(
+      `SELECT c.log_index, c.content_hash, c.name, c.domain, c.json_body, c.created_at
+       FROM concepts c
+       LEFT JOIN log_entries l ON c.content_hash = l.content_hash
+       WHERE c.status = 'accepted' AND l.log_index IS NULL
+       ORDER BY COALESCE(c.log_index, 0) ASC, c.created_at ASC`
+    )
+    .all();
+  if (!missingRows || missingRows.length === 0) {
+    return;
+  }
+  const { results: usedIdxRows } = await db
+    .prepare("SELECT log_index FROM log_entries")
+    .all();
+  const usedLogIndices = new Set(
+    (usedIdxRows || []).map((x) => Number(x.log_index))
+  );
+  const maxRow = await db
+    .prepare(
+      `SELECT
+         COALESCE((SELECT MAX(log_index) FROM log_entries), 0) AS max_log_idx,
+         COALESCE((SELECT MAX(log_index) FROM concepts), 0) AS max_concept_idx`
+    )
+    .first();
+  let nextFallbackIdx = Math.max(
+    Number(maxRow ? maxRow.max_log_idx : 0),
+    Number(maxRow ? maxRow.max_concept_idx : 0)
+  );
+  const stmts = [
+    db.prepare(
+      "UPDATE concepts SET log_index = NULL WHERE status != 'accepted' AND log_index IS NOT NULL"
+    ),
+  ];
+  for (const r of missingRows) {
+    const existingIdx = Number(r.log_index);
+    const targetIdx =
+      existingIdx > 0 && !usedLogIndices.has(existingIdx)
+        ? existingIdx
+        : ++nextFallbackIdx;
+    usedLogIndices.add(targetIdx);
+    if (targetIdx > nextFallbackIdx) {
+      nextFallbackIdx = targetIdx;
+    }
+    let parsedBody = {};
+    try {
+      parsedBody = r.json_body ? JSON.parse(r.json_body) : {};
+    } catch (_) {
+      parsedBody = {};
+    }
+    const rCreated = Number(r.created_at) || now;
+    const rData = {
+      content_hash: r.content_hash,
+      name: r.name,
+      domain: r.domain,
+      summary: String(parsedBody.summary || ""),
+    };
+    const rCanonical = {
+      log_index: targetIdx,
+      entry_type: "concept",
+      content_hash: r.content_hash,
+      data: rData,
+      created_at: rCreated,
+    };
+    const rLeafHex = bytesToHex(await computeLeafHash(canonicalJsonBytes(rCanonical)));
+    if (existingIdx !== targetIdx) {
+      stmts.push(
+        db
+          .prepare("UPDATE concepts SET log_index = ? WHERE content_hash = ?")
+          .bind(targetIdx, r.content_hash)
+      );
+    }
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO log_entries (log_index, entry_type, content_hash, leaf_hash, data, created_at)
+           VALUES (?, 'concept', ?, ?, ?, ?)`
+        )
+        .bind(targetIdx, r.content_hash, rLeafHex, JSON.stringify(rData), rCreated)
+    );
+  }
+  await db.batch(stmts);
+}
+
+/**
+ * Atomically appends a validated concept proposal to D1, reconciling log_entries and
+ * signing a new C2SP checkpoint when HUB_SIGNING_KEY_SEED is configured.
+ * @returns {Promise<{logIndex: number, deduplicated: boolean, submissionId: string}>}
+ */
+async function appendAcceptedProposalToD1(db, env, proposalDict, contentHash, canonicalBytes, submissionId) {
+  const name = String(proposalDict.name || "").trim();
+  const domain = String(proposalDict.domain || "general").trim();
+  const summaryText = String(proposalDict.summary || "");
+  const pseudocodeText = String(proposalDict.pseudocode || "");
+  const invariantsText = Array.isArray(proposalDict.invariants)
+    ? proposalDict.invariants.join(" ")
+    : "";
+  const bodyJson = TEXT_DECODER.decode(canonicalBytes);
+
+  const meta = await getMetadataMap(db);
+  const seedHex = (env && env.HUB_SIGNING_KEY_SEED) || "";
+  const pubHex = meta.public_key_hex || "";
+  const origin = meta.origin || "opencommons.kardashevproject.org/tlog/v1";
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const now = Date.now() / 1000;
+    await reconcileMissingLogEntries(db, now);
+
+    const existing = await db
+      .prepare("SELECT log_index, status FROM concepts WHERE content_hash = ?")
+      .bind(contentHash)
+      .first();
+    if (existing && existing.status === "accepted" && Number(existing.log_index) > 0) {
+      const existingSubId = `existing-${contentHash.slice(0, 16)}`;
+      await db
+        .prepare(
+          `INSERT OR REPLACE INTO submission_jobs
+           (submission_id, content_hash, status, created_at, updated_at, failure_rule_id, failure_detail)
+           VALUES (?, ?, 'accepted', ?, ?, NULL, NULL)`
+        )
+        .bind(existingSubId, contentHash, now, now)
+        .run();
+      return {
+        logIndex: Number(existing.log_index),
+        deduplicated: true,
+        submissionId: existingSubId,
+      };
+    }
+
+    const maxConceptRow = await db
+      .prepare("SELECT COALESCE(MAX(log_index), 0) AS max_idx FROM concepts")
+      .first();
+    const { results: leafRows } = await db
+      .prepare("SELECT log_index, leaf_hash FROM log_entries ORDER BY log_index ASC")
+      .all();
+    const priorLeaves = (leafRows || []).map((r) => hexToBytes(r.leaf_hash));
+    const maxLogIdx =
+      leafRows && leafRows.length > 0
+        ? Number(leafRows[leafRows.length - 1].log_index)
+        : 0;
+    const maxConceptIdx = Number(maxConceptRow ? maxConceptRow.max_idx : 0);
+    const nextIdx = Math.max(maxLogIdx, maxConceptIdx, priorLeaves.length) + 1;
+
+    const entryData = {
+      content_hash: contentHash,
+      name,
+      domain,
+      summary: summaryText,
+    };
+    const canonicalEntryObj = {
+      log_index: nextIdx,
+      entry_type: "concept",
+      content_hash: contentHash,
+      data: entryData,
+      created_at: now,
+    };
+    const entryLeafBytes = await computeLeafHash(canonicalJsonBytes(canonicalEntryObj));
+    const entryLeafHex = bytesToHex(entryLeafBytes);
+
+    const batchStmts = [
+      db
+        .prepare(
+          `INSERT INTO concepts (content_hash, name, domain, json_body, log_index, created_at, status)
+           VALUES (?, ?, ?, ?, ?, ?, 'accepted')
+           ON CONFLICT(content_hash) DO UPDATE SET
+             name=excluded.name,
+             domain=excluded.domain,
+             json_body=excluded.json_body,
+             log_index=excluded.log_index,
+             status='accepted'`
+        )
+        .bind(contentHash, name, domain, bodyJson, nextIdx, now),
+      db.prepare("DELETE FROM concepts_fts WHERE content_hash = ?").bind(contentHash),
+      db
+        .prepare(
+          `INSERT INTO concepts_fts (content_hash, name, summary, pseudocode, invariants, domain)
+           VALUES (?, ?, ?, ?, ?, ?)`
+        )
+        .bind(contentHash, name, summaryText, pseudocodeText, invariantsText, domain),
+      db
+        .prepare(
+          `INSERT INTO log_entries (log_index, entry_type, content_hash, leaf_hash, data, created_at)
+           VALUES (?, 'concept', ?, ?, ?, ?)`
+        )
+        .bind(nextIdx, contentHash, entryLeafHex, JSON.stringify(entryData), now),
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO submission_jobs
+           (submission_id, content_hash, status, created_at, updated_at, failure_rule_id, failure_detail)
+           VALUES (?, ?, 'accepted', ?, ?, NULL, NULL)`
+        )
+        .bind(submissionId, contentHash, now, now),
+    ];
+
+    if (/^[0-9a-fA-F]{64}$/.test(seedHex) && /^[0-9a-fA-F]{64}$/.test(pubHex)) {
+      const allLeaves = [...priorLeaves, entryLeafBytes];
+      const rootBytes = await computeMerkleRoot(allLeaves);
+      const cp = await signCheckpointWebCrypto(
+        origin,
+        allLeaves.length,
+        rootBytes,
+        seedHex,
+        pubHex,
+        Math.floor(now)
+      );
+      batchStmts.push(
+        db
+          .prepare(
+            `INSERT INTO checkpoints
+             (size, origin, root_hash, timestamp, signature, key_hint, raw_text)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`
+          )
+          .bind(
+            cp.size,
+            cp.origin,
+            cp.rootHash,
+            cp.timestamp,
+            cp.signature,
+            cp.keyHint,
+            cp.rawText
+          )
+      );
+    }
+
+    try {
+      await db.batch(batchStmts);
+      return {
+        logIndex: nextIdx,
+        deduplicated: false,
+        submissionId,
+      };
+    } catch (err) {
+      const msg = String(err && err.message ? err.message : err);
+      const isTransientConflict = /UNIQUE|constraint|SQLITE_BUSY|locked/i.test(msg);
+      if (!isTransientConflict || attempt === 2) {
+        throw err;
+      }
+    }
+  }
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
@@ -599,16 +972,20 @@ export default {
           });
         }
 
-        // 3. Delta pack: packs/<from>-<to>
+        // 3. Delta pack: packs/<from>-<to> (1-based indices, capped at TILE_SIZE entries per pack, 400 if to < from)
         const packMatch = subPath.match(/^packs\/(\d+)-(\d+)(?:\.(?:zst|pack|zlib))?$/);
         if (packMatch) {
-          const fromIdx = parseInt(packMatch[1], 10);
-          const toIdx = parseInt(packMatch[2], 10);
+          const fromIdx = Math.max(1, parseInt(packMatch[1], 10));
+          const requestedTo = parseInt(packMatch[2], 10);
+          if (requestedTo < fromIdx) {
+            return jsonResponse({ error: "Invalid pack range: to < from" }, 400);
+          }
+          const toIdx = Math.min(requestedTo, fromIdx + TILE_SIZE - 1);
           const { results } = await db
             .prepare(
-              "SELECT log_index, entry_type, content_hash, leaf_hash, data, created_at FROM log_entries WHERE log_index >= ? AND log_index <= ? ORDER BY log_index ASC"
+              "SELECT log_index, entry_type, content_hash, leaf_hash, data, created_at FROM log_entries WHERE log_index >= ? AND log_index <= ? ORDER BY log_index ASC LIMIT ?"
             )
-            .bind(fromIdx, toIdx)
+            .bind(fromIdx, toIdx, TILE_SIZE)
             .all();
           const entries = (results || []).map((r) => ({
             log_index: r.log_index,
@@ -618,7 +995,7 @@ export default {
             data: JSON.parse(r.data || "{}"),
             created_at: r.created_at,
           }));
-          const rawBytes = new TextEncoder().encode(
+          const rawBytes = TEXT_ENCODER.encode(
             JSON.stringify({ from: fromIdx, to: toIdx, entries })
           );
           const cs = new CompressionStream("deflate");
@@ -660,16 +1037,8 @@ export default {
 
       // POST /v1/proposals
       if (request.method === "POST" && path === "/v1/proposals") {
-        const contentLength = parseInt(request.headers.get("content-length") || "0", 10);
-        if (contentLength > MAX_BODY_BYTES) {
-          return jsonResponse(
-            { error: `Payload exceeds ${MAX_BODY_BYTES} byte cap` },
-            413
-          );
-        }
-
-        const rawBuf = await request.arrayBuffer();
-        if (rawBuf.byteLength > MAX_BODY_BYTES) {
+        const bodyRes = await readBoundedBody(request, MAX_BODY_BYTES);
+        if (!bodyRes.ok) {
           return jsonResponse(
             { error: `Payload exceeds ${MAX_BODY_BYTES} byte cap` },
             413
@@ -678,7 +1047,7 @@ export default {
 
         let proposalDict;
         try {
-          proposalDict = JSON.parse(new TextDecoder().decode(rawBuf));
+          proposalDict = JSON.parse(bodyRes.text);
         } catch (err) {
           return jsonResponse({ error: `Invalid JSON payload: ${err.message}` }, 400);
         }
@@ -711,32 +1080,6 @@ export default {
           );
         }
 
-        // Idempotency check
-        const existing = await db
-          .prepare("SELECT content_hash, status FROM concepts WHERE content_hash = ?")
-          .bind(contentHash)
-          .first();
-        if (existing && existing.status === "accepted") {
-          const existingSubId = `existing-${contentHash.slice(0, 16)}`;
-          const now = Date.now() / 1000;
-          await db
-            .prepare(
-              `INSERT OR REPLACE INTO submission_jobs
-               (submission_id, content_hash, status, created_at, updated_at, failure_rule_id, failure_detail)
-               VALUES (?, ?, 'accepted', ?, ?, NULL, NULL)`
-            )
-            .bind(existingSubId, contentHash, now, now)
-            .run();
-          return jsonResponse(
-            {
-              status: "accepted",
-              submission_id: existingSubId,
-              content_hash: contentHash,
-            },
-            200
-          );
-        }
-
         const validationErr = validateProposalPayload(proposalDict);
         const submissionId = crypto.randomUUID();
         const now = Date.now() / 1000;
@@ -761,63 +1104,24 @@ export default {
           );
         }
 
-        // Valid proposal: record in submission_jobs as accepted and store in concepts + FTS5
-        const name = String(proposalDict.name || "").trim();
-        const domain = String(proposalDict.domain || "general").trim();
-        const summaryText = String(proposalDict.summary || "");
-        const pseudocodeText = String(proposalDict.pseudocode || "");
-        const invariantsText = Array.isArray(proposalDict.invariants)
-          ? proposalDict.invariants.join(" ")
-          : "";
-        const bodyJson = new TextDecoder().decode(canonicalBytes);
-
-        const idxRow = await db
-          .prepare("SELECT COALESCE(MAX(log_index), 0) + 1 AS next_idx FROM concepts")
-          .first();
-        const nextIdx = idxRow ? idxRow.next_idx : 1;
-
-        await db
-          .prepare(
-            `INSERT INTO concepts (content_hash, name, domain, json_body, log_index, created_at, status)
-             VALUES (?, ?, ?, ?, ?, ?, 'accepted')
-             ON CONFLICT(content_hash) DO UPDATE SET
-               name=excluded.name,
-               domain=excluded.domain,
-               json_body=excluded.json_body,
-               status='accepted'`
-          )
-          .bind(contentHash, name, domain, bodyJson, nextIdx, now)
-          .run();
-
-        await db
-          .prepare("DELETE FROM concepts_fts WHERE content_hash = ?")
-          .bind(contentHash)
-          .run();
-        await db
-          .prepare(
-            `INSERT INTO concepts_fts (content_hash, name, summary, pseudocode, invariants, domain)
-             VALUES (?, ?, ?, ?, ?, ?)`
-          )
-          .bind(contentHash, name, summaryText, pseudocodeText, invariantsText, domain)
-          .run();
-
-        await db
-          .prepare(
-            `INSERT INTO submission_jobs
-             (submission_id, content_hash, status, created_at, updated_at, failure_rule_id, failure_detail)
-             VALUES (?, ?, 'accepted', ?, ?, NULL, NULL)`
-          )
-          .bind(submissionId, contentHash, now, now)
-          .run();
+        const appendRes = await appendAcceptedProposalToD1(
+          db,
+          env,
+          proposalDict,
+          contentHash,
+          canonicalBytes,
+          submissionId
+        );
 
         return jsonResponse(
           {
             status: "accepted",
-            submission_id: submissionId,
+            submission_id: appendRes.submissionId,
             content_hash: contentHash,
-            check_url: `/v1/proposals/${submissionId}`,
+            log_index: appendRes.logIndex,
+            check_url: `/v1/proposals/${appendRes.submissionId}`,
           },
-          202
+          appendRes.deduplicated ? 200 : 202
         );
       }
 
@@ -888,9 +1192,20 @@ export default {
 
       // POST /mcp & POST /v1/mcp (Streamable HTTP JSON-RPC 2.0 MCP endpoint)
       if (request.method === "POST" && (path === "/mcp" || path === "/v1/mcp")) {
+        const bodyRes = await readBoundedBody(request, MAX_BODY_BYTES);
+        if (!bodyRes.ok) {
+          return jsonResponse(
+            {
+              jsonrpc: "2.0",
+              id: null,
+              error: { code: -32600, message: `Payload exceeds ${MAX_BODY_BYTES} byte cap` },
+            },
+            413
+          );
+        }
         let req;
         try {
-          req = await request.json();
+          req = JSON.parse(bodyRes.text);
         } catch (_) {
           return jsonResponse(
             {
@@ -978,6 +1293,61 @@ export default {
               result: {
                 content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
                 structuredContent: payload,
+                isError: false,
+              },
+            });
+          }
+
+          if (toolName === "record" || toolName === "commons_record") {
+            const proposalObj = {
+              name: String(args.name || "").trim(),
+              domain: String(args.domain || "general").trim(),
+              summary: String(args.summary || "").trim(),
+              pseudocode: String(args.pseudocode || ""),
+              source_code: String(args.source_code || args.code || ""),
+              examples: Array.isArray(args.examples) ? args.examples : [],
+              invariants: Array.isArray(args.invariants) ? args.invariants.map(String) : [],
+              pitfalls: Array.isArray(args.pitfalls) ? args.pitfalls : [],
+              param_types: Array.isArray(args.param_types) ? args.param_types.map(String) : [],
+              return_type: String(args.return_type || ""),
+            };
+            const validationErr = validateProposalPayload(proposalObj);
+            if (validationErr) {
+              const errPayload = { status: "rejected", error: validationErr };
+              return jsonResponse({
+                jsonrpc: "2.0",
+                id: reqId,
+                result: {
+                  content: [{ type: "text", text: JSON.stringify(errPayload, null, 2) }],
+                  structuredContent: errPayload,
+                  isError: true,
+                },
+              });
+            }
+            const canonicalBytes = canonicalJsonBytes(proposalObj);
+            const contentHash = bytesToHex(await sha256Bytes(canonicalBytes));
+            const submissionId = crypto.randomUUID();
+            const appendRes = await appendAcceptedProposalToD1(
+              db,
+              env,
+              proposalObj,
+              contentHash,
+              canonicalBytes,
+              submissionId
+            );
+            const recPayload = {
+              status: "accepted",
+              submission_id: appendRes.submissionId,
+              content_hash: contentHash,
+              log_index: appendRes.logIndex,
+              deduplicated: appendRes.deduplicated,
+            };
+            return jsonResponse({
+              jsonrpc: "2.0",
+              id: reqId,
+              result: {
+                content: [{ type: "text", text: JSON.stringify(recPayload, null, 2) }],
+                structuredContent: recPayload,
                 isError: false,
               },
             });

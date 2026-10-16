@@ -4285,6 +4285,8 @@ def execute_commons_record(
     # + claimed-robustness + determinism). See docs/correctness.md for what each status means.
     from kardashev_cli import correctness
 
+    sid, func_name, inferred_param_types, inferred_return_type, _deps = compute_structural_sid(source_code)
+
     contract: list[tuple[tuple, object]] = []
     if arguments.get("contract"):
         try:
@@ -4296,13 +4298,20 @@ def execute_commons_record(
         for pair in parsed_contract:
             try:
                 pair_args, pair_expected = pair
-                if not isinstance(pair_args, tuple):
+                if isinstance(pair_args, list):
+                    if (
+                        len(inferred_param_types) == 1
+                        and inferred_param_types[0].startswith("list")
+                        and (not pair_args or not isinstance(pair_args[0], list))
+                    ):
+                        pair_args = (pair_args,)
+                    else:
+                        pair_args = tuple(pair_args)
+                elif not isinstance(pair_args, tuple):
                     pair_args = (pair_args,)
             except (TypeError, ValueError) as exc:
                 return {"error": f"could not parse contract entry {pair!r}: {exc}"}
             contract.append((pair_args, pair_expected))
-
-    sid, func_name, inferred_param_types, inferred_return_type, _deps = compute_structural_sid(source_code)
     concept = correctness.Concept(
         source_code=source_code,
         func_name=func_name,

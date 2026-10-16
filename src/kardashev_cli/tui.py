@@ -66,6 +66,25 @@ from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
 from kardashev_cli.harness_hooks import get_harness_telemetry
 from kardashev_cli.integrate import integrate_frontier_agent
 from kardashev_cli.presets import PRESETS, BackendKind, list_presets
+from kardashev_cli.tui_core import (
+    KEY_BINDINGS,
+    SLASH_ALIASES,
+    THEMES,
+    TodoTracker,
+    TUITheme,
+    balance_markdown_fences,
+    build_help_footer,
+    compute_diff_stats,
+    current_activity,
+    extract_last_code_block,
+    format_activity_line,
+    format_approval_prompt,
+    get_theme,
+    list_recent_sessions,
+    render_sessions_picker,
+    resolve_session_target,
+    validate_slash_command,
+)
 from kardashev_cli.tui_input import TerminalTypeAhead, TypeAheadBuffer
 from kardashev_cli.updater import UserConfig, check_for_updates, perform_self_update
 
@@ -128,12 +147,17 @@ def suppress_noisy_cpp_stderr() -> Iterator[None]:
 SLASH_COMMANDS: dict[str, str] = {
     "/help": "Show interactive slash commands, keybindings, @file mentions, and !shell shortcuts",
     "/status": "Show session token usage, context window utilization bar, turn count, and telemetry",
+    "/resume": "Browse recent sessions picker or resume a saved session (/resume [<#>|<name>|latest])",
+    "/todos": "View or manage the session task checklist (/todos \\[add|done|wip|clear|collapse|expand])",
+    "/expand": "Toggle expanded multi-line tool output and diff blocks (or press Alt+O)",
+    "/theme": "Switch terminal color theme between brand dark and light (/theme \\[dark|light])",
+    "/copy": "Copy last assistant code block or response to clipboard or file (/copy \\[path])",
     "/commons": "Inspect, search, review, or sync OpenCommons research (/commons \\[status|find|review|approve|reject|pull|push|seed])",
     "/ast": "Render or toggle automatic AST Repo-Map context injection (/ast \\[show|on|off])",
     "/scout": "Run the AST Context Scout on a query to extract surgical code slices (/scout <query>)",
     "/integrate": "Install Kardashev Co-Processor MCP & skill into frontier agents (/integrate \\[antigravity|claude|cursor|codex|all])",
-    "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset glm4-9b-ollama)",
-    "/model": "Switch model ID or OpenAI base URL (e.g., /model qwen3-vl-8b http://127.0.0.1:8000/v1)",
+    "/preset": "Switch to a curated model preset (e.g., /preset gemma4-26b or /preset openrouter-glm-5.3-prime)",
+    "/model": "Switch model ID or OpenAI base URL (e.g., /model z-ai/glm-5.3-prime or /model qwen3-vl-8b)",
     "/serve": "Start or inspect a background vLLM/Ollama server (e.g., /serve qwen3.6-35b-a3b-fp8 | /serve stop)",
     "/policy": "Switch tool execution policy mode (/policy allow-all | ask | sandbox)",
     "/ralph": "Configure autonomous self-verification loop (e.g., /ralph pytest -q | /ralph off)",
@@ -168,6 +192,7 @@ class ToolEventRecord:
     started_at: float = field(default_factory=time.perf_counter)
     completed_at: float | None = None
     result_preview: str | None = None
+    full_output: str | None = None
     is_error: bool = False
 
     @property
@@ -340,11 +365,13 @@ def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
     if name in (
         "replace_file_content",
         "edit_file",
+        "apply_smart_patch",
         "BuiltinTools.REPLACE_FILE_CONTENT",
         "BuiltinTools.EDIT_FILE",
-    ) or lower in ("replace_file_content", "edit_file", "edit"):
+    ) or lower in ("replace_file_content", "edit_file", "apply_smart_patch", "edit") or lower.endswith(":apply_smart_patch"):
         path = str(
             args.get("TargetFile")
+            or args.get("target_file")
             or args.get("file_path")
             or args.get("path")
             or canon
@@ -354,8 +381,8 @@ def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
         if "diff_block" in args:
             diff_text = _format_proto_diff_block(args.get("diff_block"), path=path)
         else:
-            old = str(args.get("TargetContent") or args.get("old_string") or "")
-            new = str(args.get("ReplacementContent") or args.get("new_string") or "")
+            old = str(args.get("TargetContent") or args.get("target_content") or args.get("old_string") or "")
+            new = str(args.get("ReplacementContent") or args.get("replacement_content") or args.get("new_string") or "")
             if old or new:
                 diff_lines = list(
                     difflib.unified_diff(
@@ -391,12 +418,23 @@ def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
             or args.get("content")
             or ""
         )
-        line_count = len(content.splitlines())
-        preview_lines = [f"+ {ln}" for ln in content.splitlines()[:12]]
-        if line_count > 12:
-            preview_lines.append(f"... (+{line_count - 12} more lines)")
+        content_lines = content.splitlines()
+        line_count = len(content_lines)
+        fname = os.path.basename(path) or path or "file"
+        if content_lines:
+            preview_lines = [
+                "--- /dev/null",
+                f"+++ b/{fname}",
+                f"@@ -0,0 +1,{line_count} @@",
+                *(f"+{ln}" for ln in content_lines[:16]),
+            ]
+            if line_count > 16:
+                preview_lines.append(f"... (+{line_count - 16} more lines)")
+            diff_str: str | None = "\n".join(preview_lines)
+        else:
+            diff_str = None
         sub = f"{path} ({line_count} lines)" if (path and line_count) else path
-        return ("Write", sub, "\n".join(preview_lines) or None)
+        return ("Write", sub, diff_str)
 
     if name in ("list_dir", "list_directory", "BuiltinTools.LIST_DIR") or lower in (
         "list_dir",
@@ -628,10 +666,11 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
 
 
 class KardashevCompleter(Completer):
-    """Provides tab completion for `/slash` commands, presets, policies, and `@file` / `@git:` mentions."""
+    """Provides tab completion for `/slash` commands, presets, policies, sessions, todos, and `@file` / `@git:` mentions."""
 
-    def __init__(self, workspace: str) -> None:
+    def __init__(self, workspace: str, sessions_dir: Path | None = None) -> None:
         self.workspace = workspace
+        self.sessions_dir = sessions_dir
 
     def get_completions(self, document: Any, complete_event: Any) -> Any:
         text_before = document.text_before_cursor
@@ -641,19 +680,39 @@ class KardashevCompleter(Completer):
         if text_before.lstrip().startswith("/"):
             parts = text_before.lstrip().split()
             if len(parts) <= 1 and not text_before.endswith(" "):
-                prefix = parts[0] if parts else "/"
+                prefix = parts[0].lower() if parts else "/"
+                matched = False
                 for cmd, desc in SLASH_COMMANDS.items():
                     if cmd.startswith(prefix):
+                        matched = True
                         yield Completion(
                             cmd,
-                            start_position=-len(prefix),
+                            start_position=-len(parts[0]) if parts else -1,
                             display=cmd,
                             display_meta=desc,
                         )
+                for alias, target in SLASH_ALIASES.items():
+                    if alias.startswith(prefix) and target in SLASH_COMMANDS:
+                        matched = True
+                        yield Completion(
+                            alias,
+                            start_position=-len(parts[0]) if parts else -1,
+                            display=alias,
+                            display_meta=f"alias for {target} · {SLASH_COMMANDS[target]}",
+                        )
+                if not matched and prefix != "/":
+                    _, _, err_msg = validate_slash_command(prefix, SLASH_COMMANDS)
+                    yield Completion(
+                        "",
+                        start_position=0,
+                        display=f"✗ {prefix} (unknown)",
+                        display_meta=err_msg or "Unknown slash command",
+                    )
                 return
 
-            # Sub-argument completion for /preset, /policy, /ralph, /checkpoint
-            cmd_name = parts[0].lower()
+            # Sub-argument completion
+            raw_cmd = parts[0].lower()
+            cmd_name = SLASH_ALIASES.get(raw_cmd, raw_cmd)
             cur_arg = parts[1] if len(parts) > 1 and not text_before.endswith(" ") else ""
             if cmd_name == "/preset":
                 for p in list_presets():
@@ -681,9 +740,36 @@ class KardashevCompleter(Completer):
                         yield Completion(opt, start_position=-len(cur_arg), display=opt)
                 return
             if cmd_name == "/commons":
-                for opt in ("status", "find", "review", "approve", "reject", "seed"):
+                for opt in ("status", "find", "review", "approve", "reject", "pull", "push", "seed"):
                     if opt.startswith(cur_arg):
                         yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
+            if cmd_name == "/todos":
+                for opt in ("list", "add", "done", "wip", "clear", "collapse", "expand", "toggle"):
+                    if opt.startswith(cur_arg):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
+            if cmd_name == "/theme":
+                for opt in ("dark", "light"):
+                    if opt.startswith(cur_arg):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                return
+            if cmd_name in ("/resume", "/load"):
+                sdir = self.sessions_dir or (
+                    Path(os.environ["KARDASHEV_SESSIONS_DIR"])
+                    if "KARDASHEV_SESSIONS_DIR" in os.environ
+                    else Path.home() / ".local" / "share" / "kardashev" / "sessions"
+                )
+                if "latest".startswith(cur_arg):
+                    yield Completion("latest", start_position=-len(cur_arg), display="latest", display_meta="most recent session")
+                for s in list_recent_sessions(sdir, limit=10):
+                    if s.session_id.startswith(cur_arg):
+                        yield Completion(
+                            s.session_id,
+                            start_position=-len(cur_arg),
+                            display=s.session_id,
+                            display_meta=f"{s.turn_count} turns · {s.model or s.preset or 'default'}",
+                        )
                 return
 
         # 2. @file and @git: completion
@@ -727,14 +813,15 @@ class RichAskQuestionHook(hooks_mod.OnInteractionHook):
     async def run(
         self, context: hooks_mod.HookContext, data: types.AskQuestionInteractionSpec
     ) -> hooks_mod.QuestionHookResult:
-        console = Console()
+        console = _ACTIVE_TUI.console if _ACTIVE_TUI is not None else Console()
+        theme = _ACTIVE_TUI.theme if _ACTIVE_TUI is not None else get_theme()
         responses: list[types.QuestionResponse] = []
         for q in data.questions:
             console.print()
-            console.print(Panel(f"[bold cyan]? {q.question}[/bold cyan]", border_style="cyan"))
+            console.print(Panel(f"[{theme.accent}]? {q.question}[/{theme.accent}]", border_style=theme.border_accent))
             options = list(q.options) if hasattr(q, "options") else []
             for idx, opt in enumerate(options):
-                console.print(f"  [bold yellow]{idx + 1}.[/bold yellow] {opt.text}")
+                console.print(f"  [{theme.warning}]{idx + 1}.[/{theme.warning}] {opt.text}")
             ans = await _nonblocking_input("  Select option # or type answer: ")
             ans = ans.strip()
             if not ans:
@@ -840,18 +927,35 @@ async def _nonblocking_input(prompt_text: str) -> str:
             type_ahead.resume()
 
 
+_CONSOLE: Console | None = None
+
+
 async def _confirm_tool_handler(tc: types.ToolCall, reason: str = "") -> bool:
-    console = Console()
+    """Render syntax-highlighted diff before approval; keep approval prompt <= 3 lines."""
+    console = _CONSOLE or (_ACTIVE_TUI.console if _ACTIVE_TUI is not None else Console())
+    theme = _ACTIVE_TUI.theme if _ACTIVE_TUI is not None else get_theme()
     badge, summary, diff_preview = format_tool_badge(tc)
-    console.print()
-    body = f"[bold yellow]{badge}[/bold yellow] [white]{summary}[/white]"
-    if reason:
-        body += f"\n[dim]Reason: {reason}[/dim]"
-    console.print(Panel(body, title="[bold yellow]Permission Required[/bold yellow]", border_style="yellow"))
     if diff_preview:
-        console.print(Syntax(diff_preview, "diff", theme="monokai", word_wrap=True))
-    ans = await _nonblocking_input("  Allow execution? [y/N]: ")
-    return ans.strip().lower() in ("y", "yes")
+        console.print(
+            Panel(
+                Syntax(diff_preview, "diff", theme=theme.code_theme, word_wrap=True),
+                border_style=theme.border,
+                padding=(0, 1),
+            )
+        )
+    prompt_block = format_approval_prompt(
+        badge,
+        summary,
+        reason=reason,
+        theme=theme,
+        has_diff=bool(diff_preview),
+    )
+    console.print(prompt_block)
+    ans = (await _nonblocking_input("  Allow execution? [y/N/a]: ")).strip().lower()
+    if ans in ("a", "always") and _ACTIVE_TUI is not None:
+        _ACTIVE_TUI.options.policy_mode = PolicyMode.ALLOW_ALL
+        return True
+    return ans in ("y", "yes", "a", "always")
 
 
 def render_context_gauge(used_tokens: int, limit_tokens: int, width: int = 16) -> str:
@@ -870,10 +974,17 @@ class KardashevRichTUI:
         self,
         options: HarnessOptions,
         console: Console | None = None,
+        theme: str | TUITheme | None = None,
+        sessions_dir: Path | None = None,
     ) -> None:
         self.options = options
         self.console = console or Console()
+        self.theme: TUITheme = theme if isinstance(theme, TUITheme) else get_theme(theme)
+        self._custom_sessions_dir: Path | None = sessions_dir
+        self._sessions_dir_override: Path | None = sessions_dir
         self.show_thoughts = True
+        self.expand_tools = False
+        self.show_help_footer = False
         self.auto_inject_ast_map = True
         self.session_turns = 0
         self.session_tool_calls = 0
@@ -891,13 +1002,31 @@ class KardashevRichTUI:
         self._pending_retry_prompt: str | None = None
         self._synced_transcript_count = 0
         self._initial_banner_shown = False
+        self.session_id: str = time.strftime("session-%Y%m%d-%H%M%S")
+        self.todos: TodoTracker = TodoTracker()
         # Keystrokes typed while a turn streams are buffered here and flushed after it.
         self.input_queue = TypeAheadBuffer()
         self.type_ahead: TerminalTypeAhead | None = None
 
+    @staticmethod
+    def _extract_full_tool_output(result: types.ToolResult) -> str | None:
+        if result.error or result.exception:
+            return str(result.error or result.exception).strip()[:4000]
+        res = result.result
+        if res is None:
+            return None
+        for attr in ("output", "text", "summary"):
+            val = getattr(res, attr, None)
+            if isinstance(val, str) and val.strip():
+                return val.strip()[:4000]
+        if isinstance(res, str) and res.strip():
+            return res.strip()[:4000]
+        return None
+
     def record_tool_result(self, result: types.ToolResult) -> None:
         """Matches a `PostToolCallHook` result to the corresponding in-flight `ToolEventRecord`."""
         summary, is_err = summarize_tool_result(result)
+        full_out = self._extract_full_tool_output(result)
         now = time.perf_counter()
         step_id = getattr(result, "step_id", None)
         call_id = getattr(result, "id", None)
@@ -908,6 +1037,7 @@ class KardashevRichTUI:
                 if rec.step_id == step_id or rec.call_id == step_id:
                     rec.completed_at = now
                     rec.result_preview = summary
+                    rec.full_output = full_out or rec.full_output
                     rec.is_error = is_err
                     return
 
@@ -917,6 +1047,7 @@ class KardashevRichTUI:
                 if rec.call_id == call_id:
                     rec.completed_at = now
                     rec.result_preview = summary
+                    rec.full_output = full_out or rec.full_output
                     rec.is_error = is_err
                     return
 
@@ -927,6 +1058,7 @@ class KardashevRichTUI:
                     rec.step_id = step_id
                 rec.completed_at = now
                 rec.result_preview = summary
+                rec.full_output = full_out or rec.full_output
                 rec.is_error = is_err
                 return
 
@@ -943,6 +1075,7 @@ class KardashevRichTUI:
                 summary="",
                 completed_at=now,
                 result_preview=summary,
+                full_output=full_out,
                 is_error=is_err,
             )
         )
@@ -966,6 +1099,7 @@ class KardashevRichTUI:
 
     def render_welcome_banner(self, cfg: Any) -> Panel:
         """Builds the Kardashev Studio welcome status card."""
+        th = self.theme
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
         branch, dirty = _git_branch_and_dirty(workspace)
         model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
@@ -975,58 +1109,68 @@ class KardashevRichTUI:
             else str(self.options.policy_mode)
         )
         policy_color = {
-            "allow-all": "bold green",
-            "sandbox": "bold cyan",
-            "ask": "bold yellow",
-        }.get(policy_val, "bold white")
+            "allow-all": th.success,
+            "sandbox": th.accent,
+            "ask": th.warning,
+        }.get(policy_val, "bold")
 
         grid = Table.grid(padding=(0, 2))
-        grid.add_column(style="bold dim", justify="right")
+        grid.add_column(style=f"bold {th.muted}", justify="right")
         grid.add_column()
 
         git_badge = ""
         if branch:
-            dirty_str = f" [yellow](*{dirty} modified)[/yellow]" if dirty else " [green](clean)[/green]"
-            git_badge = f"  [dim]git:[/dim][bold magenta]{branch}[/bold magenta]{dirty_str}"
+            dirty_str = f" [{th.warning}](*{dirty} modified)[/{th.warning}]" if dirty else f" [{th.success}](clean)[/{th.success}]"
+            git_badge = f"  [{th.dim}]git:[/{th.dim}][{th.accent_alt}]{branch}[/{th.accent_alt}]{dirty_str}"
 
-        grid.add_row("Model", f"[bold cyan]{model_label}[/bold cyan]  [dim]· {backend_label}[/dim]")
-        grid.add_row("Workspace", f"[bold white]{workspace}[/bold white]{git_badge}")
+        grid.add_row("Model", f"[{th.accent}]{model_label}[/{th.accent}]  [{th.dim}]· {backend_label}[/{th.dim}]")
+        grid.add_row("Workspace", f"[bold {th.fg}]{workspace}[/bold {th.fg}]{git_badge}")
         mcp_list = ["chronosml"] if self.options.with_chronosml_mcp else []
         if self.options.with_opencommons_mcp:
             mcp_list.append("opencommons")
         mcp_list.extend(name for name, _, _ in self.options.extra_mcp_stdio)
         mcp_str = ", ".join(mcp_list) if mcp_list else "none (use --with-chronosml to enable)"
         ralph_badge = (
-            f"  [dim]· Ralph Verify:[/dim] [bold green]{self.ralph_verify_cmd}[/bold green]"
+            f"  [{th.dim}]· Ralph Verify:[/{th.dim}] [{th.success}]{self.ralph_verify_cmd}[/{th.success}]"
             if self.ralph_verify_cmd
             else ""
         )
         grid.add_row(
             "Safety & Context",
-            f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [dim]· compaction ceiling:[/dim] {ctx_limit:,} tok  [dim]· MCP:[/dim] {mcp_str}{ralph_badge}",
+            f"[{policy_color}]{policy_val.upper()}[/{policy_color}]  [{th.dim}]· compaction ceiling:[/{th.dim}] {ctx_limit:,} tok  [{th.dim}]· MCP:[/{th.dim}] {mcp_str}{ralph_badge}",
         )
         ast_state = "ON" if self.auto_inject_ast_map else "OFF"
         oc_state = "ON" if self.options.enable_opencommons else "OFF"
         grid.add_row(
             "Cognitive Engine",
-            f"[bold green]4-Phase CoT[/bold green] · [bold cyan]AST Repo-Map ({ast_state})[/bold cyan] · [bold yellow]Self-Healing Fuzzy Edits[/bold yellow] · [bold bright_magenta]OpenCommons ({oc_state})[/bold bright_magenta]",
+            f"[{th.success}]4-Phase CoT[/{th.success}] · [{th.accent}]AST Repo-Map ({ast_state})[/{th.accent}] · [{th.warning}]Self-Healing Fuzzy Edits[/{th.warning}] · [{th.accent_alt}]OpenCommons ({oc_state})[/{th.accent_alt}]",
         )
         grid.add_row(
             "Shortcuts",
-            "[dim][bold]/help[/bold] commands · [bold]/commons[/bold] research · [bold]/scout[/bold] AST search · [bold]/integrate[/bold] frontier agents · [bold]@file:1-50[/bold] · [bold]!cmd[/bold][/dim]",
+            f"[{th.dim}][bold]/help[/bold] commands · [bold]/resume[/bold] sessions · [bold]/todos[/bold] tasks · [bold]/commons[/bold] research · [bold]@file:1-50[/bold] · [bold]!cmd[/bold][/{th.dim}]",
         )
+        recent = list_recent_sessions(self._sessions_dir(), limit=3)
+        if recent:
+            picks = "  ".join(
+                f"[{th.accent}][{i}][/{th.accent}] {s.session_id} [{th.dim}]({s.turn_count}t)[/{th.dim}]"
+                for i, s in enumerate(recent, start=1)
+            )
+            grid.add_row(
+                "Recent Sessions",
+                f"{picks}  [{th.dim}]· type /resume <#> or /resume[/{th.dim}]",
+            )
         upd = check_for_updates(force=False)
         if upd.update_available:
             grid.add_row(
                 "Update",
-                f"[bold yellow]⬆ {upd.message}[/bold yellow] [dim](type /update)[/dim]",
+                f"[{th.warning}]⬆ {upd.message}[/{th.warning}] [{th.dim}](type /update)[/{th.dim}]",
             )
 
         return Panel(
             grid,
-            title="[bold bright_white]✦ Kardashev Studio[/bold bright_white] [dim](kardashev v0.2.0)[/dim]",
-            subtitle="[dim]The Kardashev Project · Autonomous AST, CoT, OpenCommons & Self-Healing Engine[/dim]",
-            border_style="bright_blue",
+            title=f"[bold {th.fg}]✦ Kardashev Studio[/bold {th.fg}] [{th.dim}](kardashev v0.2.0)[/{th.dim}]",
+            subtitle=f"[{th.dim}]The Kardashev Project · Autonomous AST, CoT, OpenCommons & Self-Healing Engine[/{th.dim}]",
+            border_style=th.border_accent,
             padding=(0, 1),
         )
 
@@ -1130,9 +1274,50 @@ class KardashevRichTUI:
         )
 
     def _sessions_dir(self) -> Path:
+        override = getattr(self, "_sessions_dir_override", None) or getattr(self, "_custom_sessions_dir", None)
+        if override is not None:
+            override.mkdir(parents=True, exist_ok=True)
+            return override
+        env_dir = os.environ.get("KARDASHEV_SESSIONS_DIR", "").strip()
+        if env_dir:
+            d = Path(env_dir).expanduser()
+            d.mkdir(parents=True, exist_ok=True)
+            return d
         d = Path.home() / ".local" / "share" / "kardashev" / "sessions"
         d.mkdir(parents=True, exist_ok=True)
         return d
+
+    def save_session(self, name: str | None = None) -> Path:
+        """Persists the current session transcript, token counters, and todos to disk."""
+        stem = name if name else time.strftime("session-%Y%m%d-%H%M%S")
+        if not stem.endswith(".json"):
+            stem += ".json"
+        out_file = self._sessions_dir() / stem
+        payload = {
+            "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "preset": self.options.preset,
+            "backend": self.options.backend,
+            "model": self.options.model,
+            "turns": [tr.__dict__ for tr in self.transcripts],
+            "todos": self.todos.to_list(),
+        }
+        out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return out_file
+
+    def load_session(self, target: str) -> Path | None:
+        """Loads a saved session by index ('1'), 'latest', stem, or filename."""
+        in_file = resolve_session_target(self._sessions_dir(), target)
+        if in_file is None or not in_file.is_file():
+            return None
+        data = json.loads(in_file.read_text(encoding="utf-8"))
+        loaded_turns = data.get("turns", [])
+        self.transcripts = [TurnTranscript(**t) for t in loaded_turns]
+        self.session_turns = len(self.transcripts)
+        self.total_prompt_tokens = sum(t.prompt_tokens for t in self.transcripts)
+        self.total_output_tokens = sum(t.output_tokens for t in self.transcripts)
+        if "todos" in data and isinstance(data["todos"], list):
+            self.todos.load_list(data["todos"])
+        return in_file
 
     def export_markdown(self, target_path: Path, cfg: Any) -> Path:
         """Exports the current session transcript and tool trace to a Markdown report."""
@@ -1176,7 +1361,14 @@ class KardashevRichTUI:
     async def _handle_slash_command(self, raw_cmd: str, agent: Agent, cfg: Any) -> bool:
         """Handles `/...` commands. Returns True if session should exit or restart."""
         parts = raw_cmd.strip().split()
-        cmd = parts[0].lower()
+        if not parts:
+            return False
+        _is_valid, canonical, err_msg = validate_slash_command(raw_cmd, SLASH_COMMANDS, SLASH_ALIASES)
+        if canonical is None:
+            self.console.print(f"[{self.theme.warning}]{escape(err_msg or 'Unknown command.')}[/{self.theme.warning}]")
+            return False
+
+        cmd = canonical
         args = parts[1:]
         workspace = self.options.workspaces[0] if self.options.workspaces else os.getcwd()
 
@@ -1185,16 +1377,21 @@ class KardashevRichTUI:
             return True
 
         if cmd == "/help":
-            tbl = Table(title="Interactive Commands, Context Mentions & Keybindings", border_style="bright_blue")
-            tbl.add_column("Shortcut / Command", style="bold cyan", no_wrap=True)
+            tbl = Table(
+                title="Interactive Commands, Context Mentions & Keybindings",
+                border_style=self.theme.border_accent,
+            )
+            tbl.add_column("Shortcut / Command", style=f"bold {self.theme.accent}", no_wrap=True)
             tbl.add_column("Description", style="white")
             for k, desc in SLASH_COMMANDS.items():
                 tbl.add_row(k, desc)
             tbl.add_row("@path/to/file[:start-end]", "Inline a workspace file or line slice into your prompt")
             tbl.add_row("@git:diff / @git:status", "Inline live uncommitted git diff or status into your prompt")
             tbl.add_row("!<shell command>", "Execute a local shell command immediately without calling the model")
-            tbl.add_row("Alt+T / Alt+P", "Keybindings: toggle thinking display (Alt+T) or cycle policy (Alt+P)")
+            for key_label, key_desc in KEY_BINDINGS:
+                tbl.add_row(key_label, f"Keybinding: {key_desc}")
             self.console.print(tbl)
+            self.console.print(build_help_footer(self.theme))
             return False
 
         if cmd == "/status":
@@ -1211,13 +1408,18 @@ class KardashevRichTUI:
             gauge = render_context_gauge(tot_tok, ctx_limit)
             htel = get_harness_telemetry()
 
-            tbl = Table(title="Session Telemetry & Engineered Harness Status", border_style="cyan")
+            tbl = Table(
+                title="Session Telemetry & Engineered Harness Status",
+                border_style=self.theme.border_accent,
+            )
             tbl.add_column("Metric", style="bold dim")
             tbl.add_column("Value", style="white")
-            tbl.add_row("Active Model", f"[bold cyan]{model_label}[/bold cyan] ({backend_label})")
+            tbl.add_row("Active Model", f"[bold {self.theme.accent}]{model_label}[/bold {self.theme.accent}] ({backend_label})")
+            tbl.add_row("Active Theme", f"{self.theme.name} ({self.theme.label})")
             tbl.add_row("Conversation ID", agent.conversation.conversation_id or "(local)")
             tbl.add_row("Completed Turns", str(self.session_turns))
-            tbl.add_row("Executed Tool Calls", str(self.session_tool_calls))
+            tbl.add_row("Executed Tool Calls", f"{self.session_tool_calls} ({'expanded' if self.expand_tools else 'collapsed'})")
+            tbl.add_row("Session Todos", self.todos.summary_badge() or "0 tracked (use /todos)")
             tbl.add_row("Prompt / Output / Thought Tokens", f"{p_tok:,} in · {c_tok:,} out · {t_tok:,} thought")
             tbl.add_row("Context Window Utilization", f"{gauge}  ({tot_tok:,} / {ctx_limit:,} tok)")
             tbl.add_row(
@@ -1259,6 +1461,175 @@ class KardashevRichTUI:
             self.console.print(f"[cyan]✓ Reasoning trace display: {state}[/cyan]")
             return False
 
+        if cmd == "/expand":
+            if args and args[0].lower() in ("on", "true", "1", "expand"):
+                self.expand_tools = True
+            elif args and args[0].lower() in ("off", "false", "0", "collapse"):
+                self.expand_tools = False
+            else:
+                self.expand_tools = not self.expand_tools
+            state = (
+                "EXPANDED (full output + diffs)"
+                if self.expand_tools
+                else "COLLAPSED (1-line summary + 1-line tail)"
+            )
+            self.console.print(f"[{self.theme.accent}]✓ Tool-call blocks: {state}[/{self.theme.accent}]")
+            return False
+
+        if cmd == "/theme":
+            if not args:
+                self.console.print(
+                    f"[{self.theme.accent}]Active theme:[/{self.theme.accent}] "
+                    f"[bold]{self.theme.name}[/bold] ({self.theme.label})\n"
+                    f"[dim]Usage: /theme <dark|light> (or set KARDASHEV_THEME=light)[/dim]"
+                )
+                return False
+            target_theme = args[0].lower().strip()
+            if target_theme not in THEMES:
+                self.console.print(
+                    f"[{self.theme.error}]Unknown theme '{escape(target_theme)}'. Available themes: dark, light[/{self.theme.error}]"
+                )
+                return False
+            self.theme = get_theme(target_theme)
+            self.console.print(
+                f"[{self.theme.success}]✓ Switched active theme to '{self.theme.name}' ({self.theme.label}).[/{self.theme.success}]"
+            )
+            return False
+
+        if cmd == "/copy":
+            if not self.transcripts:
+                self.console.print("[dim]No assistant response to copy yet.[/dim]")
+                return False
+            last_resp = self.transcripts[-1].assistant_response
+            snippet = extract_last_code_block(last_resp)
+            if args:
+                out_path = Path(workspace) / args[0] if not os.path.isabs(args[0]) else Path(args[0])
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(snippet + "\n", encoding="utf-8")
+                self.console.print(
+                    f"[{self.theme.success}]✓ Wrote {len(snippet.splitlines())} line(s) to {out_path}[/{self.theme.success}]"
+                )
+                return False
+            copied = False
+            for clip_cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["pbcopy"]):
+                try:
+                    proc = await asyncio.to_thread(
+                        subprocess.run, clip_cmd, input=snippet, text=True, timeout=1.5, check=False
+                    )
+                    if proc.returncode == 0:
+                        copied = True
+                        break
+                except (OSError, subprocess.SubprocessError):
+                    continue
+            n_lines = len(snippet.splitlines())
+            if copied:
+                self.console.print(
+                    f"[{self.theme.success}]✓ Copied {n_lines} line(s) from last response to system clipboard.[/{self.theme.success}]"
+                )
+            else:
+                self.console.print(
+                    f"[{self.theme.accent}]✓ Extracted {n_lines} line(s) (pass `/copy <file>` to write to disk).[/{self.theme.accent}]"
+                )
+            return False
+
+        if cmd == "/todos":
+            sub = args[0].lower() if args else "list"
+            if sub in ("list", "show"):
+                if not self.todos.items:
+                    self.console.print(
+                        "[dim]No todos tracked in this session yet. "
+                        "Use `/todos add <task>` or let the agent emit a `- [ ]` checklist.[/dim]"
+                    )
+                    return False
+                was_collapsed = self.todos.collapsed
+                self.todos.collapsed = False
+                panel = self.todos.render(self.theme)
+                self.todos.collapsed = was_collapsed
+                if panel is not None:
+                    self.console.print(panel)
+                return False
+
+            if sub == "add":
+                task_text = " ".join(args[1:]).strip()
+                if not task_text:
+                    self.console.print("[yellow]Usage: /todos add <task description>[/yellow]")
+                    return False
+                item = self.todos.add(task_text)
+                self.console.print(
+                    f"[{self.theme.success}]✓ Added todo #{item.id}:[/{self.theme.success}] {escape(item.text)}"
+                )
+                return False
+
+            if sub in ("done", "check", "complete"):
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /todos done <id_or_prefix>[/yellow]")
+                    return False
+                matched = self.todos.set_status(" ".join(args[1:]), "done")
+                if matched:
+                    self.console.print(
+                        f"[{self.theme.success}]✓ Completed todo #{matched.id}:[/{self.theme.success}] {escape(matched.text)}"
+                    )
+                else:
+                    self.console.print(f"[{self.theme.error}]Todo '{escape(args[1])}' not found.[/{self.theme.error}]")
+                return False
+
+            if sub in ("wip", "start", "in_progress"):
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /todos wip <id_or_prefix>[/yellow]")
+                    return False
+                matched = self.todos.set_status(" ".join(args[1:]), "in_progress")
+                if matched:
+                    self.console.print(
+                        f"[{self.theme.warning}]✓ Marked todo #{matched.id} in-progress:[/{self.theme.warning}] {escape(matched.text)}"
+                    )
+                else:
+                    self.console.print(f"[{self.theme.error}]Todo '{escape(args[1])}' not found.[/{self.theme.error}]")
+                return False
+
+            if sub in ("pending", "uncheck", "reopen"):
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /todos pending <id_or_prefix>[/yellow]")
+                    return False
+                matched = self.todos.set_status(" ".join(args[1:]), "pending")
+                if matched:
+                    self.console.print(
+                        f"[{self.theme.accent}]✓ Reopened todo #{matched.id}:[/{self.theme.accent}] {escape(matched.text)}"
+                    )
+                else:
+                    self.console.print(f"[{self.theme.error}]Todo '{escape(args[1])}' not found.[/{self.theme.error}]")
+                return False
+
+            if sub in ("rm", "remove", "delete"):
+                if len(args) < 2:
+                    self.console.print("[yellow]Usage: /todos rm <id_or_prefix>[/yellow]")
+                    return False
+                removed = self.todos.remove(" ".join(args[1:]))
+                if removed:
+                    self.console.print(
+                        f"[{self.theme.warning}]✓ Removed todo #{removed.id}:[/{self.theme.warning}] {escape(removed.text)}"
+                    )
+                else:
+                    self.console.print(f"[{self.theme.error}]Todo '{escape(args[1])}' not found.[/{self.theme.error}]")
+                return False
+
+            if sub == "clear":
+                count = self.todos.clear()
+                self.console.print(f"[yellow]✓ Cleared {count} todo item(s).[/yellow]")
+                return False
+
+            if sub in ("collapse", "toggle"):
+                collapsed = self.todos.toggle_collapsed()
+                state = "COLLAPSED" if collapsed else "EXPANDED"
+                self.console.print(f"[{self.theme.accent}]✓ Todos panel: {state}[/{self.theme.accent}]")
+                return False
+
+            # Fallback: treat `/todos <text>` as quick-add if multiple words or unknown sub
+            item = self.todos.add(" ".join(args))
+            self.console.print(
+                f"[{self.theme.success}]✓ Added todo #{item.id}:[/{self.theme.success}] {escape(item.text)}"
+            )
+            return False
+
         if cmd == "/ralph":
             if not args:
                 state = self.ralph_verify_cmd or "disabled"
@@ -1296,8 +1667,8 @@ class KardashevRichTUI:
             if not self.checkpoints:
                 self.console.print("[dim]No checkpoints recorded yet. Use `/checkpoint create [label]` or run a turn.[/dim]")
                 return False
-            tbl = Table(title="Workspace Git Checkpoints", border_style="cyan")
-            tbl.add_column("#", style="bold cyan", justify="right")
+            tbl = Table(title="Workspace Git Checkpoints", border_style=self.theme.border_accent)
+            tbl.add_column("#", style=f"bold {self.theme.accent}", justify="right")
             tbl.add_column("Turn", justify="right")
             tbl.add_column("Time", style="dim")
             tbl.add_column("Git OID", style="magenta")
@@ -1357,46 +1728,36 @@ class KardashevRichTUI:
             return False
 
         if cmd == "/save":
-            name = args[0] if args else time.strftime("session-%Y%m%d-%H%M%S")
-            if not name.endswith(".json"):
-                name += ".json"
-            out_file = self._sessions_dir() / name
-            payload = {
-                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "preset": self.options.preset,
-                "backend": self.options.backend,
-                "model": self.options.model,
-                "turns": [tr.__dict__ for tr in self.transcripts],
-            }
-            out_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            self.console.print(f"[green]✓ Saved session ({len(self.transcripts)} turns) to {out_file}[/green]")
+            out_file = self.save_session(args[0] if args else None)
+            self.console.print(
+                f"[green]✓ Saved session ({len(self.transcripts)} turns, {len(self.todos.items)} todos) to {out_file}[/green]"
+            )
             return False
 
-        if cmd == "/load":
-            if not args:
-                files = sorted(self._sessions_dir().glob("*.json"))
-                if not files:
+        if cmd in ("/load", "/resume"):
+            if not args or args[0].lower() == "list":
+                recent = list_recent_sessions(self._sessions_dir(), limit=10)
+                if not recent:
                     self.console.print("[dim]No saved sessions found in ~/.local/share/kardashev/sessions/[/dim]")
                     return False
-                tbl = Table(title="Saved Sessions", border_style="cyan")
-                tbl.add_column("Session File", style="bold cyan")
-                tbl.add_column("Size", justify="right", style="dim")
-                for f in files:
-                    tbl.add_row(f.name, f"{f.stat().st_size:,} B")
-                self.console.print(tbl)
+                self.console.print(render_sessions_picker(recent, self.theme))
                 return False
-            name = args[0] if args[0].endswith(".json") else f"{args[0]}.json"
-            in_file = self._sessions_dir() / name
-            if not in_file.is_file():
-                self.console.print(f"[red]Saved session '{in_file}' not found.[/red]")
+
+            target_arg = args[0]
+            in_file = self.load_session(target_arg)
+            if in_file is None:
+                self.console.print(
+                    f"[red]Saved session '{escape(target_arg)}' not found. Type /resume to list recent sessions.[/red]"
+                )
                 return False
-            data = json.loads(in_file.read_text(encoding="utf-8"))
-            loaded_turns = data.get("turns", [])
-            self.transcripts = [TurnTranscript(**t) for t in loaded_turns]
-            self.session_turns = len(self.transcripts)
             self.console.print(
-                f"[green]✓ Loaded {len(self.transcripts)} turn(s) from {in_file.name}.[/green]"
+                f"[green]✓ Resumed / Loaded {len(self.transcripts)} turn(s) "
+                f"and {len(self.todos.items)} todo(s) from {in_file.name}.[/green]"
             )
+            if self.todos.items:
+                panel = self.todos.render(self.theme)
+                if panel is not None:
+                    self.console.print(panel)
             return False
 
         if cmd == "/export":
@@ -1417,8 +1778,8 @@ class KardashevRichTUI:
 
         if cmd == "/preset":
             if not args:
-                tbl = Table(title="Available Model Presets", border_style="bright_blue")
-                tbl.add_column("Preset Key", style="bold cyan")
+                tbl = Table(title="Available Model Presets", border_style=self.theme.border_accent)
+                tbl.add_column("Preset Key", style=f"bold {self.theme.accent}")
                 tbl.add_column("Backend", style="magenta")
                 tbl.add_column("VRAM", justify="right")
                 tbl.add_column("Target Model")
@@ -1429,6 +1790,11 @@ class KardashevRichTUI:
                 self.console.print(tbl)
                 return False
             target_key = args[0].lower()
+            preset_aliases = {
+                "glm-prime": "openrouter-glm-5.3-prime",
+                "glm-5.3-prime": "openrouter-glm-5.3-prime",
+            }
+            target_key = preset_aliases.get(target_key, target_key)
             if target_key not in PRESETS:
                 self.console.print(f"[red]Unknown preset '{target_key}'. Type /preset to list all.[/red]")
                 return False
@@ -1465,14 +1831,19 @@ class KardashevRichTUI:
                 self.console.print("[yellow]Usage: /model <model_id_or_litert_path> [base_url][/yellow]")
                 return False
             target_model = args[0]
-            if target_model.lower() in PRESETS and len(args) == 1:
-                self.options.preset = target_model.lower()
+            model_preset_aliases = {
+                "glm-prime": "openrouter-glm-5.3-prime",
+                "glm-5.3-prime": "openrouter-glm-5.3-prime",
+            }
+            resolved_preset = model_preset_aliases.get(target_model.lower(), target_model.lower())
+            if resolved_preset in PRESETS and len(args) == 1:
+                self.options.preset = resolved_preset
                 self.options.backend = None
                 self.options.model = None
                 self.options.model_path = None
                 self.options.base_url = None
                 self._restart_requested = True
-                self.console.print(f"[green]✓ Switching active preset to '{target_model.lower()}'...[/green]")
+                self.console.print(f"[green]✓ Switching active preset to '{resolved_preset}'...[/green]")
                 return True
 
             if target_model.endswith(".litertlm"):
@@ -1544,7 +1915,7 @@ class KardashevRichTUI:
         if cmd == "/models":
             models = discover_local_models()
             endpoints = probe_local_endpoints()
-            tbl = Table(title="Discovered Local Checkpoints", border_style="cyan")
+            tbl = Table(title="Discovered Local Checkpoints", border_style=self.theme.border_accent)
             tbl.add_column("Model Name", style="bold white")
             tbl.add_column("Backend", style="magenta")
             tbl.add_column("Size", justify="right", style="green")
@@ -1553,7 +1924,7 @@ class KardashevRichTUI:
                 tbl.add_row(m.name, m.backend.value, f"{m.size_gb:.2f} GB", m.source)
             self.console.print(tbl)
 
-            ep_tbl = Table(title="Localhost OpenAI Inference Endpoints", border_style="bright_blue")
+            ep_tbl = Table(title="Localhost OpenAI Inference Endpoints", border_style=self.theme.border_accent)
             ep_tbl.add_column("Status")
             ep_tbl.add_column("Server")
             ep_tbl.add_column("Base URL", style="dim")
@@ -1587,9 +1958,9 @@ class KardashevRichTUI:
             else:
                 self.console.print(
                     Panel(
-                        Syntax(diff_out[:12000], "diff", theme="monokai", word_wrap=True),
-                        title=f"[bold cyan]git diff ({workspace})[/bold cyan]",
-                        border_style="cyan",
+                        Syntax(diff_out[:12000], "diff", theme=self.theme.syntax_theme, word_wrap=True),
+                        title=f"[bold {self.theme.accent}]git diff ({workspace})[/bold {self.theme.accent}]",
+                        border_style=self.theme.border_accent,
                     )
                 )
             return False
@@ -1623,8 +1994,8 @@ class KardashevRichTUI:
         if cmd == "/config":
             ucfg = UserConfig.load()
             if not args or args[0] == "show":
-                tbl = Table(title=f"User Defaults ({UserConfig.config_path()})", border_style="cyan")
-                tbl.add_column("Key", style="bold cyan")
+                tbl = Table(title=f"User Defaults ({UserConfig.config_path()})", border_style=self.theme.border_accent)
+                tbl.add_column("Key", style=f"bold {self.theme.accent}")
                 tbl.add_column("Value", style="white")
                 for k, v in ucfg.__dict__.items():
                     tbl.add_row(k, repr(v))
@@ -1661,9 +2032,9 @@ class KardashevRichTUI:
             rmap = render_compact_repo_map(idx, query=" ".join(args[1:]), max_chars=4000)
             self.console.print(
                 Panel(
-                    Syntax(rmap, "markdown", theme="monokai", word_wrap=True),
-                    title=f"[bold cyan]AST Repo-Map ({len(idx)} files indexed)[/bold cyan]",
-                    border_style="cyan",
+                    Syntax(rmap, "markdown", theme=self.theme.syntax_theme, word_wrap=True),
+                    title=f"[bold {self.theme.accent}]AST Repo-Map ({len(idx)} files indexed)[/bold {self.theme.accent}]",
+                    border_style=self.theme.border_accent,
                 )
             )
             return False
@@ -1679,9 +2050,9 @@ class KardashevRichTUI:
                     f"AST Context Scout: '{query_str}' "
                     f"(~{res.estimated_tokens_saved:,} raw tokens saved)"
                 ),
-                border_style="cyan",
+                border_style=self.theme.border_accent,
             )
-            tbl.add_column("File", style="bold cyan")
+            tbl.add_column("File", style=f"bold {self.theme.accent}")
             tbl.add_column("Symbol", style="bold yellow")
             tbl.add_column("Lines", justify="right", style="magenta")
             tbl.add_column("Score", justify="right", style="green")
@@ -1752,7 +2123,7 @@ class KardashevRichTUI:
                     card_str = h.block.render_for_agent("dual_card_with_pitfalls")
                     self.console.print(
                         Panel(
-                            Syntax(card_str, "python", theme="monokai", word_wrap=True),
+                            Syntax(card_str, "python", theme=self.theme.syntax_theme, word_wrap=True),
                             title=f"[bold magenta]{h.block.block_id}[/bold magenta] [dim](score={h.score} · {h.latency_ms}ms)[/dim]",
                             border_style="magenta",
                         )
@@ -1847,7 +2218,7 @@ class KardashevRichTUI:
 
             if not args or args[0].lower() == "status":
                 endpoints = await asyncio.to_thread(probe_local_endpoints, 0.8)
-                ep_tbl = Table(title="Local Inference Server Status", border_style="bright_blue")
+                ep_tbl = Table(title="Local Inference Server Status", border_style=self.theme.border_accent)
                 ep_tbl.add_column("Status")
                 ep_tbl.add_column("Server")
                 ep_tbl.add_column("Base URL", style="dim")
@@ -1946,6 +2317,58 @@ class KardashevRichTUI:
             if conn is not None and hasattr(conn, "wait_for_idle"):
                 await asyncio.wait_for(conn.wait_for_idle(), timeout=1.5)
 
+    def _render_tool_record(self, rec: ToolEventRecord, out_list: list[Any]) -> None:
+        """Renders a single tool-call block: 1-line collapsed by default + 1-line tail, or expanded."""
+        th = self.theme
+        line = Text()
+        icon = "✗" if rec.is_error else ("⏺" if rec.completed_at else "⠋")
+        icon_style = (
+            f"bold {th.error}"
+            if rec.is_error
+            else (f"bold {th.accent}" if rec.completed_at else f"bold {th.warning}")
+        )
+        line.append(f"  {icon} ", style=icon_style)
+        line.append(f"{rec.badge}", style=th.tool_badge)
+        line.append(f"({rec.summary})", style="white")
+        if rec.diff_preview:
+            added, removed = compute_diff_stats(rec.diff_preview)
+            if added or removed:
+                line.append(f" +{added}", style=th.success)
+                line.append(f" -{removed}", style=th.error)
+        if rec.duration_ms is not None:
+            line.append(f"  [{rec.duration_ms:.0f}ms]", style=th.muted)
+        if not self.expand_tools and (rec.diff_preview or rec.full_output):
+            line.append("  [Alt+O]", style=th.muted)
+        out_list.append(line)
+
+        if self.expand_tools:
+            body_text = rec.full_output or rec.result_preview
+            if body_text:
+                res_style = th.error if rec.is_error else f"dim {th.success}"
+                for sub_line in body_text.splitlines()[:24]:
+                    res_line = Text()
+                    res_line.append(f"    ⎿  {sub_line}", style=res_style)
+                    out_list.append(res_line)
+            if rec.diff_preview:
+                out_list.append(
+                    Panel(
+                        Syntax(rec.diff_preview, "diff", theme=th.syntax_theme, word_wrap=True),
+                        border_style=th.border_muted,
+                        padding=(0, 1),
+                    )
+                )
+        else:
+            # Collapsed mode: strictly 1-line live output tail
+            if rec.result_preview:
+                single_tail = rec.result_preview.splitlines()[0].strip()
+                max_w = max(32, self.console.width - 10)
+                if len(single_tail) > max_w:
+                    single_tail = single_tail[: max_w - 1] + "…"
+                res_line = Text()
+                res_style = th.error if rec.is_error else f"dim {th.success}"
+                res_line.append(f"    ⎿  {single_tail}", style=res_style)
+                out_list.append(res_line)
+
     async def _run_turn(self, agent: Agent, user_text: str, cfg: Any) -> None:
         import signal as _signal
 
@@ -2009,33 +2432,8 @@ class KardashevRichTUI:
         seen_tool_ids: set[str] = set()
         self.last_ralph_status = None
 
-        def _render_tool_record(rec: ToolEventRecord, out_list: list[Any]) -> None:
-            line = Text()
-            icon = "✗" if rec.is_error else ("⏺" if rec.completed_at else "⠋")
-            icon_style = "bold red" if rec.is_error else ("bold cyan" if rec.completed_at else "bold yellow")
-            line.append(f"  {icon} ", style=icon_style)
-            line.append(f"{rec.badge}", style="bold bright_cyan")
-            line.append(f"({rec.summary})", style="white")
-            if rec.duration_ms is not None:
-                line.append(f"  [{rec.duration_ms:.0f}ms]", style="dim")
-            out_list.append(line)
-
-            if rec.result_preview:
-                res_line = Text()
-                res_style = "red" if rec.is_error else "dim green"
-                res_line.append(f"    ⎿  {rec.result_preview}", style=res_style)
-                out_list.append(res_line)
-
-            if rec.diff_preview:
-                out_list.append(
-                    Panel(
-                        Syntax(rec.diff_preview, "diff", theme="monokai", word_wrap=True),
-                        border_style="dim",
-                        padding=(0, 1),
-                    )
-                )
-
         def _render_live_frame() -> Group:
+            th = self.theme
             renderables: list[Any] = []
             elapsed = time.perf_counter() - t0
 
@@ -2045,9 +2443,9 @@ class KardashevRichTUI:
                 clipped = "\n".join(t_lines[-6:]) if len(t_lines) > 6 else full_thought
                 renderables.append(
                     Panel(
-                        Text(clipped, style="italic dim"),
-                        title=f"[dim]💭 Thinking ({elapsed:.1f}s)[/dim]",
-                        border_style="dim",
+                        Text(clipped, style=f"italic {th.muted}"),
+                        title=f"[{th.muted}]💭 Thinking ({elapsed:.1f}s)[/{th.muted}]",
+                        border_style=th.border_muted,
                         padding=(0, 1),
                     )
                 )
@@ -2067,14 +2465,14 @@ class KardashevRichTUI:
             trailing_text_parts: list[str] = []
             for idx, (kind, payload) in enumerate(timeline):
                 if kind == "tool":
-                    _render_tool_record(payload, renderables)
+                    self._render_tool_record(payload, renderables)
                 elif kind == "text":
                     seg_str = "".join(text_segments[payload][1]).strip()
                     if not seg_str:
                         continue
                     if idx < last_tool_idx:
                         nar = Text()
-                        nar.append("  ⏺ ", style="bold bright_green")
+                        nar.append("  ⏺ ", style=f"bold {th.assistant_border}")
                         nar.append(seg_str, style="white")
                         renderables.append(nar)
                     else:
@@ -2082,28 +2480,67 @@ class KardashevRichTUI:
 
             if self.last_ralph_status:
                 ralph_line = Text()
-                ralph_line.append(f"  🔁 Ralph Verify: {self.last_ralph_status}", style="bold yellow")
+                ralph_line.append(f"  🔁 Ralph Verify: {self.last_ralph_status}", style=f"bold {th.warning}")
                 renderables.append(ralph_line)
 
             if trailing_text_parts:
-                md_text = "\n\n".join(trailing_text_parts)
+                raw_md = "\n\n".join(trailing_text_parts)
+                balanced_md = balance_markdown_fences(raw_md)
                 renderables.append(
                     Panel(
-                        Markdown(md_text),
-                        title="[bold bright_green]✦ Assistant[/bold bright_green]",
-                        border_style="green",
+                        Markdown(balanced_md, code_theme=th.syntax_theme),
+                        title=f"[bold {th.assistant_border}]✦ Assistant[/bold {th.assistant_border}]",
+                        border_style=th.assistant_border,
                         padding=(0, 1),
                     )
                 )
-            elif not renderables:
-                spinner_line = Text()
-                spinner_line.append("  ⠋ ", style="bold cyan")
-                spinner_line.append(f"Processing on {self._active_model_summary(cfg)[0]} ({elapsed:.1f}s)...", style="dim")
-                renderables.append(spinner_line)
+
+            todo_panel = self.todos.render(th)
+            if todo_panel is not None:
+                renderables.append(todo_panel)
+
+            if self.show_help_footer:
+                renderables.append(build_help_footer(th))
+
+            # Single status row: activity, model, tokens + gauge, badges, elapsed (styled via theme tokens).
+            model_label, _backend, ctx_limit = self._active_model_summary(cfg)
+            streamed_chars = sum(len(p) for _, parts in text_segments for p in parts) + sum(
+                len(p) for p in thought_buf
+            )
+            turn_est = streamed_chars // 4
+            session_tokens = self.total_prompt_tokens + self.total_output_tokens
+            running = [r.badge for r in self._active_turn_tools if r.completed_at is None]
+            activity = current_activity(
+                running,
+                thinking=bool(thought_buf) and not trailing_text_parts,
+                writing=bool(trailing_text_parts),
+            )
+            extra_badges: list[tuple[str, str]] = []
+            todo_badge = self.todos.summary_badge()
+            if todo_badge:
+                extra_badges.append((todo_badge, th.accent_secondary))
+            if self.expand_tools:
+                extra_badges.append(("expanded", th.muted))
+
+            frames = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+            renderables.append(
+                format_activity_line(
+                    model_label,
+                    session_tokens,
+                    turn_est,
+                    ctx_limit,
+                    elapsed,
+                    activity,
+                    render_context_gauge(session_tokens + turn_est, ctx_limit),
+                    spinner=frames[int(elapsed * 10) % len(frames)],
+                    theme=th,
+                    extra_badges=extra_badges,
+                )
+            )
 
             queued_line = self.input_queue.display_line(self.console.width)
             if queued_line:
-                renderables.append(Text(f"  ⏎ {queued_line}", style="dim"))
+                renderables.append(Text(f"  ⏎ {queued_line}", style=th.muted))
 
             return Group(*renderables)
 
@@ -2124,10 +2561,13 @@ class KardashevRichTUI:
         cancelled_by_user = False
 
         async def _consume_steps(live_obj: Live) -> None:
+            last_frame_ts = 0.0
+            min_frame_interval = 0.033  # ~30fps coalescing to prevent chunk-by-chunk flicker
             async for step in agent.conversation.receive_steps():
                 is_model = step.source == types.StepSource.MODEL
                 is_target_user = step.target == types.StepTarget.USER
                 step_id = str(getattr(step, "id", "") or "step")
+                force_frame_refresh = False
 
                 if is_model and step.thinking_delta:
                     thought_buf.append(step.thinking_delta)
@@ -2144,15 +2584,26 @@ class KardashevRichTUI:
                         seg_idx = len(text_segments)
                         text_segments.append((step_id, [step.content_delta]))
                         timeline.append(("text", seg_idx))
+                    # Auto-ingest any complete markdown checklist lines in the current segment
+                    seg_full = "".join(text_segments[-1][1])
+                    if (
+                        "\n" in step.content_delta or getattr(step, "is_complete_response", False)
+                    ) and self.todos.ingest_from_text(seg_full):
+                        force_frame_refresh = True
                 elif step.is_complete_response and step.content and not text_segments:
                     text_segments.append((step_id, [step.content]))
                     timeline.append(("text", 0))
+                    self.todos.ingest_from_text(step.content)
+                    force_frame_refresh = True
 
                 if step.tool_calls:
+                    force_frame_refresh = True
                     for tc in step.tool_calls:
                         tc_step_id = getattr(tc, "step_id", None) or step_id
                         tc_key = tc.id or tc_step_id or f"{tc.name}:{tc.args}"
                         badge, summary, diff_preview = format_tool_badge(tc)
+                        if isinstance(tc.args, dict):
+                            self.todos.ingest_from_tool_call(str(tc.name), tc.args)
 
                         existing_rec: ToolEventRecord | None = None
                         for cand in self._active_turn_tools:
@@ -2198,9 +2649,28 @@ class KardashevRichTUI:
                                 rec.result_preview = step_prev
                                 rec.is_error = step_err
 
-                live_obj.update(_render_live_frame())
+                now = time.perf_counter()
+                if (
+                    force_frame_refresh
+                    or getattr(step, "is_complete_response", False)
+                    or getattr(step, "status", None) in (types.StepStatus.DONE, types.StepStatus.ERROR)
+                    or (now - last_frame_ts) >= min_frame_interval
+                ):
+                    live_obj.update(_render_live_frame())
+                    last_frame_ts = now
 
-        with Live(_render_live_frame(), console=self.console, refresh_per_second=12, transient=False) as live:
+            # Final frame flush after stream ends
+            for _, chunks in text_segments:
+                self.todos.ingest_from_text("".join(chunks))
+            live_obj.update(_render_live_frame())
+
+        with Live(
+            _render_live_frame(),
+            console=self.console,
+            refresh_per_second=15,
+            transient=False,
+            vertical_overflow="ellipsis",
+        ) as live:
             consume_task = asyncio.create_task(_consume_steps(live))
             sigint_installed = False
 
@@ -2210,7 +2680,7 @@ class KardashevRichTUI:
                 if not consume_task.done():
                     consume_task.cancel()
 
-            with contextlib.suppress( NotImplementedError, ValueError, RuntimeError):
+            with contextlib.suppress(NotImplementedError, ValueError, RuntimeError):
                 loop.add_signal_handler(_signal.SIGINT, _on_turn_sigint)
                 sigint_installed = True
 
@@ -2220,6 +2690,7 @@ class KardashevRichTUI:
                 candidate = TerminalTypeAhead(
                     self.input_queue,
                     on_change=lambda: live.update(_render_live_frame()),
+                    on_interrupt=_on_turn_sigint,
                 )
                 if candidate.start(loop):
                     self.type_ahead = candidate
@@ -2263,7 +2734,7 @@ class KardashevRichTUI:
                 live.update(_render_live_frame())
                 live.stop()
                 await self._cancel_and_settle_turn(agent)
-                self.console.print("\n  [yellow]⚡ Turn cancelled by user (Ctrl+C).[/yellow]\n")
+                self.console.print("\n  [yellow]⚡ Turn cancelled by user (Ctrl+C / Esc).[/yellow]\n")
                 return
 
         dt = max(0.001, time.perf_counter() - t0)
@@ -2316,13 +2787,16 @@ class KardashevRichTUI:
         tot_ctx = self.total_prompt_tokens + self.total_output_tokens
         pct = min(100.0, (tot_ctx / max(1, ctx_limit)) * 100.0)
         footer = Text()
-        footer.append(f"  ⏱ {dt:.2f}s", style="dim")
+        footer.append(f"  ⏱ {dt:.2f}s", style=self.theme.muted)
         if tok_per_s > 0:
-            footer.append(f" · ⚡ {tok_per_s:.1f} tok/s", style="dim cyan")
-        footer.append(f" · 📊 ~{out_tok:,} out tok", style="dim")
+            footer.append(f" · ⚡ {tok_per_s:.1f} tok/s", style=f"dim {self.theme.accent}")
+        footer.append(f" · 📊 ~{out_tok:,} out tok", style=self.theme.muted)
         if self._active_turn_tools:
-            footer.append(f" · 🛠 {len(self._active_turn_tools)} tool(s)", style="dim yellow")
-        footer.append(f" · ctx {tot_ctx:,}/{ctx_limit:,} ({pct:.1f}%)", style="dim")
+            footer.append(f" · 🛠 {len(self._active_turn_tools)} tool(s)", style=f"dim {self.theme.warning}")
+        todo_badge = self.todos.summary_badge()
+        if todo_badge:
+            footer.append(f" · ☑ {todo_badge}", style=f"dim {self.theme.accent_secondary}")
+        footer.append(f" · ctx {tot_ctx:,}/{ctx_limit:,} ({pct:.1f}%)", style=self.theme.muted)
         if self.compaction_notifications:
             footer.append(f" · 🗜 {self.compaction_notifications} compacted", style="dim magenta")
         self.console.print(footer)
@@ -2331,9 +2805,23 @@ class KardashevRichTUI:
     def _build_key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
+        @kb.add("escape", "enter")
+        def _insert_newline(event: Any) -> None:
+            event.current_buffer.insert_text("\n")
+
         @kb.add("escape", "t")
         def _toggle_thoughts(event: Any) -> None:
             self.show_thoughts = not self.show_thoughts
+            event.app.invalidate()
+
+        @kb.add("escape", "o")
+        def _toggle_expand_tools(event: Any) -> None:
+            self.expand_tools = not self.expand_tools
+            event.app.invalidate()
+
+        @kb.add("escape", "d")
+        def _toggle_todos_collapse(event: Any) -> None:
+            self.todos.toggle_collapsed()
             event.app.invalidate()
 
         @kb.add("escape", "p")
@@ -2346,6 +2834,12 @@ class KardashevRichTUI:
             )
             nxt = order[(order.index(cur) + 1) % len(order)]
             self.options.policy_mode = nxt
+            event.app.invalidate()
+
+        @kb.add("f1")
+        @kb.add("escape", "h")
+        def _toggle_help_footer(event: Any) -> None:
+            self.show_help_footer = not self.show_help_footer
             event.app.invalidate()
 
         return kb
@@ -2361,9 +2855,9 @@ class KardashevRichTUI:
 
         pt_style = PtStyle.from_dict(
             {
-                "prompt": "ansibrightcyan bold",
-                "model_tag": "ansibrightblack",
-                "bottom-toolbar": "bg:#1a1b26 #a9b1d6",
+                "prompt": self.theme.prompt_symbol,
+                "model_tag": self.theme.model_tag,
+                "bottom-toolbar": f"bg:{self.theme.toolbar_bg} {self.theme.toolbar_fg}",
             }
         )
         prompt_session: PromptSession[str] | None = None
@@ -2431,11 +2925,14 @@ class KardashevRichTUI:
                             tot_ctx = self.total_prompt_tokens + self.total_output_tokens
                             ctx_pct = min(100.0, (tot_ctx / max(1, ctx_limit)) * 100.0)
                             thoughts_flag = "on" if self.show_thoughts else "off"
+                            tools_flag = "exp" if self.expand_tools else "1L"
+                            todo_badge = self.todos.summary_badge()
+                            todo_flag = f" | {todo_badge}" if todo_badge else ""
                             ralph_flag = f" | ralph:{self.ralph_verify_cmd}" if self.ralph_verify_cmd else ""
                             toolbar_html = HTML(
                                 f" <b>{model_label}</b> | policy:<b>{pol}</b> | ctx:<b>{ctx_pct:.0f}%</b> | "
-                                f"thoughts:<b>{thoughts_flag}</b>{git_info}{ralph_flag} | "
-                                f"<b>/help</b> · <b>@file:1-20</b> · <b>@git:diff</b> · <b>!cmd</b> · <b>Alt+T</b>/<b>Alt+P</b> "
+                                f"thoughts:<b>{thoughts_flag}</b> | tools:<b>{tools_flag}</b>{todo_flag}{git_info}{ralph_flag} | "
+                                f"<b>/help</b> · <b>/resume</b> · <b>/todos</b> · <b>Alt+T/O/D/P</b> · <b>F1</b> "
                             )
                             prompt_html = HTML(f"<model_tag>[{model_label}]</model_tag> <prompt>❯ </prompt>")
 

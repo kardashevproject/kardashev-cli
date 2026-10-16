@@ -39,6 +39,7 @@ class TypeAheadBuffer:
         self._queued: deque[str] = deque()
         # Escape-sequence parser state: None, "esc" (just saw ESC), "csi" (inside CSI/SS3).
         self._esc_state: str | None = None
+        self.interrupt_requested: bool = False
 
     # -- feeding ---------------------------------------------------------
     def feed(self, text: str) -> bool:
@@ -46,6 +47,11 @@ class TypeAheadBuffer:
         changed = False
         for ch in text:
             if self._esc_state == "esc":
+                if ch == _ESC:
+                    self._esc_state = None
+                    self.interrupt_requested = True
+                    changed = True
+                    continue
                 # ESC followed by [ or O opens a sequence; anything else is a lone Alt-chord.
                 self._esc_state = "csi" if ch in ("[", "O") else None
                 continue
@@ -56,6 +62,10 @@ class TypeAheadBuffer:
                 continue
             if ch == _ESC:
                 self._esc_state = "esc"
+                continue
+            if ch == "\x03":  # Ctrl+C byte when ISIG is bypassed
+                self.interrupt_requested = True
+                changed = True
                 continue
             if ch in ("\r", "\n"):
                 line = self.draft.strip()
@@ -115,6 +125,12 @@ class TypeAheadBuffer:
         self._queued.clear()
         self.draft = ""
         self._esc_state = None
+        self.interrupt_requested = False
+
+    def consume_interrupt(self) -> bool:
+        """Return and clear the pending Esc/Ctrl+C interrupt flag."""
+        was_set, self.interrupt_requested = self.interrupt_requested, False
+        return was_set
 
     # -- display ---------------------------------------------------------
     def display_line(self, width: int = 80) -> str:
@@ -139,10 +155,12 @@ class TerminalTypeAhead:
         buffer: TypeAheadBuffer,
         fd: int | None = None,
         on_change: Callable[[], None] | None = None,
+        on_interrupt: Callable[[], None] | None = None,
     ) -> None:
         self.buffer = buffer
         self.fd = sys.stdin.fileno() if fd is None else fd
         self.on_change = on_change
+        self.on_interrupt = on_interrupt
         self._loop: asyncio.AbstractEventLoop | None = None
         self._saved_attrs: list | None = None
         self._active = False  # user intends capture on (start called, stop not yet)
@@ -239,7 +257,11 @@ class TerminalTypeAhead:
 
     def _ingest(self, data: bytes) -> None:
         text = self._decoder.decode(data)
-        if self.buffer.feed(text) and self.on_change is not None:
+        changed = self.buffer.feed(text)
+        if self.buffer.consume_interrupt() and self.on_interrupt is not None:
+            with contextlib.suppress(Exception):
+                self.on_interrupt()
+        if changed and self.on_change is not None:
             with contextlib.suppress(Exception):
                 self.on_change()
 

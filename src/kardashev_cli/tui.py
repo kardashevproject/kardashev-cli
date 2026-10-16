@@ -70,6 +70,9 @@ from kardashev_cli.updater import UserConfig, check_for_updates, perform_self_up
 _NOISY_STDERR_SUBSTRINGS: tuple[str, ...] = (
     "maxDynamicUniformBuffersPerPipelineLayout artificially reduced",
     "maxDynamicStorageBuffersPerPipelineLayout artificially reduced",
+    "logging before google.Init",
+    "auth_store.go:",
+    "enable_sandbox=True but the OS sandbox is unavailable",
 )
 
 
@@ -159,6 +162,7 @@ class ToolEventRecord:
     badge: str
     summary: str
     diff_preview: str | None = None
+    step_id: str | None = None
     started_at: float = field(default_factory=time.perf_counter)
     completed_at: float | None = None
     result_preview: str | None = None
@@ -269,65 +273,226 @@ def restore_git_checkpoint(workspace: str, checkpoint: WorkspaceCheckpoint) -> b
         return False
 
 
+def _format_proto_diff_block(diff_block: Any, path: str = "") -> str | None:
+    """Formats a `localharness_pb2.StepUpdate.EditFile.DiffBlock` dict into a unified diff string."""
+    if not isinstance(diff_block, dict):
+        return None
+    raw_lines = diff_block.get("lines")
+    if not isinstance(raw_lines, list) or not raw_lines:
+        return None
+    start_ln = diff_block.get("start_line", 1)
+    end_ln = diff_block.get("end_line", start_ln)
+    fname = os.path.basename(path) or path or "file"
+    out = [f"--- a/{fname}", f"+++ b/{fname}", f"@@ -{start_ln},{max(1, end_ln - start_ln + 1)} @@"]
+    for item in raw_lines[:28]:
+        if not isinstance(item, dict):
+            continue
+        txt = str(item.get("text", "")).rstrip("\r\n")
+        action = str(item.get("action", ""))
+        if action in ("LINE_ACTION_INSERT", "1"):
+            out.append(f"+{txt}")
+        elif action in ("LINE_ACTION_DELETE", "2"):
+            out.append(f"-{txt}")
+        else:
+            out.append(f" {txt}")
+    if len(raw_lines) > 28:
+        out.append(f"... ({len(raw_lines) - 28} more diff lines)")
+    return "\n".join(out)
+
+
 def format_tool_badge(call: types.ToolCall) -> tuple[str, str, str | None]:
     """Formats a ToolCall into `(badge_label, summary_arg, diff_preview)` in Claude Code / Codex style."""
     name = str(call.name)
+    lower = name.lower()
     args = call.args or {}
+    canon = getattr(call, "canonical_path", None) or ""
 
-    if name in ("run_command", "BuiltinTools.RUN_COMMAND"):
-        cmd = str(args.get("CommandLine", "")).strip()
-        cwd = str(args.get("Cwd", ""))
-        short_cmd = cmd if len(cmd) <= 88 else cmd[:85] + "..."
-        sub = f"{short_cmd}  (in {os.path.basename(cwd) or cwd})" if cwd else short_cmd
+    if name in ("run_command", "BuiltinTools.RUN_COMMAND") or lower in ("run_command", "bash"):
+        cmd = str(
+            args.get("CommandLine")
+            or args.get("command_line")
+            or args.get("command")
+            or args.get("cmd")
+            or ""
+        ).strip()
+        # Collapse multi-line command to single line for clean badge display
+        cmd_single = " ".join(ln.strip() for ln in cmd.splitlines() if ln.strip())
+        cwd = str(args.get("Cwd") or args.get("working_dir") or args.get("cwd") or "").strip()
+        short_cmd = cmd_single if len(cmd_single) <= 88 else cmd_single[:85] + "..."
+        sub = f"{short_cmd}  (in {os.path.basename(cwd) or cwd})" if (cwd and short_cmd) else short_cmd
         return ("Bash", sub, None)
 
-    if name in ("view_file", "BuiltinTools.VIEW_FILE"):
-        path = str(args.get("AbsolutePath", ""))
-        start = args.get("StartLine")
-        end = args.get("EndLine")
-        loc = f":{start}-{end}" if start or end else ""
-        return ("Read", f"{path}{loc}", None)
-
-    if name in ("replace_file_content", "BuiltinTools.REPLACE_FILE_CONTENT"):
-        path = str(args.get("TargetFile", ""))
-        old = str(args.get("TargetContent", ""))
-        new = str(args.get("ReplacementContent", ""))
-        diff_lines = list(
-            difflib.unified_diff(
-                old.splitlines(),
-                new.splitlines(),
-                fromfile=f"a/{os.path.basename(path)}",
-                tofile=f"b/{os.path.basename(path)}",
-                lineterm="",
-                n=2,
-            )
+    if name in ("view_file", "BuiltinTools.VIEW_FILE") or lower in ("view_file", "read"):
+        path = str(
+            args.get("AbsolutePath")
+            or args.get("file_path")
+            or args.get("path")
+            or canon
+            or ""
         )
-        diff_text = "\n".join(diff_lines[:28])
-        if len(diff_lines) > 28:
-            diff_text += f"\n... ({len(diff_lines) - 28} more diff lines)"
+        start = args.get("StartLine") or args.get("start_line")
+        end = args.get("EndLine") or args.get("end_line")
+        loc = f":{start}-{end}" if (start or end) else ""
+        return ("Read", f"{path}{loc}" if path else "", None)
+
+    if name in (
+        "replace_file_content",
+        "edit_file",
+        "BuiltinTools.REPLACE_FILE_CONTENT",
+        "BuiltinTools.EDIT_FILE",
+    ) or lower in ("replace_file_content", "edit_file", "edit"):
+        path = str(
+            args.get("TargetFile")
+            or args.get("file_path")
+            or args.get("path")
+            or canon
+            or ""
+        )
+        diff_text: str | None = None
+        if "diff_block" in args:
+            diff_text = _format_proto_diff_block(args.get("diff_block"), path=path)
+        else:
+            old = str(args.get("TargetContent") or args.get("old_string") or "")
+            new = str(args.get("ReplacementContent") or args.get("new_string") or "")
+            if old or new:
+                diff_lines = list(
+                    difflib.unified_diff(
+                        old.splitlines(),
+                        new.splitlines(),
+                        fromfile=f"a/{os.path.basename(path) or 'file'}",
+                        tofile=f"b/{os.path.basename(path) or 'file'}",
+                        lineterm="",
+                        n=2,
+                    )
+                )
+                diff_text = "\n".join(diff_lines[:28])
+                if len(diff_lines) > 28:
+                    diff_text += f"\n... ({len(diff_lines) - 28} more diff lines)"
         return ("Edit", path, diff_text or None)
 
-    if name in ("write_to_file", "BuiltinTools.WRITE_TO_FILE"):
-        path = str(args.get("TargetFile", ""))
-        content = str(args.get("CodeContent", ""))
+    if name in (
+        "write_to_file",
+        "create_file",
+        "BuiltinTools.WRITE_TO_FILE",
+        "BuiltinTools.CREATE_FILE",
+    ) or lower in ("write_to_file", "create_file", "write"):
+        path = str(
+            args.get("TargetFile")
+            or args.get("file_path")
+            or args.get("path")
+            or canon
+            or ""
+        )
+        content = str(
+            args.get("CodeContent")
+            or args.get("contents")
+            or args.get("content")
+            or ""
+        )
         line_count = len(content.splitlines())
         preview_lines = [f"+ {ln}" for ln in content.splitlines()[:12]]
         if line_count > 12:
             preview_lines.append(f"... (+{line_count - 12} more lines)")
-        return ("Write", f"{path} ({line_count} lines)", "\n".join(preview_lines) or None)
+        sub = f"{path} ({line_count} lines)" if (path and line_count) else path
+        return ("Write", sub, "\n".join(preview_lines) or None)
 
-    if name in ("list_dir", "BuiltinTools.LIST_DIR"):
-        path = str(args.get("DirectoryPath", args.get("Path", ".")))
+    if name in ("list_dir", "list_directory", "BuiltinTools.LIST_DIR") or lower in (
+        "list_dir",
+        "list_directory",
+        "list",
+    ):
+        path = str(
+            args.get("DirectoryPath")
+            or args.get("directory_path")
+            or args.get("Path")
+            or args.get("path")
+            or canon
+            or "."
+        )
         return ("ListDir", path, None)
 
-    if name in ("grep_search", "grep", "BuiltinTools.GREP"):
-        query = str(args.get("Query", args.get("Pattern", "")))
-        search_path = str(args.get("SearchPath", "."))
-        return ("Grep", f"'{query}' in {search_path}", None)
+    if name in ("find_file", "find_by_name", "BuiltinTools.FIND_FILE") or lower in (
+        "find_file",
+        "find_by_name",
+        "find",
+    ):
+        pattern = str(
+            args.get("Pattern")
+            or args.get("pattern")
+            or args.get("query")
+            or args.get("Query")
+            or ""
+        )
+        dpath = str(
+            args.get("SearchDirectory")
+            or args.get("directory_path")
+            or args.get("DirectoryPath")
+            or args.get("path")
+            or canon
+            or ""
+        )
+        sub = f"'{pattern}' in {dpath}" if (pattern and dpath) else (pattern or dpath)
+        return ("Find", sub, None)
 
-    # Generic / MCP tool call
-    compact_args = ", ".join(f"{k}={repr(v)[:40]}" for k, v in list(args.items())[:3])
-    return (name, compact_args, None)
+    if name in (
+        "grep_search",
+        "search_dir",
+        "search_directory",
+        "grep",
+        "BuiltinTools.GREP",
+        "BuiltinTools.SEARCH_DIR",
+    ) or lower in ("grep_search", "search_dir", "search_directory", "grep", "search"):
+        query = str(
+            args.get("Query")
+            or args.get("query")
+            or args.get("Pattern")
+            or args.get("pattern")
+            or ""
+        )
+        search_path = str(
+            args.get("SearchPath")
+            or args.get("directory_path")
+            or args.get("DirectoryPath")
+            or args.get("path")
+            or canon
+            or "."
+        )
+        return ("Grep", f"'{query}' in {search_path}" if query else search_path, None)
+
+    if lower in ("search_web", "web_search"):
+        query = str(args.get("query") or args.get("Query") or "")
+        return ("WebSearch", query, None)
+
+    if lower in ("read_url_content", "read_url"):
+        url = str(args.get("url") or args.get("Url") or "")
+        return ("ReadURL", url, None)
+
+    # Generic / MCP tool call (exclude output/result fields injected on StepUpdate)
+    _skip_keys = {
+        "combined_output",
+        "exit_code",
+        "output",
+        "results",
+        "num_results",
+        "diff_block",
+        "contents",
+    }
+    filtered_items = [(k, v) for k, v in args.items() if k not in _skip_keys and v not in ("", None)]
+    compact_args = ", ".join(f"{k}={repr(v)[:40]}" for k, v in filtered_items[:3])
+    badge_name = f"{call.server_name}:{name}" if getattr(call, "server_name", None) else name
+    return (badge_name, compact_args, None)
+
+
+def _summarize_raw_text_output(raw: str) -> str:
+    cleaned = raw.strip()
+    if not cleaned:
+        return "✓ completed"
+    lines = [ln.strip() for ln in cleaned.splitlines() if ln.strip()]
+    line_count = len(cleaned.splitlines())
+    first_line = lines[0][:84] if lines else "done"
+    if line_count > 1:
+        return f"✓ {first_line} (+{line_count - 1} lines)"
+    return f"✓ {first_line}"
 
 
 def summarize_tool_result(tool_result: types.ToolResult) -> tuple[str, bool]:
@@ -335,15 +500,54 @@ def summarize_tool_result(tool_result: types.ToolResult) -> tuple[str, bool]:
     if tool_result.error or tool_result.exception:
         err_text = str(tool_result.error or tool_result.exception).strip().splitlines()[0]
         return (f"✗ {err_text[:96]}", True)
-    raw = str(tool_result.result or "").strip()
-    if not raw:
+    res = tool_result.result
+    if res is None:
         return ("✓ completed", False)
-    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
-    line_count = len(raw.splitlines())
-    first_line = lines[0][:84] if lines else "done"
-    if line_count > 1:
-        return (f"✓ {first_line} (+{line_count - 1} lines)", False)
-    return (f"✓ {first_line}", False)
+    if hasattr(res, "output") and isinstance(getattr(res, "output", None), str):
+        return (_summarize_raw_text_output(res.output), False)
+    if hasattr(res, "entries") and isinstance(getattr(res, "entries", None), list):
+        entries = res.entries
+        names = [getattr(e, "name", "") for e in entries[:4] if getattr(e, "name", "")]
+        preview = ", ".join(names)
+        suffix = f" (+{len(entries) - 4} more)" if len(entries) > 4 else ""
+        return (f"✓ {len(entries)} item(s): {preview}{suffix}" if entries else "✓ empty directory", False)
+    if hasattr(res, "num_results") and getattr(res, "num_results", None) is not None:
+        return (f"✓ {res.num_results} match(es)", False)
+    if hasattr(res, "summary") and isinstance(getattr(res, "summary", None), str) and res.summary.strip():
+        return (_summarize_raw_text_output(res.summary), False)
+    if hasattr(res, "text") and isinstance(getattr(res, "text", None), str):
+        return (_summarize_raw_text_output(res.text), False)
+    return (_summarize_raw_text_output(str(res)), False)
+
+
+def extract_step_tool_result_preview(
+    call: types.ToolCall, step: Any
+) -> tuple[str | None, bool]:
+    """Extracts a completion preview directly from a DONE/ERROR `StepUpdate` when available."""
+    status = getattr(step, "status", None)
+    err_msg = getattr(step, "error", "") or ""
+    if status == types.StepStatus.ERROR or err_msg:
+        first_err = str(err_msg or "tool execution failed").strip().splitlines()[0][:96]
+        return (f"✗ {first_err}", True)
+    if status != types.StepStatus.DONE:
+        return (None, False)
+
+    args = call.args or {}
+    if "combined_output" in args or "exit_code" in args:
+        exit_code = args.get("exit_code", 0)
+        out = str(args.get("combined_output") or "").strip()
+        if exit_code not in (0, None, "0"):
+            first = out.splitlines()[0][:80] if out else f"exit code {exit_code}"
+            return (f"✗ exit {exit_code}: {first}", True)
+        return (_summarize_raw_text_output(out), False)
+    if "output" in args and isinstance(args["output"], str):
+        return (_summarize_raw_text_output(args["output"]), False)
+    if "results" in args and isinstance(args["results"], list):
+        cnt = len(args["results"])
+        return (f"✓ {cnt} item(s)", False)
+    if "num_results" in args and args["num_results"] is not None:
+        return (f"✓ {args['num_results']} match(es)", False)
+    return ("✓ completed", False)
 
 
 def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list[str]]:
@@ -673,25 +877,56 @@ class KardashevRichTUI:
         self.transcripts: list[TurnTranscript] = []
         self._active_turn_tools: list[ToolEventRecord] = []
         self._restart_requested = False
+        self._needs_harness_reconnect = False
+        self._pending_retry_prompt: str | None = None
+        self._synced_transcript_count = 0
+        self._initial_banner_shown = False
 
     def record_tool_result(self, result: types.ToolResult) -> None:
-        """Matches a `PostToolCallHook` result to the most recent in-flight `ToolEventRecord`."""
+        """Matches a `PostToolCallHook` result to the corresponding in-flight `ToolEventRecord`."""
         summary, is_err = summarize_tool_result(result)
         now = time.perf_counter()
-        for rec in reversed(self._active_turn_tools):
-            if (result.id and rec.call_id == result.id) or (
-                rec.completed_at is None and rec.name == str(result.name)
-            ):
+        step_id = getattr(result, "step_id", None)
+        call_id = getattr(result, "id", None)
+
+        # 1. Exact match by step_id (canonical across StepUpdate and HookRouter)
+        if step_id:
+            for rec in self._active_turn_tools:
+                if rec.step_id == step_id or rec.call_id == step_id:
+                    rec.completed_at = now
+                    rec.result_preview = summary
+                    rec.is_error = is_err
+                    return
+
+        # 2. Exact match by call_id
+        if call_id:
+            for rec in self._active_turn_tools:
+                if rec.call_id == call_id:
+                    rec.completed_at = now
+                    rec.result_preview = summary
+                    rec.is_error = is_err
+                    return
+
+        # 3. FIFO match to oldest uncompleted tool with the same name
+        for rec in self._active_turn_tools:
+            if rec.completed_at is None and rec.name == str(result.name):
+                if step_id and not rec.step_id:
+                    rec.step_id = step_id
                 rec.completed_at = now
                 rec.result_preview = summary
                 rec.is_error = is_err
                 return
-        # Fallback if no matching call_id was seen yet
+
+        # 4. Fallback when PostToolCallHook fires slightly before StepUpdate arrives on WS
+        badge, _, _ = format_tool_badge(
+            types.ToolCall(name=str(result.name), args={}, id=call_id or step_id)
+        )
         self._active_turn_tools.append(
             ToolEventRecord(
-                call_id=result.id or str(result.name),
+                call_id=step_id or call_id or str(result.name),
+                step_id=step_id,
                 name=str(result.name),
-                badge=str(result.name),
+                badge=badge,
                 summary="",
                 completed_at=now,
                 result_preview=summary,
@@ -782,11 +1017,37 @@ class KardashevRichTUI:
             padding=(0, 1),
         )
 
+    @staticmethod
+    def _is_dead_connection_error(exc: BaseException, agent: Any = None) -> bool:
+        """Detects whether the localharness process or WebSocket died so the TUI can auto-reconnect."""
+        msg = str(exc).lower()
+        for pat in (
+            "ws close code",
+            "no close frame received or sent",
+            "harness process exited",
+            "connectionclosed",
+            "websocket",
+            "broken pipe",
+        ):
+            if pat in msg:
+                return True
+        with contextlib.suppress(Exception):
+            conn = getattr(getattr(agent, "conversation", None), "_connection", None)
+            proc = getattr(conn, "_process", None)
+            if proc is not None and proc.poll() is not None:
+                return True
+        return False
+
     def _render_connection_error(self, exc: Exception, cfg: Any) -> None:
         """Renders a diagnostic panel when a local/remote inference endpoint fails without crashing the TUI."""
         model_label, backend_label, _ = self._active_model_summary(cfg)
         base_url = str(getattr(cfg, "base_url", "http://127.0.0.1:8000/v1"))
-        err_str = str(exc)
+        cleaned_lines = [
+            ln
+            for ln in str(exc).splitlines()
+            if not any(noisy in ln for noisy in _NOISY_STDERR_SUBSTRINGS)
+        ]
+        err_str = "\n".join(cleaned_lines).strip() or str(exc)
         is_conn_refused = "connection refused" in err_str.lower() or "failed to send http request" in err_str.lower()
 
         if is_conn_refused:
@@ -1638,7 +1899,43 @@ class KardashevRichTUI:
         self.console.print(f"[yellow]Unknown command '{cmd}'. Type /help for available commands.[/yellow]")
         return False
 
+    def _build_prior_turns_context(self) -> str:
+        """Builds a compact continuity summary of unsynced turns after a `/model` switch or harness reconnect."""
+        if not self.transcripts or len(self.transcripts) <= self._synced_transcript_count:
+            return ""
+        recent = self.transcripts[-6:]
+        lines = [
+            "<prior_conversation_history>",
+            "The user continued this session across a model switch or harness reconnect. Recent turns in this session:",
+        ]
+        for tr in recent:
+            u_text = tr.user_prompt.strip()
+            if len(u_text) > 400:
+                u_text = u_text[:400] + "..."
+            a_text = tr.assistant_response.strip()
+            if len(a_text) > 800:
+                a_text = a_text[:800] + "..."
+            tool_badges = ", ".join(f"{t['badge']}({t['summary'][:40]})" for t in tr.tools[:6])
+            lines.append(f"- Turn {tr.turn_index} User: {u_text}")
+            if tool_badges:
+                lines.append(f"  Tools run: {tool_badges}")
+            if a_text:
+                lines.append(f"  Assistant: {a_text}")
+        lines.append("</prior_conversation_history>")
+        return "\n".join(lines)
+
+    async def _cancel_and_settle_turn(self, agent: Agent) -> None:
+        """Cancels the active turn on the harness and waits briefly for the connection to return to idle."""
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(agent.conversation.cancel(), timeout=1.5)
+        with contextlib.suppress(Exception):
+            conn = getattr(getattr(agent, "conversation", None), "_connection", None)
+            if conn is not None and hasattr(conn, "wait_for_idle"):
+                await asyncio.wait_for(conn.wait_for_idle(), timeout=1.5)
+
     async def _run_turn(self, agent: Agent, user_text: str, cfg: Any) -> None:
+        import signal as _signal
+
         from kardashev_cli.harness_hooks import reset_turn_tool_signatures
 
         reset_turn_tool_signatures()
@@ -1648,6 +1945,11 @@ class KardashevRichTUI:
             self.console.print(
                 f"  [dim]📎 Attached {', '.join(f'[cyan]{f}[/cyan]' for f in attached)}[/dim]"
             )
+
+        # Inject continuity context if we switched models or reconnected the harness mid-session
+        prior_ctx = self._build_prior_turns_context()
+        if prior_ctx:
+            augmented_prompt = f"{prior_ctx}\n\n{augmented_prompt}"
 
         # On Turn 0, prepend query-matched OpenCommons Dual Concept Cards + AST Repo-Map + surgical slices
         if self.options.enable_opencommons and self.session_turns == 0:
@@ -1688,10 +1990,37 @@ class KardashevRichTUI:
 
         t0 = time.perf_counter()
         thought_buf: list[str] = []
-        text_buf: list[str] = []
+        text_segments: list[tuple[str, list[str]]] = []
+        timeline: list[tuple[str, Any]] = []
         self._active_turn_tools = []
         seen_tool_ids: set[str] = set()
         self.last_ralph_status = None
+
+        def _render_tool_record(rec: ToolEventRecord, out_list: list[Any]) -> None:
+            line = Text()
+            icon = "✗" if rec.is_error else ("⏺" if rec.completed_at else "⠋")
+            icon_style = "bold red" if rec.is_error else ("bold cyan" if rec.completed_at else "bold yellow")
+            line.append(f"  {icon} ", style=icon_style)
+            line.append(f"{rec.badge}", style="bold bright_cyan")
+            line.append(f"({rec.summary})", style="white")
+            if rec.duration_ms is not None:
+                line.append(f"  [{rec.duration_ms:.0f}ms]", style="dim")
+            out_list.append(line)
+
+            if rec.result_preview:
+                res_line = Text()
+                res_style = "red" if rec.is_error else "dim green"
+                res_line.append(f"    ⎿  {rec.result_preview}", style=res_style)
+                out_list.append(res_line)
+
+            if rec.diff_preview:
+                out_list.append(
+                    Panel(
+                        Syntax(rec.diff_preview, "diff", theme="monokai", word_wrap=True),
+                        border_style="dim",
+                        padding=(0, 1),
+                    )
+                )
 
         def _render_live_frame() -> Group:
             renderables: list[Any] = []
@@ -1710,39 +2039,41 @@ class KardashevRichTUI:
                     )
                 )
 
+            # Ensure any ToolEventRecord created early by PostToolCallHook is in timeline
+            timeline_tools = {id(payload) for kind, payload in timeline if kind == "tool"}
             for rec in self._active_turn_tools:
-                line = Text()
-                icon = "✗" if rec.is_error else ("⏺" if rec.completed_at else "⠋")
-                icon_style = "bold red" if rec.is_error else ("bold cyan" if rec.completed_at else "bold yellow")
-                line.append(f"  {icon} ", style=icon_style)
-                line.append(f"{rec.badge}", style="bold bright_cyan")
-                line.append(f"({rec.summary})", style="white")
-                if rec.duration_ms is not None:
-                    line.append(f"  [{rec.duration_ms:.0f}ms]", style="dim")
-                renderables.append(line)
+                if id(rec) not in timeline_tools:
+                    timeline.append(("tool", rec))
+                    timeline_tools.add(id(rec))
 
-                if rec.result_preview:
-                    res_line = Text()
-                    res_style = "red" if rec.is_error else "dim green"
-                    res_line.append(f"    ⎿  {rec.result_preview}", style=res_style)
-                    renderables.append(res_line)
+            last_tool_idx = max(
+                (idx for idx, (kind, _) in enumerate(timeline) if kind == "tool"),
+                default=-1,
+            )
 
-                if rec.diff_preview:
-                    renderables.append(
-                        Panel(
-                            Syntax(rec.diff_preview, "diff", theme="monokai", word_wrap=True),
-                            border_style="dim",
-                            padding=(0, 1),
-                        )
-                    )
+            trailing_text_parts: list[str] = []
+            for idx, (kind, payload) in enumerate(timeline):
+                if kind == "tool":
+                    _render_tool_record(payload, renderables)
+                elif kind == "text":
+                    seg_str = "".join(text_segments[payload][1]).strip()
+                    if not seg_str:
+                        continue
+                    if idx < last_tool_idx:
+                        nar = Text()
+                        nar.append("  ⏺ ", style="bold bright_green")
+                        nar.append(seg_str, style="white")
+                        renderables.append(nar)
+                    else:
+                        trailing_text_parts.append(seg_str)
 
             if self.last_ralph_status:
                 ralph_line = Text()
                 ralph_line.append(f"  🔁 Ralph Verify: {self.last_ralph_status}", style="bold yellow")
                 renderables.append(ralph_line)
 
-            if text_buf:
-                md_text = "".join(text_buf)
+            if trailing_text_parts:
+                md_text = "\n\n".join(trailing_text_parts)
                 renderables.append(
                     Panel(
                         Markdown(md_text),
@@ -1754,7 +2085,7 @@ class KardashevRichTUI:
             elif not renderables:
                 spinner_line = Text()
                 spinner_line.append("  ⠋ ", style="bold cyan")
-                spinner_line.append(f"Processing on local model ({elapsed:.1f}s)...", style="dim")
+                spinner_line.append(f"Processing on {self._active_model_summary(cfg)[0]} ({elapsed:.1f}s)...", style="dim")
                 renderables.append(spinner_line)
 
             return Group(*renderables)
@@ -1762,56 +2093,157 @@ class KardashevRichTUI:
         try:
             await agent.conversation.send(augmented_prompt)
         except Exception as exc:  # noqa: BLE001
+            if self._is_dead_connection_error(exc, agent):
+                self._needs_harness_reconnect = True
+                self._pending_retry_prompt = user_text
+                self.console.print(
+                    "  [yellow]↻ Local harness session reset — reconnecting engine and retrying turn...[/yellow]"
+                )
+                return
             self._render_connection_error(exc, cfg)
             return
 
+        loop = asyncio.get_running_loop()
+        cancelled_by_user = False
+
+        async def _consume_steps(live_obj: Live) -> None:
+            async for step in agent.conversation.receive_steps():
+                is_model = step.source == types.StepSource.MODEL
+                is_target_user = step.target == types.StepTarget.USER
+                step_id = str(getattr(step, "id", "") or "step")
+
+                if is_model and step.thinking_delta:
+                    thought_buf.append(step.thinking_delta)
+
+                if is_model and is_target_user and step.content_delta:
+                    if (
+                        text_segments
+                        and text_segments[-1][0] == step_id
+                        and timeline
+                        and timeline[-1] == ("text", len(text_segments) - 1)
+                    ):
+                        text_segments[-1][1].append(step.content_delta)
+                    else:
+                        seg_idx = len(text_segments)
+                        text_segments.append((step_id, [step.content_delta]))
+                        timeline.append(("text", seg_idx))
+                elif step.is_complete_response and step.content and not text_segments:
+                    text_segments.append((step_id, [step.content]))
+                    timeline.append(("text", 0))
+
+                if step.tool_calls:
+                    for tc in step.tool_calls:
+                        tc_step_id = getattr(tc, "step_id", None) or step_id
+                        tc_key = tc.id or tc_step_id or f"{tc.name}:{tc.args}"
+                        badge, summary, diff_preview = format_tool_badge(tc)
+
+                        existing_rec: ToolEventRecord | None = None
+                        for cand in self._active_turn_tools:
+                            if (
+                                (tc_step_id and (cand.step_id == tc_step_id or cand.call_id == tc_step_id))
+                                or cand.call_id == tc_key
+                                or (not cand.summary and cand.name == str(tc.name))
+                            ):
+                                existing_rec = cand
+                                break
+
+                        if existing_rec is not None:
+                            existing_rec.badge = badge
+                            if summary and (not existing_rec.summary or len(summary) >= len(existing_rec.summary)):
+                                existing_rec.summary = summary
+                            if diff_preview:
+                                existing_rec.diff_preview = diff_preview
+                            if tc_step_id and not existing_rec.step_id:
+                                existing_rec.step_id = tc_step_id
+                            rec = existing_rec
+                        else:
+                            seen_tool_ids.add(tc_key)
+                            self.session_tool_calls += 1
+                            rec = ToolEventRecord(
+                                call_id=tc_key,
+                                step_id=tc_step_id,
+                                name=str(tc.name),
+                                badge=badge,
+                                summary=summary,
+                                diff_preview=diff_preview,
+                            )
+                            self._active_turn_tools.append(rec)
+                            timeline.append(("tool", rec))
+
+                        if getattr(step, "status", None) in (
+                            types.StepStatus.DONE,
+                            types.StepStatus.ERROR,
+                        ):
+                            if rec.completed_at is None:
+                                rec.completed_at = time.perf_counter()
+                            step_prev, step_err = extract_step_tool_result_preview(tc, step)
+                            if step_prev and (not rec.result_preview or rec.result_preview == "✓ completed"):
+                                rec.result_preview = step_prev
+                                rec.is_error = step_err
+
+                live_obj.update(_render_live_frame())
+
         with Live(_render_live_frame(), console=self.console, refresh_per_second=12, transient=False) as live:
+            consume_task = asyncio.create_task(_consume_steps(live))
+            sigint_installed = False
+
+            def _on_turn_sigint() -> None:
+                nonlocal cancelled_by_user
+                cancelled_by_user = True
+                if not consume_task.done():
+                    consume_task.cancel()
+
+            with contextlib.suppress( NotImplementedError, ValueError, RuntimeError):
+                loop.add_signal_handler(_signal.SIGINT, _on_turn_sigint)
+                sigint_installed = True
+
             try:
-                async for step in agent.conversation.receive_steps():
-                    is_model = step.source == types.StepSource.MODEL
-                    is_target_user = step.target == types.StepTarget.USER
-
-                    if is_model and step.thinking_delta:
-                        thought_buf.append(step.thinking_delta)
-
-                    if is_model and is_target_user and step.content_delta:
-                        text_buf.append(step.content_delta)
-                    elif step.is_complete_response and step.content and not text_buf:
-                        text_buf.append(step.content)
-
-                    if step.tool_calls:
-                        for tc in step.tool_calls:
-                            tc_key = tc.id or f"{tc.name}:{tc.args}"
-                            if tc_key not in seen_tool_ids:
-                                seen_tool_ids.add(tc_key)
-                                self.session_tool_calls += 1
-                                badge, summary, diff_preview = format_tool_badge(tc)
-                                self._active_turn_tools.append(
-                                    ToolEventRecord(
-                                        call_id=tc_key,
-                                        name=str(tc.name),
-                                        badge=badge,
-                                        summary=summary,
-                                        diff_preview=diff_preview,
-                                    )
-                                )
-
-                    live.update(_render_live_frame())
-            except KeyboardInterrupt:
-                await agent.conversation.cancel()
-                self.console.print("\n[yellow]⚠ Turn cancelled by user (Ctrl+C).[/yellow]")
-                return
+                await consume_task
+            except (KeyboardInterrupt, asyncio.CancelledError, types.AntigravityCancelledError):
+                cancelled_by_user = True
+                cur_task = asyncio.current_task()
+                if cur_task is not None and hasattr(cur_task, "cancelling"):
+                    while cur_task.cancelling() > 0:
+                        cur_task.uncancel()
             except Exception as exc:  # noqa: BLE001
                 live.stop()
+                if self._is_dead_connection_error(exc, agent):
+                    self._needs_harness_reconnect = True
+                    if not self._active_turn_tools and not text_segments:
+                        self._pending_retry_prompt = user_text
+                        self.console.print(
+                            "  [yellow]↻ Local harness connection reset — reconnecting engine and retrying turn...[/yellow]"
+                        )
+                    else:
+                        self.console.print(
+                            "\n  [yellow]↻ Local harness connection reset — reconnecting engine for next turn...[/yellow]\n"
+                        )
+                    return
                 self._render_connection_error(exc, cfg)
+                return
+            finally:
+                if sigint_installed:
+                    with contextlib.suppress(Exception):
+                        loop.remove_signal_handler(_signal.SIGINT)
+
+            if cancelled_by_user:
+                live.update(_render_live_frame())
+                live.stop()
+                await self._cancel_and_settle_turn(agent)
+                self.console.print("\n  [yellow]⚡ Turn cancelled by user (Ctrl+C).[/yellow]\n")
                 return
 
         dt = max(0.001, time.perf_counter() - t0)
         self.session_turns += 1
 
+        full_assistant_text = "\n\n".join(
+            "".join(chunks).strip() for _, chunks in text_segments if "".join(chunks).strip()
+        )
+        full_thought_text = "".join(thought_buf).strip()
+
         # Compute turn telemetry
         turn_usage = agent.conversation.last_turn_usage
-        out_chars = len("".join(text_buf)) + len("".join(thought_buf))
+        out_chars = len(full_assistant_text) + len(full_thought_text)
         est_out_tokens = max(1, out_chars // 4) if out_chars else 0
         if turn_usage and turn_usage.candidates_token_count:
             out_tok = (turn_usage.candidates_token_count or 0) + (turn_usage.thoughts_token_count or 0)
@@ -1828,8 +2260,8 @@ class KardashevRichTUI:
             TurnTranscript(
                 turn_index=self.session_turns,
                 user_prompt=user_text,
-                thinking="".join(thought_buf).strip(),
-                assistant_response="".join(text_buf).strip(),
+                thinking=full_thought_text,
+                assistant_response=full_assistant_text,
                 tools=[
                     {
                         "badge": r.badge,
@@ -1845,6 +2277,7 @@ class KardashevRichTUI:
                 output_tokens=out_tok,
             )
         )
+        self._synced_transcript_count = len(self.transcripts)
 
         _, _, ctx_limit = self._active_model_summary(cfg)
         tot_ctx = self.total_prompt_tokens + self.total_output_tokens
@@ -1912,19 +2345,28 @@ class KardashevRichTUI:
 
         try:
             while True:
+                was_reconnect = self._needs_harness_reconnect
                 self._restart_requested = False
+                self._needs_harness_reconnect = False
+                self._synced_transcript_count = 0
                 base_cfg = build_agent_config(self.options)
                 cfg = self._upgrade_interactive_config(base_cfg)
                 model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
 
-                self.console.print(self.render_welcome_banner(cfg))
+                if not self._initial_banner_shown:
+                    self.console.print(self.render_welcome_banner(cfg))
+                    self._initial_banner_shown = True
+                elif not was_reconnect:
+                    self.console.print(
+                        f"  [green]✓ Active model:[/green] [bold cyan]{model_label}[/bold cyan] [dim]({backend_label})[/dim]"
+                    )
 
                 agent_cm = Agent(cfg)
                 try:
                     with (
                         self.console.status(
                             f"[bold cyan]⚡ Initializing {model_label}[/bold cyan] "
-                            f"[dim]({backend_label} · warming up KV cache)...[/dim]",
+                            f"[dim]({backend_label})...[/dim]",
                             spinner="dots",
                         ),
                         suppress_noisy_cpp_stderr(),
@@ -1935,6 +2377,14 @@ class KardashevRichTUI:
                     return 130
 
                 try:
+                    if self._pending_retry_prompt:
+                        retry_text = self._pending_retry_prompt
+                        self._pending_retry_prompt = None
+                        await self._run_turn(agent, retry_text, cfg)
+                        if self._needs_harness_reconnect:
+                            self._restart_requested = True
+                            continue
+
                     ctrl_c_streak = 0
                     while True:
                         try:
@@ -2028,7 +2478,16 @@ class KardashevRichTUI:
                         try:
                             await self._run_turn(agent, text, cfg)
                         except (KeyboardInterrupt, asyncio.CancelledError):
+                            cur_task = asyncio.current_task()
+                            if cur_task is not None and hasattr(cur_task, "cancelling"):
+                                while cur_task.cancelling() > 0:
+                                    cur_task.uncancel()
+                            await self._cancel_and_settle_turn(agent)
                             self.console.print("\n  [yellow]⚡ Turn interrupted by user (Ctrl+C).[/yellow]\n")
+
+                        if self._needs_harness_reconnect:
+                            self._restart_requested = True
+                            break
                 finally:
                     with (
                         self.console.status(
@@ -2039,10 +2498,10 @@ class KardashevRichTUI:
                         contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError, Exception),
                     ):
                         await asyncio.shield(agent_cm.__aexit__(None, None, None))
-                    if not self._restart_requested:
+                    if not self._restart_requested and not self._needs_harness_reconnect:
                         self.console.print("[dim]✓ Session closed cleanly.[/dim]")
 
-                if not self._restart_requested:
+                if not self._restart_requested and not self._needs_harness_reconnect:
                     break
         except (KeyboardInterrupt, asyncio.CancelledError):
             self.console.print("\n[dim]✓ Session closed cleanly.[/dim]")

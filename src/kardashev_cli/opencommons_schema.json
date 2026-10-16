@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OpenCommonsProposalV1",
+  "description": "Normative JSON Schema for OpenCommons v1 concept proposals",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "param_types",
+    "return_type",
+    "summary",
+    "pseudocode",
+    "invariants",
+    "pitfalls",
+    "source_code",
+    "domain"
+  ],
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$",
+      "minLength": 3,
+      "maxLength": 64,
+      "description": "Identifier matching function name: lowercase alphanumeric + underscore, 3-64 chars."
+    },
+    "param_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128
+      },
+      "maxItems": 32,
+      "description": "Declared Python type annotations for each parameter."
+    },
+    "return_type": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Declared Python return type annotation."
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 500,
+      "description": "High-level summary of algorithm intent (10-500 chars)."
+    },
+    "pseudocode": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 2000,
+      "description": "Algorithmic steps or pseudocode description (10-2000 chars)."
+    },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      },
+      "maxItems": 8,
+      "description": "Mathematical or system invariants that hold for valid executions (<=8 items, <=200 chars each)."
+    },
+    "pitfalls": {
+      "type": "array",
+      "maxItems": 8,
+      "description": "Refuted dead-ends, counterexamples, or numerical instability warnings (<=8 items).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "naive_pattern",
+          "failure_mechanism",
+          "counterexample_input",
+          "verified_fix"
+        ],
+        "properties": {
+          "naive_pattern": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Naive pattern or bug pattern to avoid."
+          },
+          "failure_mechanism": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Why naive implementation fails."
+          },
+          "counterexample_input": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Exact input value triggering the failure."
+          },
+          "verified_fix": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "Correct algorithmic solution."
+          }
+        }
+      }
+    },
+    "source_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192,
+      "description": "Complete Python pure function definition in printable ASCII (<=8192 chars)."
+    },
+    "domain": {
+      "type": "string",
+      "enum": [
+        "cryptography_and_framing",
+        "distributed_systems",
+        "geodesy_and_spatial",
+        "hamiltonian_dynamics",
+        "machine_learning",
+        "number_theory_and_algebra",
+        "numerical_analysis",
+        "quantitative_finance",
+        "signal_processing",
+        "statistics_and_information",
+        "general"
+      ],
+      "description": "Target domain classification."
+    }
+  }
+}

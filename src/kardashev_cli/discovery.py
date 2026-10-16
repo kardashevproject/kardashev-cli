@@ -187,11 +187,43 @@ def probe_endpoint(
         )
 
 
+def probe_openrouter_endpoint() -> DiscoveredEndpoint:
+    """Checks whether OpenRouter API credentials are configured in the environment or `~/.env`."""
+    from kardashev_cli.builder import resolve_api_key
+    from kardashev_cli.presets import OPENROUTER_BASE_URL, list_presets
+
+    api_key = resolve_api_key(OPENROUTER_BASE_URL)
+    or_models = [
+        p.model_id
+        for p in list_presets()
+        if p.default_base_url == OPENROUTER_BASE_URL
+    ]
+    if api_key:
+        return DiscoveredEndpoint(
+            label="OpenRouter Cloud API",
+            base_url=OPENROUTER_BASE_URL,
+            reachable=True,
+            models=or_models,
+        )
+    return DiscoveredEndpoint(
+        label="OpenRouter Cloud API",
+        base_url=OPENROUTER_BASE_URL,
+        reachable=False,
+        models=[],
+        error="OPENROUTER_API_KEY not configured",
+    )
+
+
 def probe_local_endpoints(timeout_sec: float = 0.6) -> list[DiscoveredEndpoint]:
-    """Concurrently probes standard local OpenAI-compatible servers (vLLM, Ollama, LM Studio, SGLang)."""
+    """Concurrently probes standard local OpenAI-compatible servers plus OpenRouter Cloud API."""
     with ThreadPoolExecutor(max_workers=len(DEFAULT_PROBE_ENDPOINTS)) as pool:
         futures = [
             pool.submit(probe_endpoint, url, label, timeout_sec)
             for label, url in DEFAULT_PROBE_ENDPOINTS
         ]
-        return [f.result() for f in futures]
+        results = [f.result() for f in futures]
+    or_ep = probe_openrouter_endpoint()
+    if or_ep.reachable:
+        results.append(or_ep)
+    return results
+

@@ -284,14 +284,29 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         return cfg
 
     # BackendKind.OPENAI
-    base_url = resolved_base_url or "http://127.0.0.1:8000/v1"
+    if resolved_base_url:
+        base_url = resolved_base_url
+    elif resolved_model and "/" in resolved_model and resolve_api_key("https://openrouter.ai/api/v1"):
+        base_url = "https://openrouter.ai/api/v1"
+    else:
+        base_url = "http://127.0.0.1:8000/v1"
     model_name = resolved_model or "qwen3-vl-8b"
+    api_key = resolve_api_key(base_url)
 
-    openai_cfg = LocalOpenAIAgentConfig(
-        model=model_name,
-        base_url=base_url,
-        **common_kwargs,
-    )
+    openai_cfg: LocalOpenAIAgentConfig
+    if api_key or "openrouter.ai" in base_url.lower():
+        openai_cfg = AuthenticatedOpenAIAgentConfig(
+            model=model_name,
+            base_url=base_url,
+            api_key=api_key,
+            **common_kwargs,
+        )
+    else:
+        openai_cfg = LocalOpenAIAgentConfig(
+            model=model_name,
+            base_url=base_url,
+            **common_kwargs,
+        )
     if options.lightweight:
         openai_cfg = openai_cfg.lightweight()
 
@@ -304,3 +319,344 @@ def build_agent_config(options: HarnessOptions) -> AgentConfig:
         openai_cfg = openai_cfg.model_copy(update={"capabilities": caps})
 
     return openai_cfg
+
+
+def _read_dotenv_var(var_name: str, dotenv_path: str | os.PathLike[str] = "~/.env") -> str | None:
+    """Safely reads a single variable from `~/.env` without mutating global environment."""
+    from pathlib import Path
+
+    path = Path(os.path.expanduser(str(dotenv_path)))
+    if not path.is_file():
+        return None
+    try:
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            if k.strip() == var_name:
+                val = v.strip().strip("\"'")
+                if val:
+                    return val
+    except OSError:
+        return None
+    return None
+
+
+def resolve_api_key(base_url: str, explicit_key: str | None = None) -> str | None:
+    """Resolves the bearer API key for OpenRouter or other authenticated OpenAI endpoints."""
+    if explicit_key:
+        return explicit_key
+    lower_url = (base_url or "").lower()
+    if "openrouter.ai" in lower_url:
+        candidates = ("OPENROUTER_API_KEY", "OPENAI_API_KEY")
+    elif "bigmodel.cn" in lower_url:
+        candidates = ("ZHIPU_API_KEY", "OPENAI_API_KEY")
+    elif lower_url.startswith(("http://127.0.0.1", "http://localhost")):
+        return os.environ.get("OPENAI_API_KEY")
+    else:
+        candidates = ("OPENAI_API_KEY", "OPENROUTER_API_KEY")
+
+    for var in candidates:
+        env_val = os.environ.get(var, "").strip()
+        if env_val:
+            return env_val
+        file_val = _read_dotenv_var(var)
+        if file_val:
+            return file_val
+    return None
+
+
+def _install_harness_process_isolation() -> None:
+    """Isolates `localharness` in its own POSIX session so terminal Ctrl+C (SIGINT) never kills the Go daemon."""
+    import logging as _logging
+
+    from google.antigravity.connections.local import local_connection as _lc
+
+    if getattr(_lc, "_kardashev_sigint_isolated", False):
+        return
+
+    orig_popen = _lc.subprocess.Popen
+
+    def _session_isolated_popen(*args: Any, **kwargs: Any) -> Any:
+        if os.name == "posix":
+            kwargs.setdefault("start_new_session", True)
+        return orig_popen(*args, **kwargs)
+
+    _lc.subprocess.Popen = _session_isolated_popen  # type: ignore[assignment]
+
+    orig_init = _lc.LocalConnection.__init__
+
+    class _StderrFilterProxy:
+        def __init__(self, raw_deque: Any) -> None:
+            self._raw = raw_deque
+
+        def append(self, line: str) -> None:
+            if "logging before google.Init" in line or "auth_store.go:" in line:
+                return
+            self._raw.append(line)
+
+        def __iter__(self) -> Any:
+            return (
+                ln
+                for ln in self._raw
+                if "logging before google.Init" not in ln and "auth_store.go:" not in ln
+            )
+
+        def __len__(self) -> int:
+            return sum(1 for _ in self.__iter__())
+
+        def __bool__(self) -> bool:
+            return any(True for _ in self.__iter__())
+
+    def _filtered_init(self: Any, *args: Any, **kwargs: Any) -> None:
+        orig_init(self, *args, **kwargs)
+        self._stderr_lines = _StderrFilterProxy(self._stderr_lines)
+
+    _lc.LocalConnection.__init__ = _filtered_init  # type: ignore[method-assign]
+
+    class _HarnessLogFilter(_logging.Filter):
+        def filter(self, record: _logging.LogRecord) -> bool:
+            if os.environ.get("KARDASHEV_DEBUG") == "1":
+                return True
+            msg = record.getMessage()
+            for noisy in (
+                "Harness process exited unexpectedly",
+                "Error in reader loop:",
+                "auth_store.go:",
+                "logging before google.Init",
+                "enable_sandbox=True but the OS sandbox is unavailable",
+            ):
+                if noisy in msg:
+                    return False
+            return True
+
+    _filter = _HarnessLogFilter()
+    _logging.getLogger().addFilter(_filter)
+    _logging.getLogger("google.antigravity").addFilter(_filter)
+    _lc._kardashev_sigint_isolated = True  # type: ignore[attr-defined]
+
+
+_install_harness_process_isolation()
+
+
+class AuthenticatedOpenAIConnectionStrategy(
+    types.Any if False else __import__(
+        "google.antigravity.connections.local.local_openai_connection",
+        fromlist=["LocalOpenAIConnectionStrategy"],
+    ).LocalOpenAIConnectionStrategy
+):
+    """Connection strategy that bridges `localharness` to authenticated OpenAI/OpenRouter endpoints."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        model_name: str,
+        api_key: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self._upstream_base_url = base_url.rstrip("/")
+        self._api_key = api_key or resolve_api_key(base_url)
+        self._proxy_server: Any = None
+        self._proxy_thread: Any = None
+        super().__init__(base_url=base_url, model_name=model_name, **kwargs)
+
+    async def __aenter__(self) -> None:
+        if self._api_key:
+            import contextlib
+            import http.server
+            import socketserver
+            import threading
+            import urllib.error
+            import urllib.request
+
+            upstream = self._upstream_base_url
+            if not upstream.endswith("/v1"):
+                upstream_v1 = f"{upstream}/v1"
+            else:
+                upstream_v1 = upstream
+            api_key = self._api_key
+
+            class _ThreadedServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+                daemon_threads = True
+                allow_reuse_address = True
+
+                def handle_error(self, request: Any, client_address: Any) -> None:
+                    # Suppress socketserver tracebacks on client disconnect / Ctrl+C
+                    return
+
+            class _BridgeHandler(http.server.BaseHTTPRequestHandler):
+                def _forward(self, method: str) -> None:
+                    headers_sent = False
+                    try:
+                        length = int(self.headers.get("Content-Length", 0))
+                        body = self.rfile.read(length) if length > 0 else None
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                        return
+
+                    rel_path = self.path
+                    if rel_path.startswith("/v1/"):
+                        target_url = f"{upstream_v1}/{rel_path[4:]}"
+                    elif rel_path == "/v1":
+                        target_url = upstream_v1
+                    else:
+                        target_url = f"{upstream_v1}/{rel_path.lstrip('/')}"
+
+                    req_headers = {
+                        "Authorization": f"Bearer {api_key}",
+                        "HTTP-Referer": "https://github.com/kardashevproject/kardashev-cli",
+                        "X-Title": "Kardashev Studio",
+                        "Accept": self.headers.get("Accept", "application/json"),
+                    }
+                    if body is not None:
+                        req_headers["Content-Type"] = self.headers.get(
+                            "Content-Type", "application/json"
+                        )
+
+                    req = urllib.request.Request(
+                        target_url,
+                        data=body,
+                        headers=req_headers,
+                        method=method,
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=180) as resp:
+                            self.send_response(resp.status)
+                            ct = resp.headers.get("Content-Type", "application/json")
+                            self.send_header("Content-Type", ct)
+                            self.end_headers()
+                            headers_sent = True
+                            while True:
+                                chunk = resp.read(1024)
+                                if not chunk:
+                                    break
+                                self.wfile.write(chunk)
+                                self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                        # Client (localharness) cancelled or closed the stream mid-flight
+                        return
+                    except urllib.error.HTTPError as exc:
+                        with contextlib.suppress(
+                            BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError
+                        ):
+                            err_bytes = exc.read()
+                            if not headers_sent:
+                                self.send_response(exc.code)
+                                self.send_header("Content-Type", "application/json")
+                                self.end_headers()
+                                headers_sent = True
+                            self.wfile.write(err_bytes)
+                    except Exception as exc:  # noqa: BLE001
+                        if headers_sent:
+                            return
+                        import json as _json
+
+                        err_payload = _json.dumps(
+                            {"error": {"message": f"Upstream connection error: {exc}"}}
+                        ).encode("utf-8")
+                        with contextlib.suppress(
+                            BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError
+                        ):
+                            self.send_response(502)
+                            self.send_header("Content-Type", "application/json")
+                            self.end_headers()
+                            self.wfile.write(err_payload)
+
+                def do_POST(self) -> None:
+                    self._forward("POST")
+
+                def do_GET(self) -> None:
+                    self._forward("GET")
+
+                def log_message(self, format: str, *args: Any) -> None:
+                    return
+
+            self._proxy_server = _ThreadedServer(("127.0.0.1", 0), _BridgeHandler)
+            host, port = self._proxy_server.server_address[:2]
+            self._base_url = f"http://{host}:{port}/v1"
+            self._proxy_thread = threading.Thread(
+                target=self._proxy_server.serve_forever, daemon=True
+            )
+            self._proxy_thread.start()
+
+        try:
+            await super().__aenter__()
+        except Exception:
+            self._shutdown_proxy()
+            raise
+
+    def _shutdown_proxy(self) -> None:
+        if self._proxy_server is not None:
+            import contextlib
+
+            try:
+                with contextlib.suppress(Exception):
+                    self._proxy_server.shutdown()
+                    self._proxy_server.server_close()
+                    if self._proxy_thread is not None:
+                        self._proxy_thread.join(timeout=2.0)
+            finally:
+                self._proxy_server = None
+                self._proxy_thread = None
+                self._base_url = self._upstream_base_url
+
+    async def __aexit__(
+        self, exc_type: object, exc_val: object, exc_tb: object
+    ) -> None:
+        try:
+            await super().__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            self._shutdown_proxy()
+
+
+class AuthenticatedOpenAIAgentConfig(LocalOpenAIAgentConfig):
+    """OpenAI/OpenRouter agent configuration with automatic Bearer authentication."""
+
+    api_key: str | None = None
+
+    def create_strategy(
+        self,
+        *,
+        tool_runner: Any,
+        hook_runner: Any,
+    ) -> Any:
+        model_name = ""
+        resolved_base_url = self.base_url
+        if isinstance(self.model, types.ModelTarget):
+            model_name = self.model.name or ""
+            if not resolved_base_url and self.model.endpoint:
+                resolved_base_url = self.model.endpoint.base_url
+        elif isinstance(self.model, str):
+            model_name = self.model
+
+        return AuthenticatedOpenAIConnectionStrategy(
+            base_url=resolved_base_url or "",
+            model_name=model_name,
+            api_key=self.api_key,
+            tool_runner=tool_runner,
+            hook_runner=hook_runner,
+            system_instructions=self._get_system_instructions(),
+            capabilities_config=self.capabilities,
+            compaction_config=self._get_effective_compaction_config(),
+            conversation_id=self.conversation_id,
+            session_continuation_mode=self.session_continuation_mode,
+            save_dir=self._get_or_create_save_dir(),
+            workspaces=self.workspaces,
+            app_data_dir=self.app_data_dir,
+            skills_paths=self.skills_paths,
+            inline_skills=self.inline_skills,
+            mcp_servers=self.mcp_servers,
+            subagents=self.subagents,
+            env=self.env,
+            debug_config=self.debug_config,
+            retry_config=self.retry_config,
+            budget_config=self.budget_config,
+            policies=list(self.policies) if self.policies is not None else None,
+            tools=self.tools,
+        )
+

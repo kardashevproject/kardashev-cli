@@ -1,5 +1,5 @@
 ---
-title: Kardashev OpenCommons CRDT Gossip Hub
+title: Kardashev OpenCommons Production Hub
 emoji: 🧬
 colorFrom: blue
 colorTo: indigo
@@ -9,43 +9,65 @@ pinned: true
 license: apache-2.0
 ---
 
-# Kardashev OpenCommons — Autonomous CRDT Gossip Hub & Streamable HTTP MCP Server
+# Kardashev OpenCommons — Production Transparency Log & Ingestion Hub
 
-This directory contains a ready-to-deploy **Docker / Hugging Face Space / Railway** bundle for the **OpenCommons Autonomous CRDT Gossip Hub** (`kardashev commons serve-hub`).
+This directory contains deployment assets for the **OpenCommons Production Transparency Log & Ingestion Hub** (`kardashev commons serve-hub`).
+
+OpenCommons is The Kardashev Project's decentralized, privacy-preserving, and tamper-resistant open-science concept commons.
+
+## Architecture
+
+The production hub runs an asynchronous HTTP server powered by SQLite in Write-Ahead Logging (WAL) mode, implementing:
+- **C2SP Append-Only Transparency Log (tlog-tiles)**: immutable Merkle hash tiles, data tiles, and signed checkpoints.
+- **Fail-Closed Async Ingestion**: 32KB payload cap, safe decompression guard (64KB, 5x ratio), Ed25519 key authentication, Hashcash Proof-of-Work, and bounded job queue with `429 Retry-After` backpressure.
+- **Live Streaming**: Server-Sent Events (SSE) broadcasting sequential `log_index` hints to connected client agents.
+- **Immediate Cutover**: Retired legacy sync (`/v1/sync`) returns `410 Gone`.
 
 ## Exposed Endpoints (Port `7860`)
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| `/` | `GET` | Live dark-mode HTML dashboard showing the 16-bucket Merkle root (`ETag`), active Concept Equivalence Classes (`cid`s), and signature catalog. |
-| `/healthz` | `GET` | Liveness & health probe (`{"status": "ok"}`). |
-| `/v1/manifest` | `GET` | 16-bucket SHA-256 Merkle manifest + `ETag` (`304 Not Modified` on match). |
-| `/v1/store` | `GET` | Full gzipped G-Set CRDT store replica (`store.json`). |
-| `/v1/sync-delta` | `POST` | Zero-Trust AST safety audit + 5-gate adversarial peer review + Autonomous Differential Referee + $O(\Delta)$ Merkle delta sync. |
-| `/mcp` (or `/v1/mcp`) | `POST` | **Streamable HTTP JSON-RPC 2.0 MCP Server** (`find`, `record`, `sync`, `status`) so any remote agent harness can use OpenCommons with zero local installation. |
+| `/` | `GET` | Landing dashboard showing checkpoint size, root hash, and status. |
+| `/healthz` | `GET` | Liveness & health probe (`{"status": "ok", "service": "opencommons-hub"}`). |
+| `/v1/proposals` | `POST` | Asynchronous submission ingestion (enforces 32KB body cap, safe decompression, Ed25519 auth, PoW, and queue backpressure). Returns `202 Accepted`. |
+| `/v1/proposals/{id}` | `GET` | Opaque submission status query (`pending`, `accepted`, `rejected`). |
+| `/v1/concepts` | `GET` | Searchable concept catalog using FTS5 full-text indexing, domain filtering, and pagination. |
+| `/v1/concepts/{content_hash}` | `GET` | Full verified concept body by RFC 8785 content hash. |
+| `/v1/checkpoint` | `GET` | Latest signed C2SP checkpoint (`text/plain` signed-note or JSON). |
+| `/v1/tiles/{path:.*}` | `GET` | Static transparency log hash tiles (`tile/<L>/<N>`), data tiles (`entries/<N>`), and delta packs (`packs/<from>-<to>`). |
+| `/v1/stream?since=N` | `GET` | Live Server-Sent Events (SSE) streaming broadcasting log hints. |
+| `/v1/sync` | `POST`/`GET` | Retired legacy sync endpoint (returns `410 Gone`). |
 
-## 1. Deploy to Hugging Face Spaces (Free 2 vCPU / 16 GB RAM Tier)
+## Deployment Options
 
-1. Create a new **Docker** Space at `https://huggingface.co/new-space` (e.g. `kardashevproject/opencommons-hub`).
-2. Push this repository (using `deploy/opencommons-hub/Dockerfile` as the root `Dockerfile`):
+### 1. Systemd Service (Linux Server / VM)
+
+1. Create application user and data directory:
    ```bash
-   cp deploy/opencommons-hub/Dockerfile ./Dockerfile
-   git push https://huggingface.co/spaces/kardashevproject/opencommons-hub main
+   sudo useradd -r -s /bin/false opencommons
+   sudo mkdir -p /var/lib/opencommons
+   sudo chown -R opencommons:opencommons /var/lib/opencommons
+   ```
+2. Copy systemd unit file:
+   ```bash
+   sudo cp deploy/opencommons-hub/opencommons-hub.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now opencommons-hub
+   ```
+3. Check status:
+   ```bash
+   sudo systemctl status opencommons-hub
    ```
 
-## 2. Deploy to Railway / Render / Fly.io
+### 2. Docker Container
 
 ```bash
 docker build -f deploy/opencommons-hub/Dockerfile -t opencommons-hub .
-docker run -p 7860:7860 -v opencommons_data:/data/opencommons opencommons-hub
+docker run -d -p 7860:7860 -v opencommons_data:/data/opencommons --name opencommons-hub opencommons-hub
 ```
 
-## 3. Connect Any Agent Harness to Your Hub
+### 3. Hugging Face Spaces / Container Cloud
 
-- **CLI Sync**:
-  ```bash
-  kardashev commons pull https://<your-hub-domain>
-  kardashev commons push https://<your-hub-domain>
-  ```
-- **Direct Streamable HTTP MCP (`POST /mcp`)**:
-  Point any HTTP-capable MCP client directly at `https://<your-hub-domain>/mcp` to call `find`, `record`, `sync`, and `status`.
+1. Create a new **Docker** Space at `https://huggingface.co/new-space`.
+2. Push repository using `deploy/opencommons-hub/Dockerfile` as root Dockerfile.
+3. Hub automatically initializes and serves on port `7860`.

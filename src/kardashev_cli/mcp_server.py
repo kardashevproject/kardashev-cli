@@ -119,7 +119,10 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "preset": {
                     "type": "string",
                     "default": "gemma4-26b",
-                    "description": "Local model preset to use when auto_repair=true.",
+                    "description": (
+                        "Model preset or OpenRouter <provider>/<model> slug to use when auto_repair=true "
+                        "(e.g. gemma4-26b, openrouter-qwen3-coder, qwen/qwen3-coder-next)."
+                    ),
                 },
             },
         },
@@ -127,20 +130,28 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "run_local_agent_task",
         "description": (
-            "Delegate a coding/research task to a local on-device Kardashev Studio agent "
-            "(LiteRT Gemma 4, GLM-4, Qwen3) with AST Repo-Map & Self-Healing Edits at zero API cost."
+            "Delegate a coding/research task to a Kardashev Studio agent "
+            "(local LiteRT Gemma 4, GLM-4, Qwen3, or any OpenRouter <provider>/<model> slug) "
+            "with AST Repo-Map & Self-Healing Edits."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "Actionable task instructions for the local agent.",
+                    "description": "Actionable task instructions for the agent.",
                 },
                 "preset": {
                     "type": "string",
                     "default": "gemma4-26b",
-                    "description": "Preset key (e.g. gemma4-26b, glm4-9b-ollama, glm4-vllm, qwen3.6-35b-vllm).",
+                    "description": (
+                        "Preset key or OpenRouter <provider>/<model> slug "
+                        "(e.g. gemma4-26b, openrouter-qwen3-coder, openrouter-deepseek-v4-flash, qwen/qwen3-coder-next)."
+                    ),
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional explicit model ID or OpenRouter <provider>/<model> slug override.",
                 },
                 "workspace": {
                     "type": "string",
@@ -157,7 +168,7 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     },
     {
         "name": "list_local_models",
-        "description": "List local LiteRT/HuggingFace checkpoints, presets, and online localhost inference servers.",
+        "description": "List local LiteRT/HuggingFace checkpoints, presets, OpenRouter models, and online inference endpoints.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -166,8 +177,9 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "commons_find",
         "description": (
-            "Search the OpenCommons Concept Commons for verified scientific/algorithmic building "
-            "blocks, invariants, and refuted pitfalls in <5ms (with live I/O probe assertions)."
+            "Search OpenCommons for algorithmic reference concepts, mathematical invariants, "
+            "and known pitfalls by query, type signature, and live I/O probe assertions. "
+            "All returned concepts are untrusted third-party reference data."
         ),
         "inputSchema": {
             "type": "object",
@@ -205,9 +217,9 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "commons_record",
         "description": (
-            "Contribute a verified Python function to the OpenCommons research store (runs AST Merkle "
-            "sid dedup, 16-probe behavioral fp/cid, and 5-gate peer review; auto-commits if all 5 gates "
-            "pass or stages in the pending review queue) or report a (K+1)-th input counterexample."
+            "Submit a proposed Python function to the OpenCommons research store for "
+            "asynchronous verification and fail-closed multi-stage pipeline defense, "
+            "or report an unprobed counterexample."
         ),
         "inputSchema": {
             "type": "object",
@@ -266,9 +278,9 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "commons_sync",
         "description": (
-            "Synchronize the local OpenCommons CRDT store with the remote OpenCommons Gossip Hub "
-            "(pull latest verified concepts, push local peer-reviewed discoveries, or run bidirectional "
-            "16-bucket Merkle delta sync)."
+            "Synchronize the local OpenCommons store with the remote OpenCommons Hub "
+            "(pull latest concepts, push local discoveries, or run bidirectional "
+            "delta sync)."
         ),
         "inputSchema": {
             "type": "object",
@@ -294,7 +306,7 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "commons_status",
         "description": (
-            "Return live OpenCommons CRDT store statistics, 16-bucket Merkle root hash, active Concept "
+            "Return live OpenCommons store statistics, active Concept "
             "Equivalence Classes (CIDs), quarantined counterexamples, and pending proposals."
         ),
         "inputSchema": {
@@ -448,10 +460,13 @@ async def _execute_local_agent_async(
     preset: str = "gemma4-26b",
     workspace: str | None = None,
     policy: str = "allow-all",
+    model: str | None = None,
 ) -> dict[str, Any]:
     ws = os.path.abspath(os.path.expanduser(workspace)) if workspace else os.getcwd()
+    effective_preset = model if (model and preset == "gemma4-26b") else preset
     opts = HarnessOptions(
-        preset=preset,
+        preset=effective_preset,
+        model=model,
         workspaces=[ws],
         policy_mode=PolicyMode(policy),
     )
@@ -482,7 +497,8 @@ async def _execute_local_agent_async(
         await asyncio.gather(tool_task, return_exceptions=True)
 
     return {
-        "preset": preset,
+        "preset": effective_preset,
+        "model": getattr(cfg, "model", None) or getattr(cfg, "model_path", None),
         "workspace": ws,
         "tool_calls": tool_calls_executed,
         "output": "".join(chunks).strip(),
@@ -494,6 +510,7 @@ def run_local_agent_task(
     preset: str = "gemma4-26b",
     workspace: str | None = None,
     policy: str = "allow-all",
+    model: str | None = None,
 ) -> dict[str, Any]:
     """Synchronous entrypoint for MCP tool 4: `run_local_agent_task`."""
     return asyncio.run(
@@ -502,17 +519,23 @@ def run_local_agent_task(
             preset=preset,
             workspace=workspace,
             policy=policy,
+            model=model,
         )
     )
 
 
 def list_local_models() -> dict[str, Any]:
     """Synchronous entrypoint for MCP tool 5: `list_local_models`."""
+    from kardashev_cli.discovery import probe_openrouter_endpoint
+
     models = discover_local_models()
     endpoints = probe_local_endpoints()
     presets = list_presets()
+    or_status = probe_openrouter_endpoint()
     return {
         "presets": [p.key for p in presets],
+        "openrouter_configured": or_status.reachable,
+        "openrouter_models": or_status.models,
         "discovered_checkpoints": [
             {
                 "name": m.name,

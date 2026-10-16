@@ -555,10 +555,10 @@ def test_ast_repo_map_and_self_healing_hooks(tmp_path: Path) -> None:
     statuses = integrate_frontier_agent("all", home_dir=home_mock)
     assert len(statuses) == 4
     assert all(s.status == "installed" for s in statuses)
-    assert (home_mock / ".gemini" / "antigravity" / "mcp_config.json").is_file()
-    assert (home_mock / ".claude" / "mcp_servers.json").is_file()
+    assert (home_mock / ".gemini" / "config" / "mcp_config.json").is_file()
+    assert (home_mock / ".claude.json").is_file()
     assert (home_mock / ".cursor" / "mcp.json").is_file()
-    assert (home_mock / ".codex" / "mcp.json").is_file()
+    assert (home_mock / ".codex" / "config.toml").is_file()
 
     # 5. C++ Dawn/WebGPU stderr filter
     import os
@@ -861,3 +861,329 @@ def kahan_compensated_sum(values: list) -> float:
     rendered = buf_console.export_text()
     assert "Inference Endpoint Unreachable" in rendered
     assert "kardashev serve --model qwen3.6-35b-a3b-fp8" in rendered
+
+
+def test_openrouter_presets_and_authenticated_bridge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kardashev_cli.builder import (
+        AuthenticatedOpenAIAgentConfig,
+        HarnessOptions,
+        build_agent_config,
+        resolve_api_key,
+    )
+    from kardashev_cli.integrate import integrate_frontier_agent
+    from kardashev_cli.presets import OPENROUTER_BASE_URL, get_preset
+
+    # 1. Curated OpenRouter presets
+    qwen_coder = get_preset("openrouter-qwen3-coder")
+    assert qwen_coder.model_id == "qwen/qwen3-coder-next"
+    assert qwen_coder.default_base_url == OPENROUTER_BASE_URL
+    assert qwen_coder.recommended_vram_gb == 0
+
+    # 2. Dynamic <provider>/<model> slug resolution
+    dyn_slug = get_preset("deepseek/deepseek-v4.1-flash")
+    assert dyn_slug.model_id == "deepseek/deepseek-v4.1-flash"
+    assert dyn_slug.default_base_url == OPENROUTER_BASE_URL
+
+    prefixed = get_preset("openrouter:google/gemini-4-argon")
+    assert prefixed.model_id == "google/gemini-4-argon"
+    assert prefixed.default_base_url == OPENROUTER_BASE_URL
+
+    # 3. AuthenticatedOpenAIAgentConfig with OPENROUTER_API_KEY
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    assert resolve_api_key(OPENROUTER_BASE_URL) == "test-or-key"
+
+    cfg = build_agent_config(
+        HarnessOptions(preset="qwen/qwen3-coder-next", workspaces=[str(tmp_path)])
+    )
+    assert isinstance(cfg, AuthenticatedOpenAIAgentConfig)
+    assert cfg.model == "qwen/qwen3-coder-next"
+    assert cfg.base_url == OPENROUTER_BASE_URL
+    assert cfg.api_key == "test-or-key"
+
+    # 4. Claude Desktop config integration when ~/.config/Claude/claude_desktop_config.json exists
+    desktop_dir = tmp_path / ".config" / "Claude"
+    desktop_dir.mkdir(parents=True)
+    desktop_cfg = desktop_dir / "claude_desktop_config.json"
+    desktop_cfg.write_text(json.dumps({"preferences": {"keepAwakeEnabled": True}}), encoding="utf-8")
+
+    integrate_frontier_agent("claude", home_dir=tmp_path)
+    updated_desktop = json.loads(desktop_cfg.read_text(encoding="utf-8"))
+    assert updated_desktop["preferences"]["keepAwakeEnabled"] is True
+    assert "kardashev-cli" in updated_desktop["mcpServers"]
+    assert "opencommons" in updated_desktop["mcpServers"]
+
+
+def test_tui_step_update_tool_badges_and_results() -> None:
+    """Verifies format_tool_badge, summarize_tool_result, and extract_step_tool_result_preview handle localharness StepUpdate fields."""
+    from google.antigravity import types
+    from google.antigravity.connections.local import types as local_types
+
+    from kardashev_cli.tui import (
+        HarnessOptions,
+        KardashevRichTUI,
+        extract_step_tool_result_preview,
+        format_tool_badge,
+        summarize_tool_result,
+    )
+
+    # 1. StepUpdate snake_case fields for run_command, view_file, edit_file, create_file, list_dir, find_file, search_dir
+    tc_bash = types.ToolCall(
+        name="run_command",
+        args={"command_line": "ls -lt ~/.claude/projects", "working_dir": "/tmp/work"},
+        id="traj:1",
+        step_id="traj:1",
+    )
+    badge, summary, diff = format_tool_badge(tc_bash)
+    assert badge == "Bash"
+    assert "ls -lt ~/.claude/projects" in summary
+    assert "(in work)" in summary
+    assert diff is None
+
+    tc_read = types.ToolCall(
+        name="view_file",
+        args={"file_path": "/tmp/work/src/main.py", "start_line": 10, "end_line": 40},
+        id="traj:2",
+        step_id="traj:2",
+    )
+    badge_r, summary_r, _ = format_tool_badge(tc_read)
+    assert badge_r == "Read"
+    assert summary_r == "/tmp/work/src/main.py:10-40"
+
+    tc_edit = types.ToolCall(
+        name="edit_file",
+        args={
+            "file_path": "/tmp/work/src/main.py",
+            "diff_block": {
+                "start_line": 5,
+                "end_line": 6,
+                "lines": [
+                    {"text": "old_val = 1", "action": "LINE_ACTION_DELETE"},
+                    {"text": "new_val = 2", "action": "LINE_ACTION_INSERT"},
+                ],
+            },
+        },
+        id="traj:3",
+        step_id="traj:3",
+    )
+    badge_e, summary_e, diff_e = format_tool_badge(tc_edit)
+    assert badge_e == "Edit"
+    assert summary_e == "/tmp/work/src/main.py"
+    assert diff_e is not None
+    assert "-old_val = 1" in diff_e
+    assert "+new_val = 2" in diff_e
+
+    # 2. Structured local_types results in summarize_tool_result
+    tr_cmd = types.ToolResult(
+        name="run_command",
+        id="call_1",
+        step_id="traj:1",
+        result=local_types.RunCommandResult(output="total 564\nfile1.py\nfile2.py"),
+    )
+    sum_str, is_err = summarize_tool_result(tr_cmd)
+    assert not is_err
+    assert "✓ total 564 (+2 lines)" == sum_str
+
+    # 3. Direct StepUpdate DONE result extraction
+    tc_bash_done = types.ToolCall(
+        name="run_command",
+        args={"command_line": "echo hello", "exit_code": 0, "combined_output": "hello world\nline 2"},
+        id="traj:1",
+        step_id="traj:1",
+    )
+    fake_done_step = type("FakeStep", (), {"status": types.StepStatus.DONE, "error": ""})()
+    prev, err = extract_step_tool_result_preview(tc_bash_done, fake_done_step)
+    assert not err
+    assert prev == "✓ hello world (+1 lines)"
+
+    # 4. Early PostToolCallHook followed by StepUpdate populates summary in-place without duplicates
+    tui = KardashevRichTUI(options=HarnessOptions())
+    tui.record_tool_result(tr_cmd)
+    assert len(tui._active_turn_tools) == 1
+    assert tui._active_turn_tools[0].step_id == "traj:1"
+    assert tui._active_turn_tools[0].result_preview == "✓ total 564 (+2 lines)"
+
+
+def test_tui_multi_step_interleaved_timeline_and_proxy_broken_pipe(tmp_path: Path) -> None:
+    """Verifies multi-step turns never concatenate sentences ('one.The') and _BridgeHandler suppresses BrokenPipeError."""
+    import asyncio
+    import http.server
+    import socket
+    import threading
+
+    from google.antigravity import types
+    from rich.console import Console
+
+    from kardashev_cli.builder import AuthenticatedOpenAIConnectionStrategy, HarnessOptions
+    from kardashev_cli.tui import KardashevRichTUI
+
+    async def _run() -> None:
+        # 1. Simulate a 2-step turn with tool call between model text segments
+        class _FakeConversation:
+            last_turn_usage = None
+            total_usage = None
+            conversation_id = "test-conv"
+
+            def __init__(self) -> None:
+                self.compaction_indices: list[int] = []
+                self.sent_prompts: list[str] = []
+                self.cancelled = False
+
+            async def send(self, prompt: str) -> None:
+                self.sent_prompts.append(prompt)
+
+            async def cancel(self) -> None:
+                self.cancelled = True
+
+            async def receive_steps(self):
+                # Step 1: initial text + empty-args tool call start + populated-args tool call done
+                yield types.Step(
+                    id="traj:1",
+                    step_index=1,
+                    trajectory_id="traj",
+                    type=types.StepType.TEXT_RESPONSE,
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    status=types.StepStatus.ACTIVE,
+                    content_delta="Let me find the latest one.",
+                )
+                yield types.Step(
+                    id="traj:2",
+                    step_index=2,
+                    trajectory_id="traj",
+                    type=types.StepType.TOOL_CALL,
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.ENVIRONMENT,
+                    status=types.StepStatus.ACTIVE,
+                    tool_calls=[
+                        types.ToolCall(name="run_command", args={}, id="traj:2", step_id="traj:2")
+                    ],
+                )
+                yield types.Step(
+                    id="traj:2",
+                    step_index=2,
+                    trajectory_id="traj",
+                    type=types.StepType.TOOL_CALL,
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.ENVIRONMENT,
+                    status=types.StepStatus.DONE,
+                    tool_calls=[
+                        types.ToolCall(
+                            name="run_command",
+                            args={
+                                "command_line": "ls -la ~/.claude/projects",
+                                "exit_code": 0,
+                                "combined_output": "project-a\nproject-b",
+                            },
+                            id="traj:2",
+                            step_id="traj:2",
+                        )
+                    ],
+                )
+                # Step 2: second model text response after tool execution
+                yield types.Step(
+                    id="traj:3",
+                    step_index=3,
+                    trajectory_id="traj",
+                    type=types.StepType.TEXT_RESPONSE,
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    status=types.StepStatus.DONE,
+                    content_delta="The most recent activity is in project-a.",
+                    is_complete_response=True,
+                )
+
+        class _FakeAgent:
+            def __init__(self) -> None:
+                self.conversation = _FakeConversation()
+
+        buf = Console(record=True, width=110)
+        opts = HarnessOptions(
+            backend="openai",
+            model="z-ai/glm-5.3-prime",
+            base_url="http://127.0.0.1:8000/v1",
+            workspaces=[str(tmp_path)],
+            enable_opencommons=False,
+            enable_ast_repo_map=False,
+        )
+        tui = KardashevRichTUI(options=opts, console=buf)
+        tui.auto_inject_ast_map = False
+        fake_agent = _FakeAgent()
+        await tui._run_turn(fake_agent, "check latest chat", opts)  # type: ignore[arg-type]
+
+        assert len(tui.transcripts) == 1
+        tr = tui.transcripts[0]
+        # Sentences across distinct steps must be separated by \n\n, never glued as "one.The"
+        assert "one.The" not in tr.assistant_response
+        assert tr.assistant_response == "Let me find the latest one.\n\nThe most recent activity is in project-a."
+        # Tool call badge must have updated from empty args to the full command_line
+        assert len(tr.tools) == 1
+        assert tr.tools[0]["badge"] == "Bash"
+        assert "ls -la ~/.claude/projects" in tr.tools[0]["summary"]
+        assert tr.tools[0]["result_preview"] == "✓ project-a (+1 lines)"
+
+        # Simulate model switch / reconnect continuity context
+        tui._synced_transcript_count = 0
+        prior_ctx = tui._build_prior_turns_context()
+        assert "<prior_conversation_history>" in prior_ctx
+        assert "check latest chat" in prior_ctx
+
+        # 2. Test AuthenticatedOpenAIConnectionStrategy proxy suppresses BrokenPipeError when client disconnects mid-stream
+        class _UpstreamHandler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                for _ in range(10):
+                    try:
+                        self.wfile.write(b"data: " + (b"x" * 2048) + b"\n\n")
+                        self.wfile.flush()
+                    except OSError:
+                        break
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        upstream_srv = http.server.HTTPServer(("127.0.0.1", 0), _UpstreamHandler)
+        up_host, up_port = upstream_srv.server_address[:2]
+        up_thread = threading.Thread(target=upstream_srv.serve_forever, daemon=True)
+        up_thread.start()
+
+        strat = AuthenticatedOpenAIConnectionStrategy(
+            base_url=f"http://{up_host}:{up_port}/v1",
+            model_name="test-model",
+            api_key="test-key",
+        )
+        # Start only the proxy portion by mocking super().__aenter__
+        from google.antigravity.connections.local import local_openai_connection as _loc_oa
+
+        orig_aenter = _loc_oa.LocalOpenAIConnectionStrategy.__aenter__
+
+        async def _noop_aenter(self_obj: object) -> None:
+            return None
+
+        _loc_oa.LocalOpenAIConnectionStrategy.__aenter__ = _noop_aenter  # type: ignore[method-assign]
+        try:
+            await strat.__aenter__()
+            proxy_host, proxy_port = strat._proxy_server.server_address[:2]
+            # Connect a raw socket, send HTTP POST, read first bytes, and abruptly close to trigger BrokenPipeError
+            with socket.create_connection((proxy_host, proxy_port), timeout=3.0) as sock:
+                req_bytes = (
+                    b"POST /v1/chat/completions HTTP/1.1\r\n"
+                    b"Host: 127.0.0.1\r\n"
+                    b"Content-Type: application/json\r\n"
+                    b"Content-Length: 2\r\n\r\n{}"
+                )
+                sock.sendall(req_bytes)
+                _ = sock.recv(64)
+                # Abrupt RST/close while proxy is still streaming chunks
+        finally:
+            await strat.__aexit__(None, None, None)
+            _loc_oa.LocalOpenAIConnectionStrategy.__aenter__ = orig_aenter  # type: ignore[method-assign]
+            upstream_srv.shutdown()
+            upstream_srv.server_close()
+
+    asyncio.run(_run())
+
+

@@ -309,10 +309,18 @@ def _build_parser() -> argparse.ArgumentParser:
     int_p.add_argument(
         "target",
         nargs="?",
-        choices=["antigravity", "claude", "cursor", "codex", "all"],
-        default="all",
+        choices=["antigravity", "claude", "cursor", "codex", "all", None],
+        default=None,
         help="Target frontier coding agent (default: all).",
     )
+    int_p.add_argument("--all", action="store_true", help="Integrate all supported frontier coding agents.")
+    int_p.add_argument("--claude", action="store_true", help="Integrate Claude Code.")
+    int_p.add_argument("--codex", action="store_true", help="Integrate OpenAI Codex CLI.")
+    int_p.add_argument("--antigravity", action="store_true", help="Integrate Google Antigravity.")
+    int_p.add_argument("--cursor", action="store_true", help="Integrate Cursor.")
+    int_p.add_argument("--check", action="store_true", help="Check integration health and test live MCP stdio handshake.")
+    int_p.add_argument("--dry-run", action="store_true", help="Preview integration changes without writing files.")
+    int_p.add_argument("--force", action="store_true", help="Force overwrite existing configuration.")
     int_p.add_argument("--json", action="store_true", help="Output as JSON.")
 
     # 13. scout (fast AST Repo-Map & surgical code slice extractor)
@@ -360,6 +368,19 @@ def _build_parser() -> argparse.ArgumentParser:
     com_p.add_argument("--port", type=int, default=8765, help="Bind port for serve-hub (default: 8765).")
     com_p.add_argument("--force", action="store_true", help="Force full pull ignoring cached ETag.")
     com_p.add_argument("--json", action="store_true", help="Output as JSON.")
+
+    # 15. hub (run the OpenCommons Production Transparency Log & Ingestion Hub HTTP server)
+    hub_p = sub.add_parser(
+        "hub",
+        help="Run the OpenCommons Production Transparency Log & Ingestion Hub HTTP server.",
+    )
+    hub_p.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0).")
+    hub_p.add_argument("--port", type=int, default=7860, help="Bind port (default: 7860).")
+    hub_p.add_argument(
+        "--store",
+        default="commons/opencommons.db",
+        help="Path to SQLite database (default: commons/opencommons.db).",
+    )
 
     return parser
 
@@ -763,15 +784,45 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 def _cmd_integrate(args: argparse.Namespace) -> int:
     ensure_bin_symlinks()
-    target = getattr(args, "target", "all") or "all"
-    results = integrate_frontier_agent(target)
+    targets: list[str] = []
+    if getattr(args, "claude", False):
+        targets.append("claude")
+    if getattr(args, "codex", False):
+        targets.append("codex")
+    if getattr(args, "antigravity", False):
+        targets.append("antigravity")
+    if getattr(args, "cursor", False):
+        targets.append("cursor")
+
+    pos_target = getattr(args, "target", None)
+    if getattr(args, "all", False) or (not targets and (pos_target == "all" or pos_target is None)):
+        targets = ["claude", "cursor", "codex", "antigravity"]
+    elif pos_target and pos_target != "all" and not targets:
+        targets = [pos_target]
+
+    if getattr(args, "check", False):
+        from kardashev_cli.integrate import check_integrations
+
+        summary = check_integrations(targets=targets)
+        if getattr(args, "json", False):
+            print(json.dumps(summary.to_dict(), indent=2))
+        else:
+            print(summary.format_table())
+        return 0 if summary.all_ok else 1
+
+    dry_run = getattr(args, "dry_run", False)
+    force = getattr(args, "force", False)
+    results = integrate_frontier_agent(targets, dry_run=dry_run, force=force)
     if getattr(args, "json", False):
         print(json.dumps([r.to_dict() for r in results], indent=2))
         return 0
-    print("=== Kardashev CLI Frontier Agent Co-Processor Integration ===")
+    prefix = "[DRY-RUN] " if dry_run else ""
+    print(f"=== {prefix}Kardashev CLI Frontier Agent Co-Processor Integration ===")
     for r in results:
-        print(f"  ✓ [{r.target.upper()}]")
+        print(f"  ✓ [{r.target.upper()}] status: {r.status}")
         print(f"      MCP Config : {r.mcp_config_path}")
+        if r.backup_path:
+            print(f"      Backup     : {r.backup_path}")
         print(f"      Skill/Rule : {r.skill_path}")
         print(f"      Executable : {r.binary_command}")
     return 0
@@ -842,6 +893,11 @@ def _cmd_commons(args: argparse.Namespace) -> int:
     if action == "serve-hub":
         host = getattr(args, "host", "127.0.0.1") or "127.0.0.1"
         port = int(getattr(args, "port", 8765) or 8765)
+        if store_path and any(str(store_path).endswith(ext) for ext in (".db", ".sqlite", ".sqlite3")):
+            from kardashev_cli.opencommons_hub import run_hub_server
+
+            run_hub_server(host=host, port=port, db_path=store_path)
+            return 0
         srv = create_opencommons_hub_server(host=host, port=port, store_path=store_path)
         actual_host, actual_port = srv.server_address[:2]
         print(f"=== OpenCommons CRDT Gossip Hub listening on http://{actual_host}:{actual_port} ===")
@@ -1018,6 +1074,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_scout(args)
         if args.command == "commons":
             return _cmd_commons(args)
+        if args.command == "hub":
+            from kardashev_cli.opencommons_hub import run_hub_server
+
+            run_hub_server(
+                host=getattr(args, "host", "0.0.0.0") or "0.0.0.0",
+                port=int(getattr(args, "port", 7860) or 7860),
+                db_path=getattr(args, "store", "commons/opencommons.db") or "commons/opencommons.db",
+            )
+            return 0
         if args.command == "presets":
             return _cmd_presets(args)
         if args.command == "models":

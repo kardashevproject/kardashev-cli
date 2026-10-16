@@ -1,0 +1,35 @@
+[Unit]
+Description=OpenCommons Production Transparency Log & Ingestion Hub
+After=network.target
+Documentation=https://github.com/kardashevproject/kardashev-cli
+
+[Service]
+Type=simple
+User=opencommons
+Group=opencommons
+WorkingDirectory=/var/lib/opencommons
+Environment=PYTHONUNBUFFERED=1
+Environment=OPENCOMMONS_DB_PATH=/var/lib/opencommons/opencommons.db
+Environment=OPENCOMMONS_HOST=0.0.0.0
+Environment=OPENCOMMONS_PORT=7860
+ExecStart=/usr/local/bin/kardashev commons serve-hub --host 0.0.0.0 --port 7860 --store /var/lib/opencommons/opencommons.db
+Restart=always
+RestartSec=5
+LimitNOFILE=65536
+
+# Systemd Sandboxing & Security Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/opencommons /var/log/opencommons
+PrivateTmp=true
+PrivateDevices=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+[Install]
+WantedBy=multi-user.target

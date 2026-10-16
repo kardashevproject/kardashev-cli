@@ -533,6 +533,9 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
         sys.stderr.write("\n[Interrupted]\n")
         return 130
     except Exception as exc:  # noqa: BLE001
+        from kardashev_cli.tui_core import log_background_exception
+
+        log_path = log_background_exception("cli_exec", exc)
         err_msg = str(exc)
         if "connection refused" in err_msg.lower() or "failed to send http request" in err_msg.lower():
             base_url = getattr(cfg, "base_url", "http://127.0.0.1:8000/v1")
@@ -541,9 +544,10 @@ async def _cmd_exec(args: argparse.Namespace) -> int:
                 f"\n✗ Inference endpoint unreachable at {base_url} for model '{model_name}'.\n"
                 f"  • Start the local server first: kardashev serve --model {model_name}\n"
                 f"  • Or use in-process LiteRT GPU/NPU: kardashev exec -p gemma4-26b \"...\"\n"
+                f"  • Diagnostic log: {log_path}\n"
             )
             return 1
-        sys.stderr.write(f"\n✗ Agent execution error: {err_msg}\n")
+        sys.stderr.write(f"\n✗ Agent execution error: {err_msg}\n  • Diagnostic log: {log_path}\n")
         return 1
 
     return 0
@@ -631,11 +635,16 @@ def _cmd_models(args: argparse.Namespace) -> int:
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
+    import importlib.util
+
+    from kardashev_cli.tui_core import get_default_log_path
+
     litert_bin = shutil.which("litert-lm") or (
         os.path.join(os.path.dirname(sys.executable), "litert-lm")
         if os.path.exists(os.path.join(os.path.dirname(sys.executable), "litert-lm"))
         else None
     )
+    litert_sdk_installed = importlib.util.find_spec("litert_lm") is not None
     ensure_bin_symlinks()
     nvidia_smi = shutil.which("nvidia-smi")
     chronos_mcp = shutil.which("chronosml-mcp")
@@ -644,10 +653,12 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     endpoints = probe_local_endpoints()
     oc_store = load_persistent_store()
     oc_pending = load_pending_proposals()
+    log_path = str(get_default_log_path())
 
     report = {
         "python": sys.executable,
         "litert_lm_cli": litert_bin,
+        "litert_lm_sdk_installed": litert_sdk_installed,
         "nvidia_gpu_detected": bool(nvidia_smi),
         "chronosml_mcp_detected": bool(chronos_mcp),
         "opencommons_mcp_detected": bool(opencommons_mcp),
@@ -655,6 +666,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
         "opencommons_pending_proposals": len(oc_pending),
         "discovered_models_count": len(models),
         "online_endpoints": [e.base_url for e in endpoints if e.reachable],
+        "log_file": log_path,
     }
 
     if args.json:
@@ -664,6 +676,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     print("=== Kardashev CLI Environment Doctor ===")
     print(f"  Python interpreter   : {report['python']}")
     print(f"  litert-lm CLI        : {report['litert_lm_cli'] or 'MISSING (pip install litert-lm)'}")
+    print(
+        f"  litert-lm Python SDK : {'INSTALLED' if litert_sdk_installed else 'MISSING (pip install litert-lm-api)'}"
+    )
     print(f"  NVIDIA GPU (CUDA)    : {'DETECTED' if report['nvidia_gpu_detected'] else 'Not found'}")
     print(f"  ChronosML MCP        : {chronos_mcp or 'Not in PATH'}")
     print(
@@ -672,6 +687,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     )
     print(f"  Cached Local Models  : {len(models)} found")
     print(f"  Live Local Servers   : {len(report['online_endpoints'])} online")
+    print(f"  Background Log File  : {log_path}")
     return 0
 
 
@@ -1087,6 +1103,9 @@ def _cmd_commons(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from kardashev_cli.tui_core import configure_background_logging, log_background_exception
+
+    configure_background_logging()
     parser = _build_parser()
     args_list = list(argv) if argv is not None else sys.argv[1:]
 
@@ -1154,6 +1173,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 130
     except BrokenPipeError:
         return 0
+    except Exception as exc:
+        log_path = log_background_exception(f"cli_main ({getattr(args, 'command', 'unknown')})", exc)
+        if os.environ.get("KARDASHEV_DEBUG", "").lower() in ("1", "true", "yes"):
+            raise
+        first_line = (str(exc).strip().splitlines() or [type(exc).__name__])[0]
+        sys.stderr.write(
+            f"✗ Kardashev CLI error: {first_line}\n"
+            f"  • Full traceback logged to: {log_path}\n"
+            f"  • Run `kardashev doctor` to check your environment.\n"
+        )
+        return 1
 
     parser.print_help()
     return 0

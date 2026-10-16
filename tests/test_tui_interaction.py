@@ -646,3 +646,271 @@ def test_diff_stats_and_copy_code_block(tmp_path) -> None:
     assert "Wrote 1 line(s)" in buf.export_text()
 
 
+def test_agent_startup_failure_logged_without_terminal_traceback(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Reproduces the exact Agent.__aenter__ RuntimeError + root logger.exception crash.
+
+    Verifies:
+    1. Zero raw Python tracebacks or 'ERROR:root:' lines leak to terminal stdout/stderr.
+    2. Full stack trace is written to the background log file (`kardashev.log`).
+    3. A friendly, actionable diagnostic panel is rendered in the TUI.
+    4. The TUI loop stays alive for `/status` and `/exit` and exits cleanly with code 0.
+    """
+    import logging
+
+    from rich.console import Console
+
+    import kardashev_cli.tui as tui_mod
+    from kardashev_cli.tui_core import configure_background_logging
+
+    log_file = tmp_path / "logs" / "kardashev.log"
+    monkeypatch.setenv("KARDASHEV_LOG_PATH", str(log_file))
+    monkeypatch.delenv("KARDASHEV_DEBUG", raising=False)
+
+    # Simulate a console StreamHandler attached to root logger before startup
+    root_logger = logging.getLogger()
+    noisy_stream_handler = logging.StreamHandler()
+    root_logger.addHandler(noisy_stream_handler)
+    configure_background_logging(log_file)
+
+    class _FailingAgent:
+        def __init__(self, cfg: object) -> None:
+            self.cfg = cfg
+
+        async def __aenter__(self) -> object:
+            try:
+                raise RuntimeError(
+                    "The 'litert-lm-api' PyPI package is required. Install it using: pip install litert-lm-api"
+                )
+            except RuntimeError:
+                logging.exception("Failed to start Agent session, cleaning up...")  # noqa: LOG015
+                raise
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+    monkeypatch.setattr(tui_mod, "Agent", _FailingAgent)
+
+    commands = iter(["/status", "hello while disconnected", "/exit"])
+
+    async def _fake_input(_prompt: str = "") -> str:
+        try:
+            return next(commands)
+        except StopIteration as stop:
+            raise EOFError from stop
+
+    monkeypatch.setattr(tui_mod, "_nonblocking_input", _fake_input)
+    monkeypatch.setattr(tui_mod.sys.stdin, "isatty", lambda: False)
+
+    tui = _make_tui(tmp_path)
+    buf = Console(record=True, width=110)
+    tui.console = buf
+
+    rc = asyncio.run(tui.run())
+    assert rc == 0
+
+    rendered = buf.export_text()
+    captured = capsys.readouterr()
+
+    # Zero raw tracebacks or root logger spam on terminal stdout/stderr/console
+    assert "Traceback (most recent call last)" not in rendered
+    assert "Traceback (most recent call last)" not in captured.out
+    assert "Traceback (most recent call last)" not in captured.err
+    assert "ERROR:root:" not in rendered
+    assert "ERROR:root:" not in captured.out
+    assert "ERROR:root:" not in captured.err
+
+    # Friendly diagnostic panel & resilient session commands worked
+    assert "Local LiteRT Runtime Missing" in rendered
+    assert "pip install litert-lm-api" in rendered
+    assert "Model engine is not connected" in rendered
+    assert "Session closed cleanly" in rendered
+
+    # Full traceback is preserved in background log file
+    assert log_file.exists()
+    log_text = log_file.read_text(encoding="utf-8")
+    assert "litert-lm-api" in log_text
+    assert "Traceback (most recent call last)" in log_text
+
+
+def test_completer_slash_commands_subargs_and_at_mentions(tmp_path) -> None:
+    """Verifies live autocomplete candidates for /, /preset, /model, /policy, /theme, and @file."""
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from kardashev_cli.tui import KardashevCompleter
+
+    (tmp_path / "alpha_module.py").write_text("x = 1\n", encoding="utf-8")
+    completer = KardashevCompleter(str(tmp_path))
+    ev = CompleteEvent(completion_requested=True)
+
+    # 1. Typing '/' immediately offers slash commands with descriptions
+    slash_docs = list(completer.get_completions(Document("/", cursor_position=1), ev))
+    slash_names = [c.text for c in slash_docs]
+    assert "/preset" in slash_names
+    assert "/model" in slash_names
+    assert "/resume" in slash_names
+    assert "/todos" in slash_names
+    assert any(c.display_meta for c in slash_docs)
+
+    # 2. Typing '/preset ' offers preset keys with metadata
+    preset_docs = list(completer.get_completions(Document("/preset ", cursor_position=8), ev))
+    preset_names = [c.text for c in preset_docs]
+    assert "gemma4-26b" in preset_names
+    assert any(c.display_meta for c in preset_docs)
+
+    # 3. Typing '/model ' offers model/preset targets
+    model_docs = list(completer.get_completions(Document("/model ", cursor_position=7), ev))
+    model_names = [c.text for c in model_docs]
+    assert "gemma4-26b" in model_names
+
+    # 4. Typing '/policy ' offers allow-all, sandbox, ask
+    policy_docs = list(completer.get_completions(Document("/policy ", cursor_position=8), ev))
+    assert {c.text for c in policy_docs} >= {"allow-all", "sandbox", "ask"}
+
+    # 5. Typing '/theme ' offers dark and light
+    theme_docs = list(completer.get_completions(Document("/theme ", cursor_position=7), ev))
+    assert {c.text for c in theme_docs} >= {"dark", "light"}
+
+    # 6. Typing '@alp' offers '@alpha_module.py' and '@git:diff' on '@git'
+    file_docs = list(completer.get_completions(Document("check @alp", cursor_position=10), ev))
+    assert any("alpha_module.py" in c.text for c in file_docs)
+    git_docs = list(completer.get_completions(Document("review @git", cursor_position=11), ev))
+    assert any(c.text == "@git:diff" for c in git_docs)
+
+
+def test_async_interactive_select_arrow_navigation_and_escape() -> None:
+    """Tests the arrow-key interactive picker (`↑/↓` + `Enter` and `Esc` to cancel)."""
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from kardashev_cli.tui_core import async_interactive_select
+
+    items = [
+        ("gemma4-26b", "gemma4-26b", "LiteRT GPU · 24GB"),
+        ("glm4-9b-ollama", "glm4-9b-ollama", "Ollama · 8GB"),
+        ("qwen3-vl-8b-vllm", "qwen3-vl-8b-vllm", "vLLM · 12GB"),
+    ]
+
+    async def _select_second() -> str | None:
+        with create_pipe_input() as pipe_in:
+            # Down arrow (\x1b[B) then Enter (\r)
+            pipe_in.send_text("\x1b[B\r")
+            return await async_interactive_select(
+                "Select Preset",
+                items,
+                default_key="gemma4-26b",
+                input_obj=pipe_in,
+                output_obj=DummyOutput(),
+            )
+
+    chosen = asyncio.run(_select_second())
+    assert chosen == "glm4-9b-ollama"
+
+    async def _cancel_with_escape() -> str | None:
+        with create_pipe_input() as pipe_in:
+            pipe_in.send_text("\x1b")
+            return await async_interactive_select(
+                "Select Preset",
+                items,
+                default_key="gemma4-26b",
+                input_obj=pipe_in,
+                output_obj=DummyOutput(),
+            )
+
+    cancelled = asyncio.run(_cancel_with_escape())
+    assert cancelled is None
+
+
+def test_no_arg_slash_commands_use_interactive_picker(tmp_path, monkeypatch) -> None:
+    """Verifies `/preset`, `/policy`, and `/theme` with no args invoke the interactive picker."""
+    from rich.console import Console
+
+    import kardashev_cli.tui as tui_mod
+
+    tui = _make_tui(tmp_path)
+    tui.console = Console(record=True, width=100)
+
+    # 1. /theme with no args -> interactive picker selects 'light'
+    async def _pick_light(*_args, **_kwargs) -> str | None:
+        return "light"
+
+    monkeypatch.setattr(tui_mod, "async_interactive_select", _pick_light)
+    asyncio.run(tui._handle_slash_command("/theme", None, tui.options))  # type: ignore[arg-type]
+    assert tui.theme.name == "light"
+
+    # 2. /policy with no args -> interactive picker selects 'sandbox'
+    async def _pick_sandbox(*_args, **_kwargs) -> str | None:
+        return "sandbox"
+
+    monkeypatch.setattr(tui_mod, "async_interactive_select", _pick_sandbox)
+    should_restart = asyncio.run(tui._handle_slash_command("/policy", None, tui.options))  # type: ignore[arg-type]
+    assert should_restart is True
+    assert tui.options.policy_mode.value == "sandbox"
+
+
+def test_streaming_stress_rapid_tokens_fences_and_checklists(tmp_path) -> None:
+    """Stress-tests `_run_turn` with 200+ rapid chunks, unclosed code fences, and checklists."""
+    from types import SimpleNamespace
+
+    from google.antigravity import types
+    from rich.console import Console
+
+    tui = _make_tui(tmp_path)
+    buf = Console(record=True, width=100)
+    tui.console = buf
+
+    chunks: list[str] = [
+        "- [ ] Initialize matrix\n",
+        "- [x] Validate dimensions\n",
+        "```python\n",
+    ]
+    for i in range(200):
+        chunks.append(f"x_{i} = {i} * 2\n")
+    chunks.append("```\n")
+    chunks.append("- [x] Initialize matrix\n")
+
+    class _StressConversation:
+        last_turn_usage = None
+
+        async def send(self, _prompt: str) -> None:
+            return None
+
+        async def receive_steps(self):
+            for i in range(20):
+                yield SimpleNamespace(
+                    id="step-1",
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    thinking_delta=f"thought_{i} ",
+                    content_delta="",
+                    is_complete_response=False,
+                    content="",
+                    tool_calls=[],
+                    status=None,
+                )
+            for idx, c in enumerate(chunks):
+                yield SimpleNamespace(
+                    id="step-1",
+                    source=types.StepSource.MODEL,
+                    target=types.StepTarget.USER,
+                    thinking_delta="",
+                    content_delta=c,
+                    is_complete_response=(idx == len(chunks) - 1),
+                    content="",
+                    tool_calls=[],
+                    status=types.StepStatus.DONE if idx == len(chunks) - 1 else None,
+                )
+
+    class _StressAgent:
+        conversation = _StressConversation()
+
+    asyncio.run(tui._run_turn(_StressAgent(), "run stress test", tui.options))  # type: ignore[arg-type]
+    assert tui.session_turns == 1
+    assert len(tui.todos.items) == 2
+    assert sum(1 for t in tui.todos.items if t.status == "done") == 2
+    assert "x_199 = 199 * 2" in tui.transcripts[-1].assistant_response
+
+
+

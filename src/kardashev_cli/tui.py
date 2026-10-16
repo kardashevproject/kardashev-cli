@@ -45,10 +45,12 @@ from google.antigravity import Agent, types
 from google.antigravity.hooks import hooks as hooks_mod
 from google.antigravity.hooks import policy as policy_mod
 from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style as PtStyle
 from rich.console import Console, Group
 from rich.live import Live
@@ -72,15 +74,18 @@ from kardashev_cli.tui_core import (
     THEMES,
     TodoTracker,
     TUITheme,
+    async_interactive_select,
     balance_markdown_fences,
     build_help_footer,
     compute_diff_stats,
+    configure_background_logging,
     current_activity,
     extract_last_code_block,
     format_activity_line,
     format_approval_prompt,
     get_theme,
     list_recent_sessions,
+    log_background_exception,
     render_sessions_picker,
     resolve_session_target,
     validate_slash_command,
@@ -666,11 +671,21 @@ def expand_at_file_mentions(prompt_text: str, workspace: str) -> tuple[str, list
 
 
 class KardashevCompleter(Completer):
-    """Provides tab completion for `/slash` commands, presets, policies, sessions, todos, and `@file` / `@git:` mentions."""
+    """Provides live pop-up completion for `/slash` commands, models, presets, policies, sessions, todos, and `@file` / `@git:` mentions."""
 
     def __init__(self, workspace: str, sessions_dir: Path | None = None) -> None:
         self.workspace = workspace
         self.sessions_dir = sessions_dir
+        self._cached_models: list[Any] = []
+        self._cached_models_ts: float = 0.0
+
+    def _get_discovered_models(self) -> list[Any]:
+        now = time.monotonic()
+        if (now - self._cached_models_ts) > 10.0 or not self._cached_models:
+            with contextlib.suppress(Exception):
+                self._cached_models = discover_local_models()
+                self._cached_models_ts = now
+        return self._cached_models
 
     def get_completions(self, document: Any, complete_event: Any) -> Any:
         text_before = document.text_before_cursor
@@ -716,43 +731,95 @@ class KardashevCompleter(Completer):
             cur_arg = parts[1] if len(parts) > 1 and not text_before.endswith(" ") else ""
             if cmd_name == "/preset":
                 for p in list_presets():
-                    if p.key.startswith(cur_arg):
+                    if p.key.startswith(cur_arg.lower()):
                         yield Completion(
                             p.key,
                             start_position=-len(cur_arg),
                             display=p.key,
-                            display_meta=f"{p.backend.value} · {p.model_id}",
+                            display_meta=f"{p.backend.value} · {p.model_id} — {p.description}",
+                        )
+                return
+            if cmd_name in ("/model", "/serve"):
+                seen_names: set[str] = set()
+                for m in self._get_discovered_models():
+                    if m.name.lower().startswith(cur_arg.lower()):
+                        seen_names.add(m.name.lower())
+                        yield Completion(
+                            m.name,
+                            start_position=-len(cur_arg),
+                            display=m.name,
+                            display_meta=f"local {m.backend.value} · {m.size_gb:.1f} GB ({m.source})",
+                        )
+                for p in list_presets():
+                    if p.key.lower() not in seen_names and p.key.lower().startswith(cur_arg.lower()):
+                        yield Completion(
+                            p.key,
+                            start_position=-len(cur_arg),
+                            display=p.key,
+                            display_meta=f"preset ({p.backend.value}) · {p.model_id}",
                         )
                 return
             if cmd_name == "/policy":
-                for mode in ("allow-all", "ask", "sandbox"):
-                    if mode.startswith(cur_arg):
-                        yield Completion(mode, start_position=-len(cur_arg), display=mode)
+                policy_opts = (
+                    ("allow-all", "Autonomous tool execution without confirmation prompts"),
+                    ("sandbox", "Autonomous execution inside isolated OS sandbox"),
+                    ("ask", "Prompt before file edits and shell commands (3-line diff prompt)"),
+                )
+                for mode, meta in policy_opts:
+                    if mode.startswith(cur_arg.lower()):
+                        yield Completion(mode, start_position=-len(cur_arg), display=mode, display_meta=meta)
                 return
             if cmd_name == "/ralph":
-                for opt in ("off", "pytest -q", "ruff check src tests && pytest -q"):
+                ralph_opts = (
+                    ("off", "Disable autonomous post-turn verification loop"),
+                    ("pytest -q", "Run pytest after every turn and auto-repair failures"),
+                    ("ruff check src tests && pytest -q", "Run lint + pytest verification loop"),
+                )
+                for opt, meta in ralph_opts:
                     if opt.startswith(cur_arg):
-                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt, display_meta=meta)
                 return
             if cmd_name == "/checkpoint":
-                for opt in ("create", "list"):
-                    if opt.startswith(cur_arg):
-                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                for opt, meta in (("create", "Create git snapshot checkpoint"), ("list", "List saved git checkpoints")):
+                    if opt.startswith(cur_arg.lower()):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt, display_meta=meta)
                 return
             if cmd_name == "/commons":
-                for opt in ("status", "find", "review", "approve", "reject", "pull", "push", "seed"):
-                    if opt.startswith(cur_arg):
-                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                commons_opts = (
+                    ("status", "Show active OpenCommons store counts and pending queue"),
+                    ("find", "Search verified scientific/algorithmic concept cards"),
+                    ("review", "Inspect pending concept proposals"),
+                    ("approve", "Approve a staged proposal into the verified store"),
+                    ("reject", "Reject a staged proposal"),
+                    ("pull", "Pull verified concepts from OpenCommons Hub"),
+                    ("push", "Push local peer-reviewed concepts to OpenCommons Hub"),
+                    ("seed", "Seed initial foundational concept cards"),
+                )
+                for opt, meta in commons_opts:
+                    if opt.startswith(cur_arg.lower()):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt, display_meta=meta)
                 return
             if cmd_name == "/todos":
-                for opt in ("list", "add", "done", "wip", "clear", "collapse", "expand", "toggle"):
-                    if opt.startswith(cur_arg):
-                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                todo_opts = (
+                    ("list", "Show session task checklist panel"),
+                    ("add", "Add a new task to the session checklist"),
+                    ("wip", "Mark a task as in-progress (◐)"),
+                    ("done", "Mark a task as completed (✓)"),
+                    ("remove", "Remove a task by # or text prefix"),
+                    ("clear", "Clear all tasks from the session checklist"),
+                    ("collapse", "Toggle compact 1-line summary vs full checklist"),
+                )
+                for opt, meta in todo_opts:
+                    if opt.startswith(cur_arg.lower()):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt, display_meta=meta)
                 return
             if cmd_name == "/theme":
-                for opt in ("dark", "light"):
-                    if opt.startswith(cur_arg):
-                        yield Completion(opt, start_position=-len(cur_arg), display=opt)
+                for opt, meta in (
+                    ("dark", "Kardashev Obsidian Dark palette"),
+                    ("light", "OpenCommons Paper Light palette"),
+                ):
+                    if opt.startswith(cur_arg.lower()):
+                        yield Completion(opt, start_position=-len(cur_arg), display=opt, display_meta=meta)
                 return
             if cmd_name in ("/resume", "/load"):
                 sdir = self.sessions_dir or (
@@ -760,15 +827,15 @@ class KardashevCompleter(Completer):
                     if "KARDASHEV_SESSIONS_DIR" in os.environ
                     else Path.home() / ".local" / "share" / "kardashev" / "sessions"
                 )
-                if "latest".startswith(cur_arg):
+                if "latest".startswith(cur_arg.lower()):
                     yield Completion("latest", start_position=-len(cur_arg), display="latest", display_meta="most recent session")
-                for s in list_recent_sessions(sdir, limit=10):
-                    if s.session_id.startswith(cur_arg):
+                for idx_num, s in enumerate(list_recent_sessions(sdir, limit=10), start=1):
+                    if s.session_id.startswith(cur_arg) or str(idx_num) == cur_arg:
                         yield Completion(
                             s.session_id,
                             start_position=-len(cur_arg),
-                            display=s.session_id,
-                            display_meta=f"{s.turn_count} turns · {s.model or s.preset or 'default'}",
+                            display=f"[{idx_num}] {s.session_id}",
+                            display_meta=f"{s.turn_count} turns · {s.model or s.preset or 'default'} · {s.first_prompt[:36]}",
                         )
                 return
 
@@ -977,6 +1044,7 @@ class KardashevRichTUI:
         theme: str | TUITheme | None = None,
         sessions_dir: Path | None = None,
     ) -> None:
+        configure_background_logging()
         self.options = options
         self.console = console or Console()
         self.theme: TUITheme = theme if isinstance(theme, TUITheme) else get_theme(theme)
@@ -1195,36 +1263,58 @@ class KardashevRichTUI:
                 return True
         return False
 
-    def _render_connection_error(self, exc: Exception, cfg: Any) -> None:
-        """Renders a diagnostic panel when a local/remote inference endpoint fails without crashing the TUI."""
+    def _render_connection_error(
+        self,
+        exc: BaseException,
+        cfg: Any,
+        *,
+        log_path: Path | None = None,
+    ) -> None:
+        """Renders a compact diagnostic panel when an inference endpoint fails without dumping raw tracebacks."""
+        recorded_log = log_path or log_background_exception("model_connection", exc)
         model_label, backend_label, _ = self._active_model_summary(cfg)
         base_url = str(getattr(cfg, "base_url", "http://127.0.0.1:8000/v1"))
         cleaned_lines = [
-            ln
+            ln.strip()
             for ln in str(exc).splitlines()
-            if not any(noisy in ln for noisy in _NOISY_STDERR_SUBSTRINGS)
+            if ln.strip()
+            and not ln.strip().startswith("Traceback (most recent call last)")
+            and not ln.strip().startswith("File \"")
+            and not any(noisy in ln for noisy in _NOISY_STDERR_SUBSTRINGS)
         ]
-        err_str = "\n".join(cleaned_lines).strip() or str(exc)
+        err_str = cleaned_lines[0] if cleaned_lines else type(exc).__name__
+        if len(err_str) > 160:
+            err_str = err_str[:157] + "..."
         is_conn_refused = "connection refused" in err_str.lower() or "failed to send http request" in err_str.lower()
+        is_litert_missing = "litert-lm-api" in err_str.lower() or "litert_lm" in err_str.lower()
 
         if is_conn_refused:
             body = (
                 f"[bold red]✗ Could not connect to OpenAI inference server at `{base_url}`[/bold red]\n"
-                f"[dim]{err_str}[/dim]\n\n"
-                f"[bold white]How to resolve:[/bold white]\n"
-                f"1. Start the local server in another terminal:\n"
-                f"   [bold green]kardashev serve --model {model_label}[/bold green]\n"
-                f"2. Or switch immediately to an in-process LiteRT GPU/NPU model (zero server required):\n"
-                f"   [bold cyan]/preset gemma4-26b[/bold cyan]  or  [bold cyan]/models[/bold cyan]"
+                f"[dim]{escape(err_str)}[/dim]\n\n"
+                f"• Start server: [bold green]kardashev serve --model {model_label}[/bold green] "
+                f"(or [bold green]/serve {model_label}[/bold green])\n"
+                f"• Switch model interactively: [bold cyan]/preset[/bold cyan] · [bold cyan]/model[/bold cyan]\n"
+                f"[dim]Full diagnostic trace logged to {recorded_log}[/dim]"
             )
             title = "[bold red]Inference Endpoint Unreachable[/bold red]"
+        elif is_litert_missing:
+            body = (
+                f"[bold red]✗ Local LiteRT runtime package is missing for `{model_label}`[/bold red]\n"
+                f"[dim]{escape(err_str)}[/dim]\n\n"
+                f"• Install into active environment: [bold green]pip install litert-lm-api litert-lm[/bold green]\n"
+                f"• Or switch to a server preset: [bold cyan]/preset[/bold cyan] · [bold cyan]/model[/bold cyan] · [bold cyan]/doctor[/bold cyan]\n"
+                f"[dim]Full diagnostic trace logged to {recorded_log}[/dim]"
+            )
+            title = "[bold red]Local LiteRT Runtime Missing[/bold red]"
         else:
             body = (
-                f"[bold red]✗ Model execution error on `{model_label}` ({backend_label}):[/bold red]\n"
-                f"[dim]{err_str}[/dim]\n\n"
-                f"[dim]Tip: Use `/preset gemma4-26b` or `/models` to switch models, or `/doctor` to inspect hardware.[/dim]"
+                f"[bold red]✗ Model engine `{model_label}` ({backend_label}) unavailable:[/bold red] {escape(err_str)}\n"
+                f"• Switch model interactively with [bold cyan]/preset[/bold cyan] or [bold cyan]/model[/bold cyan], "
+                f"or inspect environment with [bold cyan]/doctor[/bold cyan].\n"
+                f"[dim]Full diagnostic trace logged to {recorded_log}[/dim]"
             )
-            title = "[bold red]Agent Execution Error[/bold red]"
+            title = "[bold red]Model Engine Notice[/bold red]"
 
         self.console.print()
         self.console.print(Panel(body, title=title, border_style="red", padding=(0, 1)))
@@ -1396,7 +1486,8 @@ class KardashevRichTUI:
 
         if cmd == "/status":
             model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
-            usage = agent.conversation.total_usage
+            conv = getattr(agent, "conversation", None) if agent is not None else None
+            usage = getattr(conv, "total_usage", None) if conv is not None else None
             p_tok = (usage.prompt_token_count or 0) if usage and usage.prompt_token_count else self.total_prompt_tokens
             c_tok = (
                 (usage.candidates_token_count or 0)
@@ -1416,7 +1507,8 @@ class KardashevRichTUI:
             tbl.add_column("Value", style="white")
             tbl.add_row("Active Model", f"[bold {self.theme.accent}]{model_label}[/bold {self.theme.accent}] ({backend_label})")
             tbl.add_row("Active Theme", f"{self.theme.name} ({self.theme.label})")
-            tbl.add_row("Conversation ID", agent.conversation.conversation_id or "(local)")
+            conv_id = (getattr(conv, "conversation_id", None) if conv is not None else None) or "(local)"
+            tbl.add_row("Conversation ID", conv_id)
             tbl.add_row("Completed Turns", str(self.session_turns))
             tbl.add_row("Executed Tool Calls", f"{self.session_tool_calls} ({'expanded' if self.expand_tools else 'collapsed'})")
             tbl.add_row("Session Todos", self.todos.summary_badge() or "0 tracked (use /todos)")
@@ -1435,9 +1527,10 @@ class KardashevRichTUI:
                 f"[yellow]{htel.commons_proposals_queued} queued for review[/yellow] · "
                 f"[red]{htel.commons_counterexamples_reported} counterexample(s)[/red]",
             )
+            comp_indices = getattr(conv, "compaction_indices", []) if conv is not None else []
             tbl.add_row(
                 "Compaction Events",
-                str(max(len(agent.conversation.compaction_indices), self.compaction_notifications)),
+                str(max(len(comp_indices), self.compaction_notifications)),
             )
             tbl.add_row("Workspace Checkpoints", f"{len(self.checkpoints)} saved (use /checkpoint or /rewind)")
             tbl.add_row(
@@ -1448,7 +1541,8 @@ class KardashevRichTUI:
             return False
 
         if cmd == "/clear":
-            agent.conversation.clear_history()
+            if agent is not None and getattr(agent, "conversation", None) is not None:
+                agent.conversation.clear_history()
             self.transcripts.clear()
             self.console.clear()
             self.console.print(self.render_welcome_banner(cfg))
@@ -1477,14 +1571,25 @@ class KardashevRichTUI:
             return False
 
         if cmd == "/theme":
-            if not args:
-                self.console.print(
-                    f"[{self.theme.accent}]Active theme:[/{self.theme.accent}] "
-                    f"[bold]{self.theme.name}[/bold] ({self.theme.label})\n"
-                    f"[dim]Usage: /theme <dark|light> (or set KARDASHEV_THEME=light)[/dim]"
+            target_theme: str | None = args[0].lower().strip() if args else None
+            if not target_theme:
+                picked = await async_interactive_select(
+                    "Select TUI Theme",
+                    [
+                        ("dark", "dark", "Kardashev Obsidian Dark palette"),
+                        ("light", "light", "OpenCommons Paper Light palette"),
+                    ],
+                    default_key=self.theme.name,
+                    theme=self.theme,
                 )
-                return False
-            target_theme = args[0].lower().strip()
+                if picked is None:
+                    self.console.print(
+                        f"[{self.theme.accent}]Active theme:[/{self.theme.accent}] "
+                        f"[bold]{self.theme.name}[/bold] ({self.theme.label})\n"
+                        f"[dim]Usage: /theme <dark|light> (or set KARDASHEV_THEME=light)[/dim]"
+                    )
+                    return False
+                target_theme = picked
             if target_theme not in THEMES:
                 self.console.print(
                     f"[{self.theme.error}]Unknown theme '{escape(target_theme)}'. Available themes: dark, light[/{self.theme.error}]"
@@ -1713,15 +1818,16 @@ class KardashevRichTUI:
                 "Here is a concise summary of our earlier conversation turns prior to manual compaction:\n"
                 + "\n".join(summary_bullets)
             )
-            agent.conversation.clear_history()
             self.total_prompt_tokens = len(compact_seed) // 4
             self.total_output_tokens = 0
             self.compaction_notifications += 1
-            await agent.conversation.send(
-                f"{compact_seed}\n\nAcknowledge compaction in one short line and await my next instruction."
-            )
-            async for _ in agent.conversation.receive_steps():
-                pass
+            if agent is not None and getattr(agent, "conversation", None) is not None:
+                agent.conversation.clear_history()
+                await agent.conversation.send(
+                    f"{compact_seed}\n\nAcknowledge compaction in one short line and await my next instruction."
+                )
+                async for _ in agent.conversation.receive_steps():
+                    pass
             self.console.print(
                 f"[green]✓ Compacted {len(self.transcripts)} turn(s) into a concise context summary.[/green]"
             )
@@ -1735,15 +1841,32 @@ class KardashevRichTUI:
             return False
 
         if cmd in ("/load", "/resume"):
-            if not args or args[0].lower() == "list":
+            target_arg = args[0] if args else None
+            if not target_arg or target_arg.lower() == "list":
                 recent = list_recent_sessions(self._sessions_dir(), limit=10)
                 if not recent:
                     self.console.print("[dim]No saved sessions found in ~/.local/share/kardashev/sessions/[/dim]")
                     return False
                 self.console.print(render_sessions_picker(recent, self.theme))
-                return False
+                if not args:
+                    picked_session = await async_interactive_select(
+                        "Resume Saved Session",
+                        [
+                            (
+                                s.session_id,
+                                f"[{i}] {s.session_id}",
+                                f"{s.turn_count}t · {s.model or s.preset or 'default'} · {s.last_prompt[:42]}",
+                            )
+                            for i, s in enumerate(recent, start=1)
+                        ],
+                        theme=self.theme,
+                    )
+                    if picked_session is None:
+                        return False
+                    target_arg = picked_session
+                else:
+                    return False
 
-            target_arg = args[0]
             in_file = self.load_session(target_arg)
             if in_file is None:
                 self.console.print(
@@ -1768,28 +1891,64 @@ class KardashevRichTUI:
             return False
 
         if cmd == "/policy":
-            if not args or args[0] not in ("allow-all", "ask", "sandbox"):
+            chosen_policy = args[0].lower() if args else None
+            if not chosen_policy:
+                cur_pol = (
+                    self.options.policy_mode.value
+                    if isinstance(self.options.policy_mode, PolicyMode)
+                    else str(self.options.policy_mode)
+                )
+                chosen_policy = await async_interactive_select(
+                    "Select Safety Policy Mode",
+                    [
+                        ("allow-all", "allow-all", "Autonomous tool execution without confirmation prompts"),
+                        ("sandbox", "sandbox", "Autonomous execution inside isolated OS sandbox"),
+                        ("ask", "ask", "Prompt before file edits and shell commands (3-line diff prompt)"),
+                    ],
+                    default_key=cur_pol,
+                    theme=self.theme,
+                )
+                if chosen_policy is None:
+                    self.console.print("[yellow]Usage: /policy <allow-all|ask|sandbox>[/yellow]")
+                    return False
+            if chosen_policy not in ("allow-all", "ask", "sandbox"):
                 self.console.print("[yellow]Usage: /policy <allow-all|ask|sandbox>[/yellow]")
                 return False
-            self.options.policy_mode = PolicyMode(args[0])
+            self.options.policy_mode = PolicyMode(chosen_policy)
             self._restart_requested = True
-            self.console.print(f"[green]✓ Switched safety policy to {args[0].upper()} (reloading harness)...[/green]")
+            self.console.print(f"[green]✓ Switched safety policy to {chosen_policy.upper()} (reloading harness)...[/green]")
             return True
 
         if cmd == "/preset":
-            if not args:
+            target_key = args[0].lower() if args else None
+            if not target_key:
                 tbl = Table(title="Available Model Presets", border_style=self.theme.border_accent)
                 tbl.add_column("Preset Key", style=f"bold {self.theme.accent}")
                 tbl.add_column("Backend", style="magenta")
                 tbl.add_column("VRAM", justify="right")
                 tbl.add_column("Target Model")
                 tbl.add_column("Description", style="dim")
-                for p in list_presets():
+                presets_list = list_presets()
+                for p in presets_list:
                     vram = f"{p.recommended_vram_gb} GB" if p.recommended_vram_gb else "Cloud"
                     tbl.add_row(p.key, p.backend.value, vram, p.model_id, p.description)
                 self.console.print(tbl)
-                return False
-            target_key = args[0].lower()
+                picked_preset = await async_interactive_select(
+                    "Select Model Preset",
+                    [
+                        (
+                            p.key,
+                            p.key,
+                            f"{p.backend.value} · {p.model_id} — {p.description}",
+                        )
+                        for p in presets_list
+                    ],
+                    default_key=self.options.preset or "gemma4-26b",
+                    theme=self.theme,
+                )
+                if picked_preset is None:
+                    return False
+                target_key = picked_preset
             preset_aliases = {
                 "glm-prime": "openrouter-glm-5.3-prime",
                 "glm-5.3-prime": "openrouter-glm-5.3-prime",
@@ -1827,10 +1986,31 @@ class KardashevRichTUI:
             return True
 
         if cmd == "/model":
-            if not args:
-                self.console.print("[yellow]Usage: /model <model_id_or_litert_path> [base_url][/yellow]")
-                return False
-            target_model = args[0]
+            target_model = args[0] if args else None
+            if not target_model:
+                discovered_models = discover_local_models()
+                choices: list[tuple[str, str, str]] = [
+                    (
+                        m.name,
+                        m.name,
+                        f"local {m.backend.value} · {m.size_gb:.1f} GB ({m.source})",
+                    )
+                    for m in discovered_models
+                ]
+                seen_m = {m.name.lower() for m in discovered_models}
+                for p in list_presets():
+                    if p.key.lower() not in seen_m:
+                        choices.append((p.key, p.key, f"preset ({p.backend.value}) · {p.model_id}"))
+                picked_model = await async_interactive_select(
+                    "Select Active Model",
+                    choices,
+                    default_key=self.options.model or self.options.preset,
+                    theme=self.theme,
+                )
+                if picked_model is None:
+                    self.console.print("[yellow]Usage: /model <model_id_or_litert_path> [base_url][/yellow]")
+                    return False
+                target_model = picked_model
             model_preset_aliases = {
                 "glm-prime": "openrouter-glm-5.3-prime",
                 "glm-5.3-prime": "openrouter-glm-5.3-prime",
@@ -2717,7 +2897,8 @@ class KardashevRichTUI:
                             "\n  [yellow]↻ Local harness connection reset — reconnecting engine for next turn...[/yellow]\n"
                         )
                     return
-                self._render_connection_error(exc, cfg)
+                log_path = log_background_exception("turn_execution", exc)
+                self._render_connection_error(exc, cfg, log_path=log_path)
                 return
             finally:
                 if self.type_ahead is not None:
@@ -2842,12 +3023,21 @@ class KardashevRichTUI:
             self.show_help_footer = not self.show_help_footer
             event.app.invalidate()
 
+        @kb.add("c-space")
+        def _force_complete(event: Any) -> None:
+            buf = event.current_buffer
+            if buf.complete_state:
+                buf.complete_next()
+            else:
+                buf.start_completion(select_first=False)
+
         return kb
 
     async def run(self) -> int:
         """Main loop supporting hot-reloading presets/models/policies via `/preset`, `/model`, `/policy`."""
         global _ACTIVE_TUI
         _ACTIVE_TUI = self
+        configure_background_logging()
 
         history_path = Path.home() / ".cache" / "kardashev" / "prompt_history.txt"
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2858,6 +3048,11 @@ class KardashevRichTUI:
                 "prompt": self.theme.prompt_symbol,
                 "model_tag": self.theme.model_tag,
                 "bottom-toolbar": f"bg:{self.theme.toolbar_bg} {self.theme.toolbar_fg}",
+                "completion-menu.completion": "bg:#1e293b #e2e8f0",
+                "completion-menu.completion.current": "bg:#0284c7 #ffffff bold",
+                "completion-menu.meta.completion": "bg:#0f172a #94a3b8",
+                "completion-menu.meta.completion.current": "bg:#0369a1 #f8fafc",
+                "auto-suggestion": "#64748b italic",
             }
         )
         prompt_session: PromptSession[str] | None = None
@@ -2865,10 +3060,20 @@ class KardashevRichTUI:
             prompt_session = PromptSession(
                 history=FileHistory(str(history_path)),
                 completer=KardashevCompleter(workspace),
+                auto_suggest=AutoSuggestFromHistory(),
                 key_bindings=self._build_key_bindings(),
                 style=pt_style,
-                complete_while_typing=False,
+                complete_while_typing=True,
+                complete_style=CompleteStyle.COLUMN,
+                reserve_space_for_menu=8,
             )
+
+            def _trigger_live_completion(buf: Any) -> None:
+                txt = buf.document.text_before_cursor
+                if txt.startswith("/") or ("@" in txt and not txt.endswith(" ")):
+                    buf.start_completion(select_first=False)
+
+            prompt_session.default_buffer.on_text_changed += _trigger_live_completion
 
         try:
             while True:
@@ -2888,6 +3093,8 @@ class KardashevRichTUI:
                         f"  [green]✓ Active model:[/green] [bold cyan]{model_label}[/bold cyan] [dim]({backend_label})[/dim]"
                     )
 
+                agent: Agent | None = None
+                agent_entered = False
                 agent_cm = Agent(cfg)
                 try:
                     with (
@@ -2899,12 +3106,21 @@ class KardashevRichTUI:
                         suppress_noisy_cpp_stderr(),
                     ):
                         agent = await agent_cm.__aenter__()
+                        agent_entered = True
                 except (KeyboardInterrupt, asyncio.CancelledError):
                     self.console.print("\n[dim]Startup cancelled.[/dim]")
                     return 130
+                except Exception as exc:  # noqa: BLE001
+                    log_path = log_background_exception(
+                        f"agent_startup (model={model_label}, backend={backend_label})",
+                        exc,
+                    )
+                    self._render_connection_error(exc, cfg, log_path=log_path)
+                    agent = None
+                    agent_entered = False
 
                 try:
-                    if self._pending_retry_prompt:
+                    if self._pending_retry_prompt and agent is not None:
                         retry_text = self._pending_retry_prompt
                         self._pending_retry_prompt = None
                         await self._run_turn(agent, retry_text, cfg)
@@ -2932,7 +3148,7 @@ class KardashevRichTUI:
                             toolbar_html = HTML(
                                 f" <b>{model_label}</b> | policy:<b>{pol}</b> | ctx:<b>{ctx_pct:.0f}%</b> | "
                                 f"thoughts:<b>{thoughts_flag}</b> | tools:<b>{tools_flag}</b>{todo_flag}{git_info}{ralph_flag} | "
-                                f"<b>/help</b> · <b>/resume</b> · <b>/todos</b> · <b>Alt+T/O/D/P</b> · <b>F1</b> "
+                                f"<b>/help</b> · <b>/preset</b> · <b>/model</b> · <b>@file</b> · <b>Alt+T/O/D/P</b> "
                             )
                             prompt_html = HTML(f"<model_tag>[{model_label}]</model_tag> <prompt>❯ </prompt>")
 
@@ -3014,6 +3230,13 @@ class KardashevRichTUI:
                                 break
                             continue
 
+                        if agent is None:
+                            self.console.print(
+                                "  [yellow]⚠ Model engine is not connected.[/yellow] "
+                                "Use [bold cyan]/preset[/bold cyan], [bold cyan]/model[/bold cyan], or [bold cyan]/doctor[/bold cyan] to switch or diagnose."
+                            )
+                            continue
+
                         try:
                             await self._run_turn(agent, text, cfg)
                         except (KeyboardInterrupt, asyncio.CancelledError):
@@ -3028,15 +3251,16 @@ class KardashevRichTUI:
                             self._restart_requested = True
                             break
                 finally:
-                    with (
-                        self.console.status(
-                            f"[dim]Shutting down {model_label} engine...[/dim]",
-                            spinner="dots",
-                        ),
-                        suppress_noisy_cpp_stderr(),
-                        contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError, Exception),
-                    ):
-                        await asyncio.shield(agent_cm.__aexit__(None, None, None))
+                    if agent_entered:
+                        with (
+                            self.console.status(
+                                f"[dim]Shutting down {model_label} engine...[/dim]",
+                                spinner="dots",
+                            ),
+                            suppress_noisy_cpp_stderr(),
+                            contextlib.suppress(KeyboardInterrupt, asyncio.CancelledError, Exception),
+                        ):
+                            await asyncio.shield(agent_cm.__aexit__(None, None, None))
                     if not self._restart_requested and not self._needs_harness_reconnect:
                         self.console.print("[dim]✓ Session closed cleanly.[/dim]")
 

@@ -9,6 +9,7 @@ so every behavior can be unit tested without a live session.
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import os
@@ -859,3 +860,217 @@ def format_approval_prompt(
     # Strictly cap at 2 header lines so the interactive prompt line ("Allow execution? [y/N]: ")
     # brings total height to at most 3 lines.
     return Text("\n").join(lines[:2])
+
+
+# ----------------------------------------- background logging & error shielding
+
+_LOG_INITIALIZED = False
+
+
+def get_default_log_path(log_dir: Path | None = None) -> Path:
+    """Return the path to the background rotating log file (`~/.cache/kardashev/logs/kardashev.log`)."""
+    if log_dir is not None:
+        p = Path(log_dir)
+        if p.suffix == ".log":
+            p.parent.mkdir(parents=True, exist_ok=True)
+            return p
+        p.mkdir(parents=True, exist_ok=True)
+        return p / "kardashev.log"
+    env_file = os.environ.get("KARDASHEV_LOG_PATH", "").strip()
+    if env_file:
+        pf = Path(env_file).expanduser()
+        pf.parent.mkdir(parents=True, exist_ok=True)
+        return pf
+    base = Path(os.environ.get("KARDASHEV_LOG_DIR", Path.home() / ".cache" / "kardashev" / "logs")).expanduser()
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "kardashev.log"
+
+
+def configure_background_logging(log_dir: Path | None = None) -> Path:
+    """Route root and library logs (e.g. `google.antigravity`) to a background rotating log file.
+
+    Unless ``KARDASHEV_DEBUG=1`` is set in the environment, any console ``StreamHandler``
+    attached to the root logger is removed so internal library ``logging.exception(...)``
+    calls never dump raw tracebacks onto the user's terminal.
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+
+    log_file = get_default_log_path(log_dir)
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    debug_mode = os.environ.get("KARDASHEV_DEBUG") == "1"
+
+    # Remove any stderr/stdout StreamHandlers (that aren't FileHandlers) when not in debug mode
+    if not debug_mode:
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                root_logger.removeHandler(handler)
+
+    # Ensure a RotatingFileHandler is attached for `log_file`
+    has_target_file_handler = any(
+        isinstance(h, logging.FileHandler) and Path(getattr(h, "baseFilename", "")) == log_file.resolve()
+        for h in root_logger.handlers
+    )
+    if not has_target_file_handler:
+        try:
+            fh = RotatingFileHandler(
+                log_file,
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+            fh.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+            )
+            root_logger.addHandler(fh)
+        except OSError:
+            root_logger.addHandler(logging.NullHandler())
+
+    for noisy_name in ("google", "google.antigravity", "httpx", "httpcore", "websockets"):
+        lg = logging.getLogger(noisy_name)
+        lg.propagate = True
+        if not debug_mode:
+            for handler in list(lg.handlers):
+                if isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+                    lg.removeHandler(handler)
+
+    return log_file
+
+
+def log_background_exception(
+    context: str,
+    exc: BaseException,
+    log_dir: Path | None = None,
+) -> Path:
+    """Write the full traceback for ``exc`` to the background log file without printing to stderr."""
+    import logging
+    import traceback
+
+    log_file = configure_background_logging(log_dir)
+    tb_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    logger = logging.getLogger("kardashev.diagnostics")
+    logger.error("Exception in %s: %s\n%s", context, exc, tb_text)
+    for handler in logging.getLogger().handlers:
+        if hasattr(handler, "flush"):
+            with contextlib.suppress(Exception):
+                handler.flush()
+    return log_file
+
+
+# ----------------------------------------- interactive arrow-key option picker
+
+
+async def async_interactive_select(
+    title: str,
+    choices: Sequence[tuple[str, str, str]],
+    *,
+    default_key: str | None = None,
+    theme: TUITheme = DARK_THEME,
+    input_obj: Any = None,
+    output_obj: Any = None,
+) -> str | None:
+    """Render an inline Codex/Claude-style arrow-key selector and return the chosen key (or None on Esc).
+
+    Each item in ``choices`` is ``(key, label, meta_description)``.
+    If stdin/stdout are not a TTY and ``input_obj`` is not supplied, returns ``None``
+    immediately so non-interactive pipelines and unit tests never hang.
+    """
+    import sys
+
+    if not choices:
+        return None
+    if input_obj is None and (not sys.stdin.isatty() or not sys.stdout.isatty()):
+        return None
+
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings
+    from prompt_toolkit.layout import HSplit, Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.styles import Style as PtStyle
+
+    idx = 0
+    if default_key is not None:
+        for i, (k, _, _) in enumerate(choices):
+            if k == default_key:
+                idx = i
+                break
+
+    selected: list[str | None] = [None]
+
+    def _get_formatted_text() -> list[tuple[str, str]]:
+        fragments: list[tuple[str, str]] = [
+            ("class:picker-title", f"  ? {title} "),
+            ("class:picker-hint", "(↑/↓ to navigate, Enter to select, Esc to cancel)\n"),
+        ]
+        max_label = max((len(lbl) for _, lbl, _ in choices), default=12)
+        for i, (_key, label, meta) in enumerate(choices):
+            is_cur = i == idx
+            prefix = "  ❯ " if is_cur else "    "
+            row_style = "class:picker-selected" if is_cur else "class:picker-item"
+            meta_style = "class:picker-selected-meta" if is_cur else "class:picker-meta"
+            padded = label.ljust(min(32, max_label + 2))
+            fragments.append((row_style, f"{prefix}{padded}"))
+            if meta:
+                fragments.append((meta_style, f"  {meta}"))
+            if i < len(choices) - 1:
+                fragments.append(("", "\n"))
+        return fragments
+
+    kb = KeyBindings()
+
+    @kb.add("up")
+    @kb.add("k")
+    @kb.add("s-tab")
+    def _up(event: Any) -> None:
+        nonlocal idx
+        idx = (idx - 1) % len(choices)
+        event.app.invalidate()
+
+    @kb.add("down")
+    @kb.add("j")
+    @kb.add("tab")
+    def _down(event: Any) -> None:
+        nonlocal idx
+        idx = (idx + 1) % len(choices)
+        event.app.invalidate()
+
+    @kb.add("enter")
+    def _accept(event: Any) -> None:
+        selected[0] = choices[idx][0]
+        event.app.exit(result=choices[idx][0])
+
+    @kb.add("escape")
+    @kb.add("q")
+    @kb.add("c-c")
+    @kb.add("c-d")
+    def _cancel(event: Any) -> None:
+        selected[0] = None
+        event.app.exit(result=None)
+
+    style = PtStyle.from_dict(
+        {
+            "picker-title": f"bold {theme.accent}",
+            "picker-hint": f"{theme.muted}",
+            "picker-selected": f"bold {theme.accent}",
+            "picker-selected-meta": f"{theme.fg}",
+            "picker-item": f"{theme.fg}",
+            "picker-meta": f"{theme.muted}",
+        }
+    )
+
+    control = FormattedTextControl(_get_formatted_text, show_cursor=False)
+    app: Application[str | None] = Application(
+        layout=Layout(HSplit([Window(content=control, dont_extend_height=True)])),
+        key_bindings=kb,
+        style=style,
+        full_screen=False,
+        erase_when_done=True,
+        input=input_obj,
+        output=output_obj,
+    )
+    try:
+        return await app.run_async()
+    except (EOFError, KeyboardInterrupt):
+        return None
+

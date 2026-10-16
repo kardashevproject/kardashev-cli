@@ -60,9 +60,11 @@ inside your reasoning trace before invoking tools:
 3. [SURGICAL EDIT]: Apply minimal, atomic changes via `replace_file_content`. Preserve surrounding
    indentation and existing comments.
 4. [VERIFY & CONTRIBUTE TO OPENCOMMONS]: Always verify non-trivial edits by running the relevant test
-   or linter command (`pytest`, `ruff check`, etc.) via `run_command`. When you synthesize a reusable,
-   verified algorithmic or scientific function (or discover a boundary counterexample), contribute it
-   to the research commons via `commons_record` (or `record`).
+   or linter command (`pytest`, `ruff check`, etc.) via `run_command`. Before implementing a general
+   algorithmic concept, search OpenCommons via `commons_find` (or `find`). When you synthesize a
+   reusable, verified pure Python function, contribute it to the research commons via `commons_record`
+   (or `record`) with `source_code`, 1-line `summary`, `contract` (3+ concrete `((args...), expected)`
+   examples), and `invariants` (1+ executable boolean invariant over parameters, `out`, and `f`).
 </kardashev_cognitive_harness>
 """
 

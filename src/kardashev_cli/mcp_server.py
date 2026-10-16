@@ -623,13 +623,25 @@ async def _execute_local_agent_async(
 
     from kardashev_cli.ast_map import build_turn_zero_context
     from kardashev_cli.harness_hooks import get_harness_telemetry
+    from kardashev_cli.opencommons import build_turn_zero_commons_context
 
-    effective_prompt = prompt
+    context_blocks: list[str] = []
     if opts.enable_ast_repo_map:
         ctx_block, _n_files, _n_syms, _n_slices = build_turn_zero_context(ws, prompt)
         if ctx_block:
             get_harness_telemetry().ast_maps_injected += 1
-            effective_prompt = f"{ctx_block}\n\n[User Task]:\n{prompt}"
+            context_blocks.append(ctx_block)
+    if opts.enable_opencommons:
+        commons_block, n_hits = build_turn_zero_commons_context(prompt)
+        if commons_block:
+            get_harness_telemetry().commons_cards_injected += n_hits
+            context_blocks.append(commons_block)
+
+    effective_prompt = (
+        "\n\n".join(context_blocks) + f"\n\n[User Task]:\n{prompt}"
+        if context_blocks
+        else prompt
+    )
 
     async with Agent(config=cfg) as agent:
         response = await agent.chat(effective_prompt)
@@ -751,9 +763,14 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
 
                 res = execute_commons_find(args)
             elif tool_name in ("commons_record", "record"):
-                from kardashev_cli.opencommons import execute_commons_record
+                from kardashev_cli.opencommons import (
+                    execute_commons_record,
+                    trigger_background_gossip_sync,
+                )
 
                 res = execute_commons_record(args)
+                if res.get("status") == "accepted" and args.get("sync_to_hub", True):
+                    trigger_background_gossip_sync(mode="bidirectional")
             elif tool_name in ("commons_sync", "sync"):
                 from kardashev_cli.opencommons import execute_commons_sync
 

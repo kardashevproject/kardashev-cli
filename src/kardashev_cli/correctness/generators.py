@@ -130,3 +130,65 @@ def extreme_inputs(param_types: tuple[str, ...], n: int = 10) -> list[tuple]:
                 row.append(values_for_type(t, 1, seed=i)[0])
         out.append(tuple(row))
     return out
+
+
+def generate_domain_inputs(param_types: tuple[str, ...], n: int = 30, seed: int = 100) -> list[tuple]:
+    """Generate supplemental domain-constrained inputs (positive orthant and unit interval).
+
+    Used when a multi-parameter function raises domain ValueErrors on negative or
+    out-of-unit-interval inputs during the initial mixed-sign sample, without ever
+    repeating contract examples.
+    """
+    if not param_types:
+        return [()] * n
+    half = n // 2
+    out: list[tuple] = []
+    # First half: unit-interval (0.05, 0.95) for floats (also strictly positive), small positive ints
+    for i in range(half):
+        row = []
+        for j, t in enumerate(param_types):
+            rng = _rng(seed + i * 31 + j * 7)
+            if t == "float":
+                row.append(round(rng.uniform(0.05, 0.95), 6))
+            elif t == "int":
+                row.append(rng.randint(1, 25))
+            elif t == "bool":
+                row.append(bool((i + j) % 2))
+            elif t == "str":
+                row.append("sample_" + str(i + 1))
+            elif t in ("list", "list[float]"):
+                sz = 2 + (i % 5)
+                raw = [rng.uniform(0.1, 1.0) for _ in range(sz)]
+                total = sum(raw)
+                row.append([v / total for v in raw])
+            elif t == "list[int]":
+                sz = rng.randint(2, 8)
+                row.append([rng.randint(1, 25) for _ in range(sz)])
+            else:
+                row.append(round(rng.uniform(0.05, 0.95), 6))
+        out.append(tuple(row))
+    # Second half: positive orthant (0.5, 25.0) for floats, positive ints
+    for i in range(n - half):
+        row = []
+        for j, t in enumerate(param_types):
+            rng = _rng(seed + 1000 + i * 31 + j * 7)
+            if t == "float":
+                row.append(round(rng.uniform(0.5, 25.0), 6))
+            elif t == "int":
+                row.append(rng.randint(1, 50))
+            elif t == "bool":
+                row.append(bool((i + j) % 2))
+            elif t == "str":
+                row.append("token_" + str(i + 1))
+            elif t in ("list", "list[float]"):
+                sz = 2 + (i % 5)
+                raw = [rng.uniform(0.5, 10.0) for _ in range(sz)]
+                total = sum(raw)
+                row.append([v / total for v in raw])
+            elif t == "list[int]":
+                sz = rng.randint(2, 8)
+                row.append([rng.randint(1, 50) for _ in range(sz)])
+            else:
+                row.append(round(rng.uniform(0.5, 25.0), 6))
+        out.append(tuple(row))
+    return out

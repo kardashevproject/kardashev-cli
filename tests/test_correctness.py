@@ -259,3 +259,22 @@ def test_determinism_check_catches_nondeterministic_concept():
     assert verdict.status == "refuted"
     determinism = next(c for c in verdict.checks if c.name == "determinism")
     assert determinism.passed is False
+
+
+def test_multi_param_domain_constrained_function_is_verified():
+    concept = Concept(
+        source_code=(
+            "def geometric_mean_3(a: float, b: float, c: float) -> float:\n"
+            "    if a <= 0.0 or b <= 0.0 or c <= 0.0:\n"
+            "        raise ValueError(\"inputs must be positive\")\n"
+            "    return (a * b * c) ** (1.0 / 3.0)\n"
+        ),
+        func_name="geometric_mean_3",
+        param_types=("float", "float", "float"),
+        return_type="float",
+        summary="Geometric mean of three positive numbers.",
+        invariants=["out > 0.0", "abs(out ** 3 - a * b * c) < 1e-6 * max(1.0, a * b * c)"],
+        contract=[((1.0, 1.0, 1.0), 1.0), ((1.0, 8.0, 27.0), 6.0), ((2.0, 4.0, 8.0), 4.0)],
+    )
+    verdict = verify(concept)
+    assert verdict.status == "verified"

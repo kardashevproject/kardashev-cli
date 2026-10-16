@@ -57,9 +57,9 @@ When the `kardashev-cli` or `opencommons` MCP server is connected, use its high-
    - If `auto_repair=true` is passed, the local on-device model (`Gemma 4 26B` / `Qwen 3.6`) will automatically diagnose and repair trivial lint/import/test failures locally before returning the final green status.
 4. **Subagent Task Delegation (`run_local_agent_task`)**:
    - Offload routine unit-test generation, docstring writing, or multi-file boilerplate refactors to the local GPU model at zero cloud API cost.
-5. **OpenCommons Research Retrieval & Contribution (`commons_find`, `commons_record`, `commons_sync`)**:
-   - Call `commons_find(query)` (or `find(query)`) when implementing numerical, scientific, cryptographic, or algorithmic functions to retrieve verified Dual Concept Cards, invariants, and Refuted Pitfalls in `<5ms`.
-   - Call `commons_record(source_code, domain, summary, invariants)` (or `record(...)`) when you synthesize a reusable, verified Python function (or report a `(K+1)`-th counterexample via `counterexample_block_id` + `counterexample_args`) to participate in the OpenCommons research loop.
+5. **OpenCommons Active Research Retrieval & Contribution (`commons_find`, `commons_record`, `commons_sync`)**:
+   - **Check before you build**: ALWAYS call `commons_find(query, io_examples=...)` (or `find(query, io_examples=...)`) BEFORE implementing any general algorithmic, numerical, statistical, hashing, or systems function to retrieve verified Dual Concept Cards, invariants, and Refuted Pitfalls in `<5ms`. Adopt a verified concept when one fits.
+   - **Record what you prove**: Whenever your work yields a small, pure, self-contained function that you have verified, immediately call `commons_record(source_code=..., domain=..., summary=..., contract="[((arg1, ...), expected), ...]", invariants=["..."])` (or `record(...)`) with at least 3 concrete `contract` examples and at least 1 executable Python boolean `invariant` over the parameters, `out`, and `f`.
 """
 
 

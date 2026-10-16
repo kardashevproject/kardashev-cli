@@ -80,13 +80,23 @@ def commons_find(
     query: str,
     modality: str = "dual_card_with_pitfalls",
     top_k: int = 3,
+    io_examples: str = "",
+    param_types: list[str] | None = None,
+    return_type: str = "",
 ) -> str:
     """Search the OpenCommons Concept Commons for verified scientific/algorithmic building blocks and refuted pitfalls."""
     import json as _json
 
     from kardashev_cli.opencommons import execute_commons_find
 
-    res = execute_commons_find({"query": query, "modality": modality, "top_k": top_k})
+    payload: dict[str, Any] = {"query": query, "modality": modality, "top_k": top_k}
+    if io_examples:
+        payload["io_examples"] = io_examples
+    if param_types:
+        payload["param_types"] = param_types
+    if return_type:
+        payload["return_type"] = return_type
+    res = execute_commons_find(payload)
     return _json.dumps(res, indent=2)
 
 
@@ -94,14 +104,18 @@ def commons_record(
     source_code: str = "",
     domain: str = "general",
     summary: str = "",
+    invariants: list[str] | None = None,
+    contract: str = "",
     pseudocode: str = "",
     teleological_intent: str = "",
     dimensional_units: str = "",
     require_human_review: bool = False,
     counterexample_block_id: str = "",
     counterexample_args: str = "",
+    counterexample_expected: str = "",
+    sync_to_hub: bool = True,
 ) -> str:
-    """Contribute a verified Python function to OpenCommons (runs 16-probe behavioral fingerprinting & 5-gate peer review; auto-commits if all gates pass or stages in the pending review queue) or report a counterexample."""
+    """Contribute a verified Python function to OpenCommons (requires source_code, summary, 3+ contract examples, and 1+ executable invariants; runs 16-probe behavioral fingerprinting & 5-gate peer review) or report a counterexample."""
     import json as _json
 
     from kardashev_cli.opencommons import execute_commons_record
@@ -114,10 +128,17 @@ def commons_record(
         "teleological_intent": teleological_intent,
         "dimensional_units": dimensional_units,
         "require_human_review": require_human_review,
+        "sync_to_hub": sync_to_hub,
     }
+    if invariants:
+        args["invariants"] = invariants
+    if contract:
+        args["contract"] = contract
     if counterexample_block_id and counterexample_args:
         args["counterexample_block_id"] = counterexample_block_id
         args["counterexample_args"] = counterexample_args
+    if counterexample_expected:
+        args["counterexample_expected"] = counterexample_expected
     res = execute_commons_record(args)
     return _json.dumps(res, indent=2)
 

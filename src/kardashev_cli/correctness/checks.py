@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from . import oracles as oracle_registry
 from .ast_safety import InvariantSyntaxError, extract_param_names, validate_invariant_ast
 from .compare import approx_eq
-from .generators import extreme_inputs, generate_inputs
+from .generators import extreme_inputs, generate_domain_inputs, generate_inputs
 from .types import CheckResult, Concept, Executor
 
 ROBUSTNESS_CLAIM_WORDS = ("stable", "safe", "overflow", "robust")
@@ -129,6 +129,19 @@ def check_one_invariant(
             failed += 1
             if failure_args is None:
                 failure_args = args
+
+    if failed == 0 and passed < MIN_GENERATED_FOR_VERIFIED and skipped > 0:
+        extra_args = generate_domain_inputs(concept.param_types, n=n)
+        extra_outcomes = executor(harness_source, "__invariant_check__", extra_args, timeout_s)
+        for args, outcome in zip(extra_args, extra_outcomes):
+            if not outcome.ok or outcome.value is None:
+                skipped += 1
+            elif outcome.value is True:
+                passed += 1
+            else:
+                failed += 1
+                if failure_args is None:
+                    failure_args = args
 
     detail = f"invariant failed on input {failure_args!r}" if failure_args is not None else None
     return InvariantOutcome(expr=expr, checked=True, passed_count=passed, failed_count=failed, skipped_count=skipped, failure_detail=detail)

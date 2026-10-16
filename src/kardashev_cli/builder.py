@@ -556,10 +556,12 @@ def normalize_sse_reasoning_line(
             return b"data: " + synth_bytes + sep + sep + raw_line
         return raw_line
 
-    has_non_null_finish = (
-        b"finish_reason" in payload_bytes
-        and b'"finish_reason":null' not in payload_bytes
-        and b'"finish_reason": null' not in payload_bytes
+    has_non_null_finish = b"finish_reason" in payload_bytes and not (
+        payload_bytes.count(b"finish_reason") == 1
+        and (
+            b'"finish_reason":null' in payload_bytes
+            or b'"finish_reason": null' in payload_bytes
+        )
     )
     if (
         b"reasoning" not in payload_bytes
@@ -614,11 +616,21 @@ def normalize_sse_reasoning_line(
             reasoning_parts.clear()
 
         existing_content = delta.get("content")
-        if isinstance(existing_content, str) and existing_content:
+        if isinstance(existing_content, str) and existing_content.strip():
             state["saw_visible_content"] = True
             reasoning_parts.clear()
 
         reasoning_text = delta.get("reasoning") or delta.get("reasoning_content")
+        if not reasoning_text:
+            r_details = delta.get("reasoning_details")
+            if isinstance(r_details, list):
+                detail_parts = [
+                    str(item.get("text") or item.get("summary") or "")
+                    for item in r_details
+                    if isinstance(item, dict) and (item.get("text") or item.get("summary"))
+                ]
+                if detail_parts:
+                    reasoning_text = "".join(detail_parts)
         if isinstance(reasoning_text, str) and reasoning_text:
             record_live_sse_reasoning(reasoning_text)
             if not state.get("saw_visible_content") and not state.get("saw_tool_calls"):
@@ -751,11 +763,29 @@ class AuthenticatedOpenAIConnectionStrategy(
                                     "saw_tool_calls": False,
                                     "reasoning_parts": [],
                                 }
+                                in_partial_line = False
                                 try:
                                     while True:
                                         raw_line = resp.readline(1048576)
                                         if not raw_line:
+                                            if (
+                                                stream_state.get("reasoning_parts")
+                                                and not stream_state.get("saw_visible_content")
+                                                and not stream_state.get("saw_tool_calls")
+                                            ):
+                                                eof_out = normalize_sse_reasoning_line(
+                                                    b"data: [DONE]\n", stream_state
+                                                )
+                                                self.wfile.write(eof_out)
+                                                self.wfile.flush()
                                             break
+                                        if in_partial_line:
+                                            in_partial_line = not raw_line.endswith(b"\n")
+                                            self.wfile.write(raw_line)
+                                            self.wfile.flush()
+                                            continue
+                                        if len(raw_line) >= 1048576 and not raw_line.endswith(b"\n"):
+                                            in_partial_line = True
                                         out_line = normalize_sse_reasoning_line(
                                             raw_line, stream_state
                                         )

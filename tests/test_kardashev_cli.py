@@ -1287,10 +1287,15 @@ def test_large_context_compaction_threshold_and_sse_reasoning_normalization(tmp_
     assert stop_delta["content"] == "Analyzing AST map..."
     assert state.get("saw_visible_content") is True
 
-    # Also if a provider sends reasoning-only chunks followed directly by data: [DONE] without finish_reason
+    # Also if a provider sends reasoning-only chunks (including whitespace-only delta.content or
+    # delta.reasoning_details) followed directly by data: [DONE] without finish_reason
     state_done: dict[str, object] = {}
-    _ = normalize_sse_reasoning_line(raw_reasoning, state_done)
-    _ = drain_live_sse_reasoning()
+    raw_ws_reasoning = (
+        b'data: {"choices":[{"index":0,"delta":{"content":"\\n","reasoning_details":[{"type":"reasoning.text","text":"Analyzing AST map..."}]},"finish_reason":null}]}\n'
+    )
+    _ = normalize_sse_reasoning_line(raw_ws_reasoning, state_done)
+    assert drain_live_sse_reasoning() == "Analyzing AST map..."
+    assert state_done.get("saw_visible_content") is not True
     norm_done = normalize_sse_reasoning_line(b"data: [DONE]\n", state_done)
     assert b'"content":"Analyzing AST map..."' in norm_done
     assert norm_done.endswith(b"data: [DONE]\n")
@@ -1336,6 +1341,8 @@ def test_per_turn_tool_budget_and_live_viewport_windowing(tmp_path: Path, monkey
     monkeypatch.setenv("KARDASHEV_MAX_TURN_TOOLS", "invalid")  # type: ignore[attr-defined]
     assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 64
     monkeypatch.setenv("KARDASHEV_MAX_TURN_TOOLS", "0")  # type: ignore[attr-defined]
+    assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 0
+    monkeypatch.setenv("KARDASHEV_MAX_TURN_TOOLS", "-5")  # type: ignore[attr-defined]
     assert SelfHealingEditHook(workspace=str(tmp_path)).max_turn_tool_calls == 0
     monkeypatch.delenv("KARDASHEV_MAX_TURN_TOOLS", raising=False)  # type: ignore[attr-defined]
 

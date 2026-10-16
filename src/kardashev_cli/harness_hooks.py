@@ -380,10 +380,10 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
         super().__init__()
         self.workspace = workspace
         if max_turn_tool_calls is not None:
-            self.max_turn_tool_calls = max_turn_tool_calls
+            self.max_turn_tool_calls = max(0, int(max_turn_tool_calls))
         else:
             try:
-                self.max_turn_tool_calls = int(os.environ.get("KARDASHEV_MAX_TURN_TOOLS", "64"))
+                self.max_turn_tool_calls = max(0, int(os.environ.get("KARDASHEV_MAX_TURN_TOOLS", "64")))
             except ValueError:
                 self.max_turn_tool_calls = 64
 
@@ -393,12 +393,15 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
         name = str(data.name)
         args = dict(data.args or {})
 
-        _GLOBAL_TELEMETRY.turn_total_tool_calls += 1
+        with _SSE_STREAM_LOCK:
+            _GLOBAL_TELEMETRY.turn_total_tool_calls += 1
+            turn_calls = _GLOBAL_TELEMETRY.turn_total_tool_calls
         if (
             self.max_turn_tool_calls > 0
-            and _GLOBAL_TELEMETRY.turn_total_tool_calls > self.max_turn_tool_calls
+            and turn_calls > self.max_turn_tool_calls
         ):
-            _GLOBAL_TELEMETRY.loop_blocks_count += 1
+            with _SSE_STREAM_LOCK:
+                _GLOBAL_TELEMETRY.loop_blocks_count += 1
             return types.HookResult(
                 allow=False,
                 message=(
@@ -413,9 +416,10 @@ class SelfHealingEditHook(hooks_mod.PreToolCallDecideHook):
         call_sig = hashlib.sha256(
             f"{name}:{json.dumps(args, sort_keys=True, default=str)}".encode()
         ).hexdigest()[:16]
-        seen_counts = _GLOBAL_TELEMETRY.tool_call_counts
-        count = seen_counts.get(call_sig, 0) + 1
-        seen_counts[call_sig] = count
+        with _SSE_STREAM_LOCK:
+            seen_counts = _GLOBAL_TELEMETRY.tool_call_counts
+            count = seen_counts.get(call_sig, 0) + 1
+            seen_counts[call_sig] = count
 
         # Allow read-only tools up to 3 times, mutating/command tools up to 2 identical calls
         limit = 3 if name in ("view_file", "list_dir", "grep_search", "grep") else 2

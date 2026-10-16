@@ -2638,9 +2638,16 @@ class KardashevRichTUI:
             sse_thought = drain_live_sse_reasoning()
             if sse_thought:
                 thought_buf.append(sse_thought)
+            if len(thought_buf) > 64:
+                thought_buf[:] = ["".join(thought_buf)[-131072:]]
 
             if thought_buf and self.show_thoughts:
-                full_thought = "".join(thought_buf).strip()
+                joined_thought = "".join(thought_buf)
+                full_thought = (
+                    joined_thought[-4096:]
+                    if not stream_done and len(joined_thought) > 4096
+                    else joined_thought
+                ).strip()
                 t_lines = full_thought.splitlines()
                 clipped = "\n".join(t_lines[-6:]) if len(t_lines) > 6 else full_thought
                 renderables.append(

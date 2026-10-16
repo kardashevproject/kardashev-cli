@@ -76,6 +76,7 @@ _GENERATORS = {
     "int": gen_int,
     "bool": gen_bool,
     "str": gen_str,
+    "list": gen_list_float,
     "list[float]": gen_list_float,
     "list[int]": gen_list_int,
 }
@@ -121,7 +122,7 @@ def extreme_inputs(param_types: tuple[str, ...], n: int = 10) -> list[tuple]:
                 row.append(extreme_scalars[i % len(extreme_scalars)])
             elif t == "int":
                 row.append(extreme_ints[i % len(extreme_ints)])
-            elif t == "list[float]":
+            elif t in ("list", "list[float]"):
                 row.append([extreme_scalars[i % len(extreme_scalars)]] * 5)
             elif t == "list[int]":
                 row.append([1, 2, 3])

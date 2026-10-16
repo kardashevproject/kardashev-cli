@@ -3752,15 +3752,73 @@ def execute_commons_record(
     htel = get_harness_telemetry()
 
     if arguments.get("counterexample_block_id") and arguments.get("counterexample_args"):
+        from kardashev_cli import correctness
+
         bid = str(arguments["counterexample_block_id"])
         failing_args = ast.literal_eval(str(arguments["counterexample_args"]))
         if not isinstance(failing_args, tuple):
             failing_args = (failing_args,)
         failure_desc = str(arguments.get("failure_description", "unprobed_17th_input_counterexample"))
         verified_fix = str(arguments.get("verified_fix", "Handle boundary input explicitly"))
+
+        target_block = store.blocks_by_id.get(bid)
+        if target_block is None:
+            return {
+                "action": "report_counterexample",
+                "block_id": bid,
+                "quarantined": False,
+                "reason": f"block '{bid}' not found in the store",
+                "active_quarantined_count": len(store.quarantined_ids),
+            }
+
+        # A counterexample is only ever a *wrong output*, never merely "the function raised" --
+        # raising on a type-invalid (or otherwise out-of-contract) input must never quarantine a
+        # block. correctness.validate_counterexample enforces both the type check and the
+        # concrete-wrong-value check through the same resource-limited executor used by verify().
+        if not arguments.get("counterexample_expected"):
+            return {
+                "action": "report_counterexample",
+                "block_id": bid,
+                "quarantined": False,
+                "reason": (
+                    "counterexample_expected is required: a counterexample is a concrete wrong "
+                    "output, not merely an exception on out-of-contract input."
+                ),
+                "active_quarantined_count": len(store.quarantined_ids),
+            }
+        try:
+            expected = ast.literal_eval(str(arguments["counterexample_expected"]))
+        except (ValueError, SyntaxError, TypeError) as exc:
+            return {
+                "action": "report_counterexample",
+                "block_id": bid,
+                "quarantined": False,
+                "reason": f"could not parse counterexample_expected: {exc}",
+                "active_quarantined_count": len(store.quarantined_ids),
+            }
+
+        concept = correctness.Concept(
+            source_code=target_block.source_code,
+            func_name=target_block.name,
+            param_types=target_block.param_types,
+            return_type=target_block.return_type,
+            summary=target_block.summary,
+            invariants=list(target_block.invariants),
+        )
+        valid, reason = correctness.validate_counterexample(concept, failing_args, expected)
+        if not valid:
+            return {
+                "action": "report_counterexample",
+                "block_id": bid,
+                "quarantined": False,
+                "reason": reason,
+                "active_quarantined_count": len(store.quarantined_ids),
+            }
+
         quarantined = store.report_counterexample(
             block_id=bid,
             failing_args=failing_args,
+            expected_output=expected,
             failure_description=failure_desc,
             verified_fix=verified_fix,
         )
@@ -3771,6 +3829,7 @@ def execute_commons_record(
             "action": "report_counterexample",
             "block_id": bid,
             "quarantined": quarantined,
+            "reason": reason,
             "active_quarantined_count": len(store.quarantined_ids),
         }
 
@@ -3834,6 +3893,88 @@ def execute_commons_record(
             "stage_reason": prop.stage_reason,
         }
 
+    # Correctness gate: before anything is trusted enough to ingest, run the deterministic
+    # verification engine (contract examples + executable invariants + reference-oracle agreement
+    # + claimed-robustness + determinism). See docs/correctness.md for what each status means.
+    from kardashev_cli import correctness
+
+    contract: list[tuple[tuple, object]] = []
+    if arguments.get("contract"):
+        try:
+            parsed_contract = ast.literal_eval(str(arguments["contract"]))
+        except (ValueError, SyntaxError, TypeError) as exc:
+            return {"error": f"could not parse contract: {exc}"}
+        if not isinstance(parsed_contract, list):
+            return {"error": "contract must be a Python literal list of ((args...), expected) pairs."}
+        for pair in parsed_contract:
+            try:
+                pair_args, pair_expected = pair
+                if not isinstance(pair_args, tuple):
+                    pair_args = (pair_args,)
+            except (TypeError, ValueError) as exc:
+                return {"error": f"could not parse contract entry {pair!r}: {exc}"}
+            contract.append((pair_args, pair_expected))
+
+    sid, func_name, inferred_param_types, inferred_return_type, _deps = compute_structural_sid(source_code)
+    concept = correctness.Concept(
+        source_code=source_code,
+        func_name=func_name,
+        param_types=inferred_param_types,
+        return_type=inferred_return_type,
+        summary=summary,
+        invariants=list(invariants),
+        contract=contract,
+    )
+    verdict_c = correctness.verify(concept)
+
+    if verdict_c.status == "refuted":
+        return {
+            "action": "verify",
+            "status": "rejected",
+            "reason": "refuted by the correctness engine",
+            "counterexample": verdict_c.counterexample,
+            "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in verdict_c.checks],
+        }
+
+    if verdict_c.status == "unverifiable":
+        prop = enqueue_pending_proposal(
+            PendingProposal(
+                proposal_id=f"prop_{uuid.uuid4().hex[:8]}",
+                func_name=func_name,
+                domain=domain,
+                summary=summary or f"Proposed function {func_name}",
+                pseudocode=pseudocode,
+                invariants=list(invariants),
+                source_code=source_code,
+                teleological_intent=teleological_intent,
+                dimensional_units=dimensional_units,
+                pitfalls=[asdict(p) for p in pitfalls_list],
+                contributor_agent=contributor,
+                stage_reason="needs_evidence",
+                sid=sid,
+                fp=f"fp_pending:{sid[4:]}",
+            ),
+            pending_path=pending_path,
+        )
+        htel.commons_proposals_queued += 1
+        return {
+            "action": "stage_pending",
+            "status": "queued_for_review",
+            "proposal_id": prop.proposal_id,
+            "func_name": func_name,
+            "sid": sid,
+            "stage_reason": "needs_evidence",
+            "guidance": (
+                "Not enough evidence to verify. Add at least 3 contract examples "
+                "(independently-computed correct (args, expected) pairs) and at least 1 "
+                "executable invariant (a Python boolean expression over the parameters, "
+                "`out`, and `f`) that holds on generated inputs -- or, if this implements a "
+                "well-known function, name it so the reference oracle can match it."
+            ),
+            "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in verdict_c.checks],
+        }
+
+    # verdict_c.status == "verified" -- proceed to ingest, carrying the verification evidence.
     block, fp_res, verdict = store.ingest(
         source_code=source_code,
         domain=domain,
@@ -3902,6 +4043,10 @@ def execute_commons_record(
         "quarantine_reasons": reasons,
         "elapsed_ms": fp_res.elapsed_ms,
         "total_active_concepts": len(merged_store.canonical_block_by_cid),
+        "verification": {
+            "status": verdict_c.status,
+            "checks": [{"name": c.name, "passed": c.passed, "detail": c.detail} for c in verdict_c.checks],
+        },
     }
 
 
@@ -3997,6 +4142,32 @@ def extract_candidate_functions_from_source(
     return results
 
 
+_CONTRIBUTION_INSTRUCTIONS = (
+    "When you write or verify a small, reusable, pure function during this work (numerics, "
+    "parsing, algorithms -- not project-specific glue), call `record` with: the function source, "
+    "a one-line summary, 3+ contract examples, and 1+ executable invariants (Python boolean "
+    "expressions over the parameters, `out`, and `f`). Never include project names, paths, "
+    "personal data, or secrets. Use `find` with io_examples before writing a common algorithm, in "
+    "case it already exists."
+)
+
+
+def _contribution_instructions() -> str | None:
+    """Returns the MCP `initialize` instructions string, honoring user contribution settings.
+
+    `contrib_settings` is a user-facing opt-in/opt-out module that may not exist on every
+    branch; the import is guarded so its absence here is a no-op (instructions are returned as
+    normal) rather than an error.
+    """
+    try:
+        from kardashev_cli import contrib_settings  # type: ignore[attr-defined]
+    except ImportError:
+        return _CONTRIBUTION_INSTRUCTIONS
+    if hasattr(contrib_settings, "contributions_enabled") and not contrib_settings.contributions_enabled():
+        return None
+    return _CONTRIBUTION_INSTRUCTIONS
+
+
 OPENCOMMONS_MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "name": "find",
@@ -4070,6 +4241,10 @@ OPENCOMMONS_MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Mathematical or systems invariants.",
                 },
+                "contract": {
+                    "type": "string",
+                    "description": "Optional Python literal list of ((args...), expected) pairs checked by the correctness engine.",
+                },
                 "teleological_intent": {
                     "type": "string",
                     "description": "Physical conservation law or engineering rationale behind the transformation.",
@@ -4090,6 +4265,10 @@ OPENCOMMONS_MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "counterexample_args": {
                     "type": "string",
                     "description": "Optional Python tuple literal of failing arguments for counterexample ratcheting.",
+                },
+                "counterexample_expected": {
+                    "type": "string",
+                    "description": "Python literal of the expected correct output for counterexample_args; required to quarantine.",
                 },
                 "sync_to_hub": {
                     "type": "boolean",
@@ -4205,15 +4384,15 @@ def handle_opencommons_mcp_request(
         return None
 
     if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "opencommons-mcp", "version": "0.2.0"},
-            },
+        result: dict[str, Any] = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "opencommons-mcp", "version": "0.2.0"},
         }
+        instructions = _contribution_instructions()
+        if instructions:
+            result["instructions"] = instructions
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     if method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -255,7 +256,7 @@ def test_tui_tool_badges_diff_and_at_mentions(tmp_path: Path) -> None:
     assert "Kardashev Studio" in str(panel.title)
 
 
-def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
+def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
     import subprocess
 
@@ -282,7 +283,14 @@ def test_tui_advanced_features_slices_ralph_and_export(tmp_path: Path) -> None:
     assert "line1" not in aug
     assert "line5" not in aug
 
-    # 2. Test git checkpoint & rewind in a temporary git repo
+    # 2. Test git checkpoint & rewind in a temporary git repo.
+    # Git env vars (GIT_DIR, GIT_INDEX_FILE, ...) leak into test subprocesses whenever this
+    # runs under a git hook or CI: the tmp-repo git calls would then target the outer repo
+    # (a 2026-10-15 incident had a test's `commit -m init` landing in the real worktree).
+    # Scrubbing them makes the tmp repo hermetic.
+    for key in list(os.environ):
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key, raising=False)
     subprocess.run(["git", "-C", str(tmp_path), "init"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(tmp_path), "add", "code.py"], check=True)
     subprocess.run(["git", "-C", str(tmp_path), "commit", "--no-verify", "-m", "init"], check=True, capture_output=True)
@@ -613,13 +621,15 @@ def gcd_rec(u: int, v: int) -> int:
     assert fp1.sid != fp2.sid
     assert fp1.fp == fp2.fp
 
-    # 2. Tiered recording: clean pure function auto-commits via 5-gate peer review
+    # 2. Tiered recording: clean pure function with contract+invariant evidence passes the
+    # correctness gate (verified) and then auto-commits via 5-gate peer review.
     rec_clean = execute_commons_record(
         {
             "source_code": "def cube_int(n: int) -> int:\n    return n * n * n\n",
             "domain": "math",
             "summary": "Compute exact integer cube",
-            "invariants": ["cube_int(-n) == -cube_int(n)"],
+            "invariants": ["f(-n) == -f(n)"],
+            "contract": "[((2,), 8), ((3,), 27), ((-2,), -8)]",
             "teleological_intent": "Isotropic 3D volume scaling",
             "dimensional_units": "m -> m^3",
         },
@@ -628,9 +638,12 @@ def gcd_rec(u: int, v: int) -> int:
     )
     assert rec_clean["status"] == "accepted"
     assert rec_clean["trust_tier"] == "peer_reviewed"
+    assert rec_clean["verification"]["status"] == "verified"
     assert get_harness_telemetry().commons_concepts_recorded == 1
 
-    # 3. Degenerate constant stub is quarantined by Gate 2
+    # 3. A degenerate constant stub has no contract/invariant/oracle evidence behind it, so the
+    # correctness gate finds it unverifiable (not provably wrong, but not trusted either) and
+    # stages it for review instead of either accepting or outright quarantining it.
     rec_stub = execute_commons_record(
         {
             "source_code": "def fake_hash(data: bytes) -> int:\n    return 0\n",
@@ -639,7 +652,8 @@ def gcd_rec(u: int, v: int) -> int:
         store_path=store_file,
         pending_path=pending_file,
     )
-    assert rec_stub["status"] == "quarantined"
+    assert rec_stub["status"] == "queued_for_review"
+    assert rec_stub["stage_reason"] == "needs_evidence"
 
     # 4. Pending Review Queue: explicit review request or domain-specific inputs stage in pending_queue.json
     rec_queued = execute_commons_record(
@@ -654,14 +668,16 @@ def gcd_rec(u: int, v: int) -> int:
     )
     assert rec_queued["status"] == "queued_for_review"
     prop_id = rec_queued["proposal_id"]
+    # rec_stub (fake_hash) is also sitting in the queue from step 3 above.
     pending_list = load_pending_proposals(pending_file)
-    assert len(pending_list) == 1
-    assert pending_list[0].func_name == "custom_energy_scale"
+    assert len(pending_list) == 2
+    assert {p.func_name for p in pending_list} == {"fake_hash", "custom_energy_scale"}
 
     # Approve the pending proposal -> moves into persistent store
     app_res = approve_pending_proposal(prop_id, store_path=store_file, pending_path=pending_file)
     assert app_res["approved"] is True
-    assert len(load_pending_proposals(pending_file)) == 0
+    # fake_hash is still sitting in the queue; only custom_energy_scale was approved.
+    assert len(load_pending_proposals(pending_file)) == 1
     find_after = execute_commons_find({"query": "custom_energy_scale"}, store_path=store_file)
     assert find_after["hit_count"] >= 1
 
@@ -708,7 +724,9 @@ def harmonic_mean_pair(a: float, b: float) -> float:
         pending_path=pending_file,
     )
     assert len(extracted) == 1
-    assert extracted[0]["status"] == "accepted"
+    # No contract/invariants are auto-attached by extraction, so the correctness gate has no
+    # evidence to verify against and stages it for review rather than trusting it outright.
+    assert extracted[0]["status"] == "queued_for_review"
 
     # 7. Monotonic Counterexample Ratchet
     store = load_persistent_store(store_file)
@@ -796,7 +814,8 @@ def kahan_compensated_sum(values: list) -> float:
                 "source_code": kahan_src,
                 "domain": "numerical_analysis",
                 "summary": "O(1) error Kahan summation",
-                "invariants": ["abs(kahan_compensated_sum([1.0, 1e-16, -1.0]) - 1e-16) <= 1e-16"],
+                "invariants": ["abs(f([1.0, 1e-16, -1.0]) - 1e-16) <= 1e-16"],
+                "contract": "[(([1.0, 2.0, 3.0],), 6.0), (([0.1, 0.2],), 0.30000000000000004), (([],), 0.0)]",
             },
             store_path=agent_a_store,
             pending_path=tmp_path / "pending_a.json",

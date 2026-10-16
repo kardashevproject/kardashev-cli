@@ -130,6 +130,8 @@ def _matches_type(value, declared_type: str) -> bool:
         return isinstance(value, bool)
     if declared_type == "str":
         return isinstance(value, str)
+    if declared_type == "list":
+        return isinstance(value, list)
     if declared_type == "list[float]":
         return isinstance(value, list) and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in value)
     if declared_type == "list[int]":

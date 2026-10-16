@@ -22,6 +22,7 @@ from .types import Outcome
 # Resource limits are applied here, before the untrusted source is compiled.
 _HARNESS_SOURCE = r"""
 import json
+import math
 import sys
 
 
@@ -53,7 +54,10 @@ def main():
     calls = payload["calls"]
 
     outcomes = []
-    namespace = {"__name__": "__opencommons_concept__", "__builtins__": __builtins__}
+    # `math` is provided as an implicit global (OpenCommons concept blocks are stored and
+    # eventually run without their own `import` statement -- the storage layer provides `math`
+    # the same way; see kardashev_cli.opencommons's SAFE_EXEC_BUILTINS/`math` globals).
+    namespace = {"__name__": "__opencommons_concept__", "__builtins__": __builtins__, "math": math}
     try:
         code = compile(source, "<concept>", "exec")
         exec(code, namespace)

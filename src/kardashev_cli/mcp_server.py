@@ -234,6 +234,10 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Mathematical or system invariants.",
                 },
+                "contract": {
+                    "type": "string",
+                    "description": "Optional Python literal list of ((args...), expected) pairs checked by the correctness engine.",
+                },
                 "teleological_intent": {
                     "type": "string",
                     "description": "Physical conservation law or scientific rationale.",
@@ -254,6 +258,10 @@ MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "counterexample_args": {
                     "type": "string",
                     "description": "Optional Python tuple literal of failing arguments for counterexample ratcheting.",
+                },
+                "counterexample_expected": {
+                    "type": "string",
+                    "description": "Python literal of the expected correct output for counterexample_args; required to quarantine.",
                 },
                 "sync_to_hub": {
                     "type": "boolean",
@@ -540,15 +548,17 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "kardashev-mcp", "version": "0.2.0"},
-            },
+        from kardashev_cli.opencommons import _contribution_instructions
+
+        result: dict[str, Any] = {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {"tools": {}},
+            "serverInfo": {"name": "kardashev-mcp", "version": "0.2.0"},
         }
+        instructions = _contribution_instructions()
+        if instructions:
+            result["instructions"] = instructions
+        return {"jsonrpc": "2.0", "id": req_id, "result": result}
 
     if method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}

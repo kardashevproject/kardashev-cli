@@ -730,8 +730,9 @@ class KardashevCompleter(Completer):
             cmd_name = SLASH_ALIASES.get(raw_cmd, raw_cmd)
             cur_arg = parts[1] if len(parts) > 1 and not text_before.endswith(" ") else ""
             if cmd_name == "/preset":
+                q = cur_arg.lower()
                 for p in list_presets():
-                    if p.key.startswith(cur_arg.lower()):
+                    if p.key.lower().startswith(q) or q in p.key.lower() or q in p.model_id.lower():
                         yield Completion(
                             p.key,
                             start_position=-len(cur_arg),
@@ -740,9 +741,10 @@ class KardashevCompleter(Completer):
                         )
                 return
             if cmd_name in ("/model", "/serve"):
+                q = cur_arg.lower()
                 seen_names: set[str] = set()
                 for m in self._get_discovered_models():
-                    if m.name.lower().startswith(cur_arg.lower()):
+                    if m.name.lower().startswith(q) or q in m.name.lower():
                         seen_names.add(m.name.lower())
                         yield Completion(
                             m.name,
@@ -751,12 +753,27 @@ class KardashevCompleter(Completer):
                             display_meta=f"local {m.backend.value} · {m.size_gb:.1f} GB ({m.source})",
                         )
                 for p in list_presets():
-                    if p.key.lower() not in seen_names and p.key.lower().startswith(cur_arg.lower()):
+                    if p.key.lower() not in seen_names and (
+                        p.key.lower().startswith(q) or q in p.key.lower() or q in p.model_id.lower()
+                    ):
+                        seen_names.add(p.key.lower())
                         yield Completion(
                             p.key,
                             start_position=-len(cur_arg),
                             display=p.key,
                             display_meta=f"preset ({p.backend.value}) · {p.model_id}",
+                        )
+                    if (
+                        cmd_name == "/model"
+                        and p.model_id.lower() not in seen_names
+                        and (p.model_id.lower().startswith(q) or q in p.model_id.lower())
+                    ):
+                        seen_names.add(p.model_id.lower())
+                        yield Completion(
+                            p.model_id,
+                            start_position=-len(cur_arg),
+                            display=p.model_id,
+                            display_meta=f"{p.family} ({p.key}) · {p.description}",
                         )
                 return
             if cmd_name == "/policy":
@@ -2016,7 +2033,7 @@ class KardashevRichTUI:
                 "glm-5.3-prime": "openrouter-glm-5.3-prime",
             }
             resolved_preset = model_preset_aliases.get(target_model.lower(), target_model.lower())
-            if resolved_preset in PRESETS and len(args) == 1:
+            if resolved_preset in PRESETS and len(args) <= 1:
                 self.options.preset = resolved_preset
                 self.options.backend = None
                 self.options.model = None
@@ -2041,7 +2058,7 @@ class KardashevRichTUI:
                 (m for m in discovered if m.backend == BackendKind.LITERT and m.name.lower() == target_model.lower()),
                 None,
             )
-            if litert_match and len(args) == 1:
+            if litert_match and len(args) <= 1:
                 self.options.preset = None
                 self.options.backend = "litert"
                 self.options.model_path = litert_match.path
@@ -2061,7 +2078,7 @@ class KardashevRichTUI:
                     (e for e in all_eps if e.reachable and any(target_model.lower() in m.lower() for m in e.models)),
                     None,
                 )
-                if alt_ep is not None and len(args) == 1:
+                if alt_ep is not None and len(args) <= 1:
                     target_url = alt_ep.base_url
                 else:
                     self.console.print(
@@ -3116,22 +3133,30 @@ class KardashevRichTUI:
                 self._restart_requested = False
                 self._needs_harness_reconnect = False
                 self._synced_transcript_count = 0
-                base_cfg = build_agent_config(self.options)
-                cfg = self._upgrade_interactive_config(base_cfg)
-                model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
-
-                if not self._initial_banner_shown:
-                    self.console.print(self.render_welcome_banner(cfg))
-                    self._initial_banner_shown = True
-                elif not was_reconnect:
-                    self.console.print(
-                        f"  [green]✓ Active model:[/green] [bold cyan]{model_label}[/bold cyan] [dim]({backend_label})[/dim]"
-                    )
 
                 agent: Agent | None = None
                 agent_entered = False
-                agent_cm = Agent(cfg)
+                agent_cm: Agent | None = None
+                cfg: Any = self.options
+                model_label, backend_label, ctx_limit = (
+                    self.options.model or self.options.preset or "gemma4-26b",
+                    str(self.options.backend or "litert"),
+                    40960,
+                )
                 try:
+                    base_cfg = build_agent_config(self.options)
+                    cfg = self._upgrade_interactive_config(base_cfg)
+                    model_label, backend_label, ctx_limit = self._active_model_summary(cfg)
+
+                    if not self._initial_banner_shown:
+                        self.console.print(self.render_welcome_banner(cfg))
+                        self._initial_banner_shown = True
+                    elif not was_reconnect:
+                        self.console.print(
+                            f"  [green]✓ Active model:[/green] [bold cyan]{model_label}[/bold cyan] [dim]({backend_label})[/dim]"
+                        )
+
+                    agent_cm = Agent(cfg)
                     with (
                         self.console.status(
                             f"[bold cyan]⚡ Initializing {model_label}[/bold cyan] "
@@ -3146,6 +3171,9 @@ class KardashevRichTUI:
                     self.console.print("\n[dim]Startup cancelled.[/dim]")
                     return 130
                 except Exception as exc:  # noqa: BLE001
+                    if not self._initial_banner_shown:
+                        self.console.print(self.render_welcome_banner(cfg))
+                        self._initial_banner_shown = True
                     log_path = log_background_exception(
                         f"agent_startup (model={model_label}, backend={backend_label})",
                         exc,

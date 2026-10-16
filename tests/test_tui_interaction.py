@@ -913,4 +913,34 @@ def test_streaming_stress_rapid_tokens_fences_and_checklists(tmp_path) -> None:
     assert "x_199 = 199 * 2" in tui.transcripts[-1].assistant_response
 
 
+def test_model_switch_openrouter_slug_and_build_agent_config(tmp_path) -> None:
+    """Reproduces `/model z-ai/glm-5.3-prime` followed by `build_agent_config(tui.options)`."""
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+    from rich.console import Console
+
+    from kardashev_cli.builder import build_agent_config
+    from kardashev_cli.tui import KardashevCompleter
+
+    completer = KardashevCompleter(str(tmp_path))
+    ev = CompleteEvent(completion_requested=True)
+    cands = [c.text for c in completer.get_completions(Document("/model z-ai", cursor_position=11), ev)]
+    assert "z-ai/glm-5.3-prime" in cands
+
+    tui = _make_tui(tmp_path)
+    tui.console = Console(record=True, width=100)
+    should_restart = asyncio.run(
+        tui._handle_slash_command(
+            "/model z-ai/glm-5.3-prime https://openrouter.ai/api/v1 --force",
+            None,  # type: ignore[arg-type]
+            tui.options,
+        )
+    )
+    assert should_restart is True
+    assert tui.options.preset is None
+    assert tui.options.model == "z-ai/glm-5.3-prime"
+
+    cfg = build_agent_config(tui.options)
+    assert getattr(cfg, "model", None) == "z-ai/glm-5.3-prime"
+    assert getattr(cfg, "base_url", None) == "https://openrouter.ai/api/v1"
 

@@ -141,6 +141,7 @@ def test_mcp_server_jsonrpc(tmp_path: Path) -> None:
         "apply_smart_patch",
         "verify_and_repair",
         "run_local_agent_task",
+        "local_agent_task_status",
         "list_local_models",
         "commons_find",
         "commons_record",

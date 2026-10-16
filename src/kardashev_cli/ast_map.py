@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import os
 import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 IGNORED_DIRS: set[str] = {
     ".git",
@@ -381,6 +384,44 @@ def render_compact_repo_map(
     return "\n".join(out_lines)
 
 
+_EXACT_SYMBOL_BONUS = 1000.0
+
+
+def _exact_symbol_query(query: str) -> str | None:
+    """Returns the lowercased query if it looks like a single identifier (an exact symbol name)."""
+    candidate = query.strip()
+    return candidate.lower() if _IDENTIFIER_RE.match(candidate) else None
+
+
+def _select_file_symbols(
+    fsum: FileSymbolSummary, terms: list[str], limit: int = 5
+) -> list[SymbolNode]:
+    """Returns the symbols in `fsum` most relevant to `terms`, falling back to the first `limit`."""
+    if not terms:
+        return fsum.symbols[:limit]
+
+    def _match_score(sym: SymbolNode) -> float:
+        sname = sym.name.lower()
+        score = 0.0
+        for t in terms:
+            if t == sname:
+                score += 10.0
+            elif t in sname:
+                score += 4.0
+            elif t in sym.signature.lower():
+                score += 2.0
+            elif sym.docstring_summary and t in sym.docstring_summary.lower():
+                score += 1.0
+        return score
+
+    scored = [(_match_score(sym), sym) for sym in fsum.symbols]
+    matched = [(score, sym) for score, sym in scored if score > 0]
+    if not matched:
+        return fsum.symbols[:limit]
+    matched.sort(key=lambda item: -item[0])
+    return [sym for _score, sym in matched[:limit]]
+
+
 def scout_workspace(
     workspace: str | Path,
     query: str,
@@ -392,6 +433,7 @@ def scout_workspace(
     root = Path(workspace).resolve()
     index = build_workspace_index(root)
     terms = _tokenize_query(query)
+    exact_symbol = _exact_symbol_query(query)
     total_symbols = sum(len(f.symbols) for f in index)
     total_raw_chars = 0
 
@@ -425,6 +467,10 @@ def scout_workspace(
             if s_score > 0:
                 f_score += s_score
                 symbol_hits.append((s_score, sym))
+            # An exact single-identifier query always ranks its defining file first,
+            # regardless of how many unrelated subword/signature hits other files accrue.
+            if exact_symbol is not None and sname == exact_symbol:
+                f_score += _EXACT_SYMBOL_BONUS
         file_scores.append((f_score, fsum))
 
     file_scores.sort(key=lambda x: (-x[0], x[1].rel_path))
@@ -444,7 +490,7 @@ def scout_workspace(
                         "lines": f"{s.start_line}-{s.end_line}",
                         "signature": s.signature,
                     }
-                    for s in fsum.symbols[:15]
+                    for s in _select_file_symbols(fsum, terms)
                 ],
             }
         )
@@ -482,9 +528,19 @@ def scout_workspace(
             continue
 
     repo_map = render_compact_repo_map(index, query=query, max_chars=3600, workspace=root)
-    pack_chars = len(repo_map) + sum(len(s["code"]) for s in surgical_slices)
+    # Estimate pack tokens from the actual serialized payload the caller receives (ranked_files +
+    # surgical_slices + compact_repo_map), not just the repo map and slice code in isolation.
+    response_preview_chars = len(
+        json.dumps(
+            {
+                "ranked_files": ranked_files,
+                "surgical_slices": surgical_slices,
+                "compact_repo_map": repo_map,
+            }
+        )
+    )
     est_raw_tokens = max(1, total_raw_chars // 4)
-    est_pack_tokens = max(1, pack_chars // 4)
+    est_pack_tokens = max(1, response_preview_chars // 4)
     est_saved = max(0, est_raw_tokens - est_pack_tokens)
 
     return ScoutResult(

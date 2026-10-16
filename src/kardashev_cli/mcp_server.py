@@ -13,11 +13,15 @@ OpenCommons knowledge discovery, and full subagent tasks to local GPUs (`Gemma 4
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -26,8 +30,10 @@ from google.antigravity import Agent
 from kardashev_cli.ast_map import scout_workspace
 from kardashev_cli.builder import HarnessOptions, PolicyMode, build_agent_config
 from kardashev_cli.discovery import discover_local_models, probe_local_endpoints
-from kardashev_cli.harness_hooks import check_python_syntax, heal_replace_file_args
+from kardashev_cli.harness_hooks import heal_replace_file_args
 from kardashev_cli.presets import list_presets
+
+_VERIFY_TIMEOUT_S = 120
 
 MCP_TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
@@ -328,6 +334,61 @@ def scout_codebase(
     return res.to_dict()
 
 
+def _check_python_syntax_text(source: str, display_name: str) -> str | None:
+    """In-memory Python AST syntax check against `source` (no file I/O)."""
+    try:
+        ast.parse(source, filename=display_name)
+        return None
+    except SyntaxError as exc:
+        return f"SyntaxError in {Path(display_name).name} at line {exc.lineno}, col {exc.offset}: {exc.msg}"
+
+
+def _find_occurrences(text: str, target: str) -> list[tuple[int, int, int]]:
+    """Returns every `(char_index, start_line, end_line)` occurrence of `target` within `text`."""
+    occurrences: list[tuple[int, int, int]] = []
+    target_newlines = target.count("\n")
+    search_from = 0
+    while True:
+        idx = text.find(target, search_from)
+        if idx == -1:
+            break
+        start_line = text.count("\n", 0, idx) + 1
+        end_line = start_line + target_newlines
+        occurrences.append((idx, start_line, end_line))
+        search_from = idx + 1
+    return occurrences
+
+
+def _select_occurrence(
+    occurrences: list[tuple[int, int, int]],
+    hint_start: int,
+    hint_end: int,
+    hint_provided: bool,
+) -> tuple[tuple[int, int, int] | None, list[tuple[int, int]]]:
+    """Picks the occurrence whose line span best matches the `[hint_start, hint_end]` hint.
+
+    Returns `(chosen_occurrence, candidate_spans)`. `chosen_occurrence` is `None` when the hint
+    is missing/default or two or more occurrences are equidistant, in which case
+    `candidate_spans` lists every ambiguous candidate's `(start_line, end_line)`.
+    """
+    if not hint_provided:
+        return (None, [(o[1], o[2]) for o in occurrences])
+
+    def _distance(occ: tuple[int, int, int]) -> int:
+        _idx, o_start, o_end = occ
+        if o_end >= hint_start and o_start <= hint_end:
+            return 0  # overlaps the hint window
+        if o_start > hint_end:
+            return o_start - hint_end
+        return hint_start - o_end
+
+    best_distance = min(_distance(o) for o in occurrences)
+    tied = [o for o in occurrences if _distance(o) == best_distance]
+    if len(tied) > 1:
+        return (None, [(o[1], o[2]) for o in occurrences])
+    return (tied[0], [])
+
+
 def apply_smart_patch(
     target_file: str,
     target_content: str,
@@ -353,36 +414,107 @@ def apply_smart_patch(
     eff_replacement = str(effective["ReplacementContent"])
 
     original_text = fpath.read_text(encoding="utf-8")
-    if eff_target not in original_text:
+    occurrences = _find_occurrences(original_text, eff_target)
+    if not occurrences:
         return {
             "applied": False,
             "file": str(fpath),
             "error": "TargetContent could not be matched even after fuzzy/indentation healing.",
         }
 
-    updated_text = original_text.replace(eff_target, eff_replacement, 1)
-    fpath.write_text(updated_text, encoding="utf-8")
+    if len(occurrences) == 1:
+        chosen = occurrences[0]
+    else:
+        hint_provided = not (start_line == 1 and end_line == 999999)
+        chosen, candidate_spans = _select_occurrence(occurrences, start_line, end_line, hint_provided)
+        if chosen is None:
+            return {
+                "applied": False,
+                "file": str(fpath),
+                "error": (
+                    f"TargetContent matches {len(occurrences)} locations and start_line/end_line "
+                    "does not unambiguously pick one. Pass a more specific start_line/end_line "
+                    "hint or a more unique TargetContent."
+                ),
+                "candidate_line_spans": [f"{s}-{e}" for s, e in candidate_spans],
+            }
 
-    syntax_err = check_python_syntax(str(fpath))
+    char_idx, actual_start_line, actual_end_line = chosen
+    updated_text = original_text[:char_idx] + eff_replacement + original_text[char_idx + len(eff_target) :]
+
+    syntax_err = None
+    if str(fpath).endswith(".py"):
+        syntax_err = _check_python_syntax_text(updated_text, str(fpath))
     if syntax_err:
-        # Rollback broken syntax edit automatically
-        fpath.write_text(original_text, encoding="utf-8")
         return {
             "applied": False,
-            "rolled_back": True,
             "file": str(fpath),
             "heal_applied": heal_reason,
             "syntax_error": syntax_err,
         }
 
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(fpath.parent), prefix=f".{fpath.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as tmp_file:
+            tmp_file.write(updated_text)
+        os.replace(tmp_path, fpath)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+
     return {
         "applied": True,
         "file": str(fpath),
         "heal_applied": heal_reason or "exact_window_match",
-        "start_line": effective["StartLine"],
-        "end_line": effective["EndLine"],
+        "start_line": actual_start_line,
+        "end_line": actual_end_line,
         "syntax_valid": True,
     }
+
+
+class _VerifyRunResult:
+    """Lightweight holder for a capped, process-group-safe verification run."""
+
+    __slots__ = ("returncode", "stderr", "stdout", "timed_out")
+
+    def __init__(self, returncode: int | None, stdout: str, stderr: str, timed_out: bool) -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.timed_out = timed_out
+
+
+def _run_verify_command(
+    command: str, ws: str, timeout_s: int | None = None
+) -> _VerifyRunResult:
+    """Runs `command` in its own process group so a timeout can kill the whole tree.
+
+    Returns a structured `_VerifyRunResult` instead of raising `subprocess.TimeoutExpired`.
+    `timeout_s` defaults to the module-level `_VERIFY_TIMEOUT_S`, resolved at call time (not
+    bound as a mutable default argument) so callers/tests can override it dynamically.
+    """
+    if timeout_s is None:
+        timeout_s = _VERIFY_TIMEOUT_S
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=ws,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+        return _VerifyRunResult(proc.returncode, stdout or "", stderr or "", False)
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        stdout, stderr = proc.communicate()
+        return _VerifyRunResult(None, stdout or "", stderr or "", True)
 
 
 def verify_and_repair(
@@ -393,22 +525,24 @@ def verify_and_repair(
 ) -> dict[str, Any]:
     """MCP tool 3: `verify_and_repair` — executes verification command and compresses output."""
     ws = os.path.abspath(os.path.expanduser(workspace)) if workspace else os.getcwd()
-    proc = subprocess.run(
-        command,
-        shell=True,
-        cwd=ws,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    combined = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    run = _run_verify_command(command, ws)
+    combined = ((run.stdout or "") + "\n" + (run.stderr or "")).strip()
     lines = combined.splitlines()
     tail_summary = "\n".join(lines[-35:]) if len(lines) > 35 else combined
 
-    if proc.returncode == 0:
+    if run.timed_out:
+        return {
+            "passed": False,
+            "timed_out": True,
+            "exit_code": None,
+            "command": command,
+            "failure_tail": tail_summary,
+        }
+
+    if run.returncode == 0:
         return {
             "passed": True,
+            "timed_out": False,
             "exit_code": 0,
             "command": command,
             "summary": lines[-1] if lines else "passed",
@@ -418,13 +552,14 @@ def verify_and_repair(
     if not auto_repair:
         return {
             "passed": False,
-            "exit_code": proc.returncode,
+            "timed_out": False,
+            "exit_code": run.returncode,
             "command": command,
             "failure_tail": tail_summary,
         }
 
     repair_prompt = (
-        f"The verification command `{command}` failed in `{ws}` with exit code {proc.returncode}.\n"
+        f"The verification command `{command}` failed in `{ws}` with exit code {run.returncode}.\n"
         f"Failure output:\n```\n{tail_summary}\n```\n"
         f"Diagnose the root cause, apply a minimal fix using `replace_file_content`, and re-run `{command}`."
     )
@@ -434,19 +569,23 @@ def verify_and_repair(
         workspace=ws,
         policy="allow-all",
     )
-    recheck = subprocess.run(
-        command,
-        shell=True,
-        cwd=ws,
-        capture_output=True,
-        text=True,
-        timeout=120,
-        check=False,
-    )
-    re_lines = ((recheck.stdout or "") + "\n" + (recheck.stderr or "")).strip().splitlines()
+    recheck = _run_verify_command(command, ws)
+    if recheck.timed_out:
+        return {
+            "passed": False,
+            "timed_out": True,
+            "initial_exit_code": run.returncode,
+            "final_exit_code": None,
+            "auto_repaired": False,
+            "repair_tool_calls": agent_res.get("tool_calls", []),
+            "repair_summary": agent_res.get("output", ""),
+        }
+    re_combined = ((recheck.stdout or "") + "\n" + (recheck.stderr or "")).strip()
+    re_lines = re_combined.splitlines()
     return {
         "passed": recheck.returncode == 0,
-        "initial_exit_code": proc.returncode,
+        "timed_out": False,
+        "initial_exit_code": run.returncode,
         "final_exit_code": recheck.returncode,
         "auto_repaired": recheck.returncode == 0,
         "repair_tool_calls": agent_res.get("tool_calls", []),
